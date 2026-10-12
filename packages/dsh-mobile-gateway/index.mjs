@@ -96,74 +96,11 @@ export async function apply(ctx, userConfig) {
 
   const disposers = [];
 
-  // ---- 健康检查（公开，只回最小事实） ------------------------------------
-  disposers.push(
-    webServer.register({
-      kind: 'exact',
-      path: '/mobile-gateway/health',
-      handler(_req, res) {
-        sendJson(res, 200, {
-          ok: true,
-          service: 'dsh-mobile-gateway',
-          version: PLUGIN_VERSION,
-          instance: { name: instance.name, home: instance.home },
-        });
-      },
-    }),
-  );
-
-  // ---- 配对（用一次性配对码换长期设备令牌） -------------------------------
-  disposers.push(
-    webServer.register({
-      kind: 'exact',
-      path: '/mobile-gateway/pair',
-      async handler(req, res) {
-        try {
-          const body = await readJsonBody(req);
-          const result = await store.redeem(body.code, {
-            ttlMs: config.tokenTtlMs,
-            deviceName: body.deviceName,
-            platform: body.platform,
-          });
-          if (!result.ok) {
-            sendError(res, result.reason === 'no_active_code' ? 404 : 403, result.reason, pairErrorText(result.reason));
-            log.warn('pairing rejected', { reason: result.reason, remote: req.socket?.remoteAddress });
-            return;
-          }
-          log.info('device paired', { deviceId: result.device.id, name: result.device.name });
-          sendJson(res, 200, {
-            device: result.device,
-            token: result.token,
-            instance,
-            apiPrefix: '/mobile-gateway/api',
-            events: { mux: '/mobile-gateway/events.mux', host: '/mobile-gateway/events.host' },
-          });
-        } catch (error) {
-          sendError(res, error?.statusCode ?? 500, 'pair_failed', String(error?.message ?? error));
-        }
-      },
-    }),
-  );
-
-  // ---- `/api` 桥 ----------------------------------------------------------
+  // ---- 所有 HTTP 面共用**一个** prefix 路由，在内部按 pathname 分派 ---------
+  // 不拆成 exact + prefix：`/mobile-gateway/pair` 会被 `/mobile-gateway/` 这个
+  // prefix 命中，拆开就得依赖「exact 优先于 prefix」这条未公开的调度顺序。
   const API_PREFIX = '/mobile-gateway/api/';
-  disposers.push(
-    webServer.register({
-      kind: 'prefix',
-      path: API_PREFIX,
-      async handler(req, res) {
-        const apiPath = (req.url ?? '/').split('?')[0].slice(API_PREFIX.length - 1);
-        try {
-          await bridge.handleApi(req, res, apiPath);
-        } catch (error) {
-          log.error('api bridge failed', { apiPath, error: String(error?.message ?? error) });
-          sendError(res, error?.statusCode ?? 500, 'bridge_failed', String(error?.message ?? error));
-        }
-      },
-    }),
-  );
 
-  // ---- 管理面板（仅回环） -------------------------------------------------
   disposers.push(
     webServer.register({
       kind: 'prefix',
@@ -171,10 +108,57 @@ export async function apply(ctx, userConfig) {
       async handler(req, res) {
         const pathname = (req.url ?? '/').split('?')[0];
         try {
+          if (pathname === '/mobile-gateway/health') {
+            sendJson(res, 200, {
+              ok: true,
+              service: 'dsh-mobile-gateway',
+              version: PLUGIN_VERSION,
+              instance: { name: instance.name, home: instance.home },
+            });
+            return;
+          }
+
+          if (pathname === '/mobile-gateway/pair') {
+            if (req.method !== 'POST') return sendError(res, 405, 'method_not_allowed', '请用 POST 配对');
+            const body = await readJsonBody(req);
+            const result = await store.redeem(body.code, {
+              ttlMs: config.tokenTtlMs,
+              deviceName: body.deviceName,
+              platform: body.platform,
+            });
+            if (!result.ok) {
+              sendError(
+                res,
+                result.reason === 'no_active_code' ? 404 : 403,
+                result.reason,
+                pairErrorText(result.reason),
+              );
+              log.warn('pairing rejected', { reason: result.reason, remote: req.socket?.remoteAddress });
+              return;
+            }
+            log.info('device paired', { deviceId: result.device.id, name: result.device.name });
+            sendJson(res, 200, {
+              device: result.device,
+              token: result.token,
+              instance,
+              apiPrefix: API_PREFIX,
+              events: { mux: '/mobile-gateway/events.mux', host: '/mobile-gateway/events.host' },
+            });
+            return;
+          }
+
+          if (pathname.startsWith(API_PREFIX)) {
+            await bridge.handleApi(req, res, pathname.slice(API_PREFIX.length - 1));
+            return;
+          }
+
           if (await handleManage(req, res, pathname)) return;
+
           sendError(res, 404, 'not_found', `no mobile-gateway route for ${pathname}`);
         } catch (error) {
-          sendError(res, error?.statusCode ?? 500, 'internal_error', String(error?.message ?? error));
+          const status = error?.statusCode ?? 500;
+          log.error('http route failed', { pathname, error: String(error?.message ?? error) });
+          sendError(res, status, status === 500 ? 'internal_error' : 'bad_request', String(error?.message ?? error));
         }
       },
     }),

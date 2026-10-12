@@ -1,8 +1,16 @@
 node_modules/
 dist/
 *.log
+
+# Android
 apps/android/.gradle/
+apps/android/.kotlin/
 apps/android/local.properties
 apps/android/build/
 apps/android/app/build/
 *.apk
+
+# IDE
+.idea/
+*.iml
+.vscode/
