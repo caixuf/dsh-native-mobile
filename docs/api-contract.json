@@ -1,0 +1,502 @@
+{
+  "$comment": "DSH wire contract extracted from the published npm packages. Every method/event carries a file:line `source`. `confidence: low` marks anything inferred rather than read verbatim.",
+  "meta": {
+    "generatedFor": "native Android client",
+    "extractedFrom": [
+      "client-connection@0.0.1-rc.1",
+      "api-gateway@0.0.1-rc.1",
+      "host-webserver@0.0.1-rc.1",
+      "client-ui-chat@0.1.2-alpha.2",
+      "api-session-controller@0.2.0-rc.2",
+      "api-workspace-controller@0.2.0-rc.2"
+    ],
+    "versionCorrection": "The task brief named client-connection@0.2.0-rc.2. The package actually on disk is 0.0.1-rc.1; all citations below refer to the real on-disk files.",
+    "sources": {
+      "cc/client.js": ".probe/sdk/_deepseek-ai_dsh-client-connection-0.0.1-rc.1/package/lib/client.js",
+      "cc/index.js": ".probe/sdk/_deepseek-ai_dsh-client-connection-0.0.1-rc.1/package/lib/index.js",
+      "cc/types/api-path.d.ts": ".probe/sdk/_deepseek-ai_dsh-client-connection-0.0.1-rc.1/package/lib/types/api-path.d.ts",
+      "cc/types/rpc.d.ts": ".probe/sdk/_deepseek-ai_dsh-client-connection-0.0.1-rc.1/package/lib/types/rpc.d.ts",
+      "cc/types/rpc-host.d.ts": ".probe/sdk/_deepseek-ai_dsh-client-connection-0.0.1-rc.1/package/lib/types/rpc-host.d.ts",
+      "cc/types/api-request-trust.d.ts": ".probe/sdk/_deepseek-ai_dsh-client-connection-0.0.1-rc.1/package/lib/types/api-request-trust.d.ts",
+      "cc/types/http-bridge.d.ts": ".probe/sdk/_deepseek-ai_dsh-client-connection-0.0.1-rc.1/package/lib/types/http-bridge.d.ts",
+      "cc/types/websocket-downlink.d.ts": ".probe/sdk/_deepseek-ai_dsh-client-connection-0.0.1-rc.1/package/lib/types/websocket-downlink.d.ts",
+      "cc/types/client/api.d.ts": ".probe/sdk/_deepseek-ai_dsh-client-connection-0.0.1-rc.1/package/lib/types/client/api.d.ts",
+      "cc/README.md": ".probe/sdk/_deepseek-ai_dsh-client-connection-0.0.1-rc.1/package/README.md",
+      "sc/typert.remote-client.d.ts": ".probe/.probe/sdk/_deepseek-ai_dsh-api-session-controller-0.2.0-rc.2/package/lib/typert.remote-client.d.ts",
+      "wc/typert.remote-client.d.ts": ".probe/.probe/sdk/_deepseek-ai_dsh-api-workspace-controller-0.2.0-rc.2/package/lib/typert.remote-client.d.ts"
+    }
+  },
+
+  "transport": {
+    "basePath": {
+      "value": "/api",
+      "source": "cc/types/api-path.d.ts:7",
+      "note": "Prefix route: owns /api and /api/<anything>. Registered once by the node half."
+    },
+    "surfaces": [
+      {
+        "name": "A. ApiProxy typed unary RPC",
+        "description": "Dotted method names, POST /api/<method>. This is the surface every browser/mobile client uses.",
+        "source": "cc/client.js:6144"
+      },
+      {
+        "name": "B. Generic Connection RPC channel (TypeRT Remotes)",
+        "description": "Slashed endpoint names on the same /api channel, POST /api/<ns>/<method>. Used by the gateway for Remote dispatch and streaming remotes.",
+        "source": "cc/client.js:9868",
+        "confidence": "low",
+        "note": "Wire framing is verified; the concrete endpoint list is taken from the controller .d.ts files and the goal endpoints appear only in the client fixture."
+      }
+    ],
+    "unaryRequest": {
+      "method": "POST",
+      "path": "/api/<method>",
+      "pathDerivation": "callUnary hardcodes the literal '/api/' prefix; the method string is NOT taken from the body.",
+      "headers": { "content-type": "application/json" },
+      "otherHeadersRequired": "none",
+      "body": {
+        "type": "object",
+        "required": ["type", "rpcId", "method", "payload"],
+        "properties": {
+          "type": { "const": "client-request" },
+          "rpcId": { "type": "string", "note": "opaque echo token, minted client-side via crypto.randomUUID(); no length constraint" },
+          "method": { "type": "string", "note": "MUST equal the path endpoint or the server returns bad-request" },
+          "payload": { "type": "unknown", "note": "left wide on the wire; second-level parse is dispatched per method" }
+        }
+      },
+      "additionalProperties": "stripped (zod object, non-strict)",
+      "source": "cc/client.js:6137-6144",
+      "schemaSource": "cc/client.js:5110-5115"
+    },
+    "unaryResponse": {
+      "status": 200,
+      "contentType": "application/json",
+      "body": {
+        "type": "object",
+        "required": ["type", "rpcId", "result"],
+        "properties": {
+          "type": { "const": "server-response" },
+          "rpcId": { "type": "string", "note": "client MUST verify this equals its own rpcId" },
+          "result": {
+            "description": "RpcResult<T>: discriminated on ok",
+            "okTrue": { "required": ["ok", "value"], "properties": { "ok": { "const": true }, "value": "T" } },
+            "okFalse": {
+              "required": ["ok", "error"],
+              "properties": {
+                "ok": { "const": false },
+                "error": {
+                  "required": ["code", "message", "details"],
+                  "code": { "type": "string", "enumRef": "transport.errorCodes" },
+                  "message": { "type": "string" },
+                  "details": { "type": "object", "note": "per-code shape, always present (may be {})" }
+                }
+              }
+            }
+          }
+        }
+      },
+      "source": "cc/client.js:6145-6159",
+      "schemaSource": "cc/client.js:5100-5108, 5117-5121"
+    },
+    "responseEndpoints": {
+      "method": "POST",
+      "path": "/api/respond",
+      "headers": { "content-type": "application/json" },
+      "body": {
+        "type": "object",
+        "required": ["type", "rpcId", "result"],
+        "properties": {
+          "type": { "const": "client-response" },
+          "rpcId": { "type": "string", "note": "MUST equal the rpcId of the server-pushed frame being answered" },
+          "result": "RpcResult<ApprovalResponse | QuestionResponse>"
+        }
+      },
+      "returns": {
+        "accepted": { "const": true },
+        "or": { "accepted": false, "reason": { "enum": ["not-pending", "bad-response"] } }
+      },
+      "description": "Server-initiated RPC answers (approvals, user questions) travel back over this single endpoint, NOT over the WebSockets.",
+      "source": "cc/client.js:6291-6295",
+      "schemaSource": "cc/client.js:5133-5137, 5140-5143"
+    },
+    "wireForms": {
+      "note": "Exactly four full forms, discriminated on `type`.",
+      "client-request": { "keys": ["type", "rpcId", "method", "payload"], "source": "cc/client.js:5110-5115" },
+      "server-response": { "keys": ["type", "rpcId", "result"], "source": "cc/client.js:5117-5121" },
+      "server-request": { "keys": ["type", "rpcId", "method", "payload"], "source": "cc/client.js:5123-5128" },
+      "client-response": { "keys": ["type", "rpcId", "result"], "source": "cc/client.js:5133-5137" }
+    },
+    "errorCodes": [
+      { "code": "bad-request", "details": { "issues": "array<unknown>" }, "source": "cc/client.js:4852" },
+      { "code": "cancelled", "details": {}, "source": "cc/client.js:4857" },
+      { "code": "session-not-found", "details": { "sessionId": "string" }, "source": "cc/client.js:4862" },
+      { "code": "model-unavailable", "details": { "provider": "string", "model": "string" }, "source": "cc/client.js:4867" },
+      { "code": "session-conflict", "details": { "sessionId": "string", "requestedCwd": "string", "existingCwd": "string?" }, "source": "cc/client.js:4875" },
+      { "code": "workspace-attach-failed", "details": { "sessionId": "string", "workspaceId": "string" }, "source": "cc/client.js:4884" },
+      { "code": "workspace-not-found", "details": { "workspaceId": "string" }, "source": "cc/client.js:4892" },
+      { "code": "workspace-invalid-path", "details": { "path": "string" }, "source": "cc/client.js:4897" },
+      { "code": "workspace-name-conflict", "details": { "name": "string" }, "source": "cc/client.js:4902" },
+      { "code": "workspace-move-invalid", "details": { "workspaceId": "string", "sessionId": "string", "beforeSessionId": "string?" }, "source": "cc/client.js:4907" },
+      { "code": "directory-unreadable", "details": { "path": "string" }, "source": "cc/client.js:4916" },
+      { "code": "directory-exists", "details": { "path": "string" }, "source": "cc/client.js:4922" },
+      { "code": "directory-create-failed", "details": { "path": "string" }, "source": "cc/client.js:4927" },
+      { "code": "directory-picker-unavailable", "details": { "capability": "string" }, "source": "cc/client.js:4931" },
+      { "code": "agent-preset-read-only", "details": { "agentPreset": "string", "reason": "string" }, "source": "cc/client.js:4936" },
+      { "code": "agent-preset-locked", "details": { "sessionId": "string", "agentPreset": "string" }, "source": "cc/client.js:4944" },
+      { "code": "agent-preset-conflict", "details": { "sessionId": "string", "requestedPreset": "string", "existingPreset": "string?" }, "source": "cc/client.js:4952" },
+      { "code": "agent-preset-not-found", "details": { "agentPreset": "string", "available": "string[]" }, "source": "cc/client.js:4961" },
+      { "code": "agent-preset-invalid", "details": { "agentPreset": "string", "reason": "string" }, "source": "cc/client.js:4969" },
+      { "code": "agent-busy", "details": { "reason": "string" }, "source": "cc/client.js:4977" },
+      { "code": "attachment-error", "details": { "reason": "string" }, "source": "cc/client.js:4982" },
+      { "code": "queue-item-not-found", "details": { "itemId": "string" }, "source": "cc/client.js:4987" },
+      { "code": "steer-unavailable", "details": { "itemId": "string" }, "source": "cc/client.js:4992" },
+      { "code": "command-error", "details": {}, "source": "cc/client.js:4997" },
+      { "code": "unknown-command", "details": {}, "source": "cc/client.js:5002" },
+      { "code": "settings-rejected", "details": { "ns": "string" }, "source": "cc/client.js:5007" },
+      { "code": "settings-not-exposed", "details": { "ns": "string" }, "source": "cc/client.js:5012" },
+      { "code": "settings-conflict", "details": { "ns": "string", "expected": "number", "actual": "number" }, "source": "cc/client.js:5017" },
+      { "code": "credential-rejected", "details": { "ref": "string" }, "source": "cc/client.js:5026" },
+      { "code": "model-discovery-failed", "details": { "settingsNs": "string", "baseURL": "string?" }, "source": "cc/client.js:5031" },
+      { "code": "title-invalid", "details": { "sessionId": "string" }, "source": "cc/client.js:5039" },
+      { "code": "fork-unavailable", "details": { "sessionId": "string" }, "source": "cc/client.js:5044" },
+      { "code": "subagent-parent-unavailable", "details": { "parentSessionId": "string" }, "source": "cc/client.js:5049" },
+      { "code": "subagent-not-found", "details": { "parentSessionId": "string", "childSessionId": "string" }, "source": "cc/client.js:5054" },
+      { "code": "subagent-catalog-diagnostic", "details": { "parentSessionId": "string", "childSessionId": "string", "reason": "'corrupt'|'unsupported'|'unavailable'" }, "source": "cc/client.js:5062" },
+      { "code": "subagent-not-resumable", "details": { "childSessionId": "string" }, "source": "cc/client.js:5075" },
+      { "code": "subagent-unauthorized", "details": { "childSessionId": "string" }, "source": "cc/client.js:5080" },
+      { "code": "subagent-delivery-unavailable", "details": { "childSessionId": "string" }, "source": "cc/client.js:5085" },
+      { "code": "internal", "details": {}, "source": "cc/client.js:5090" }
+    ],
+    "httpStatusCodes": [
+      { "status": 200, "meaning": "envelope delivered; business outcome is inside result.ok" },
+      { "status": 400, "meaning": "body is not JSON", "source": "cc/index.js:279" },
+      { "status": 403, "meaning": "forbidden — trust fence refused, or a privileged method from a non-loopback authority", "source": "cc/index.js:552, cc/index.js:535" },
+      { "status": 404, "meaning": "not found — wrong method (not POST) or unmatched path", "source": "cc/index.js:273, cc/index.js:544" },
+      { "status": 413, "meaning": "body exceeded maxRequestBodyBytes", "source": "cc/index.js:40" },
+      { "status": 415, "meaning": "content-type must be application/json", "source": "cc/index.js:274" },
+      { "status": 426, "meaning": "upgrade required — GET on an event path", "source": "cc/index.js:536-541" },
+      { "status": 500, "meaning": "handler failure", "source": "cc/index.js:293" }
+    ],
+    "clientSideBehaviour": {
+      "non2xx": "throws Error(`transport failure for ${path}: HTTP ${status}`) — transport faults are NOT RpcResults",
+      "rpcIdMismatch": "throws Error(`rpcId mismatch for ${method}: sent X, got Y`)",
+      "defaultTimeoutMs": 30000,
+      "timeoutPolicy": {
+        "default": "AbortSignal.timeout(30000), merged with any caller signal via AbortSignal.any",
+        "caller-signal-only": "no built-in timeout",
+        "appliesTo": ["host.pickDirectory", "command.execute"]
+      },
+      "source": "cc/client.js:6057, 6121-6128, 6147, 6236, 6251"
+    },
+    "requestSizeLimit": {
+      "defaultMaxRequestBodyBytes": 33554432,
+      "note": "When an `attachments` service is present, the cap must be >= ceil(maxMessageImageBytes * 4/3) + 1MiB or plugin activation throws.",
+      "source": "cc/index.js:466-474"
+    }
+  },
+
+  "websockets": {
+    "count": 2,
+    "direction": "server-to-client only; client->server frames are a protocol violation",
+    "subprotocol": null,
+    "subprotocolNote": "WebSocketServer is constructed with { noServer: true } and no handleProtocols option — clients MUST NOT send a Sec-WebSocket-Protocol header.",
+    "subprotocolSource": "cc/index.js:371",
+    "framing": {
+      "transport": "one RFC6455 text frame per event",
+      "encoding": "JSON, UTF-8",
+      "binaryFramesRejected": "client drops non-string frames as 'binary WebSocket frame'",
+      "frameShape": {
+        "type": { "const": "server-request" },
+        "rpcId": "string — HOST-MINTED per frame; for answerable pushes (approval/requested, question/requested) it is STABLE across reconnects and is the token you echo to /api/respond; pure pushes mint a fresh id each time",
+        "method": "the frame's payload.type verbatim",
+        "payload": "MuxFrame or HostFrame"
+      },
+      "clientSideParsing": "serverRequestSchema.parse(JSON.parse(data)) then frameSchema.parse(full.payload) — a frame failing either level is logged and dropped; the stream survives",
+      "source": "cc/index.js:331-338, cc/client.js:9797-9816",
+      "parseSource": "cc/client.js:9802-9803"
+    },
+    "streams": [
+      { "name": "mux", "urlPath": "/api/events.mux", "frameUnion": "MuxFrame", "source": "cc/types/api-path.d.ts:9", "schemaSource": "cc/client.js:5493-5559" },
+      { "name": "host", "urlPath": "/api/events.host", "frameUnion": "HostFrame", "source": "cc/types/api-path.d.ts:11", "schemaSource": "cc/client.js:5561-5616" }
+    ],
+    "openPayload": {
+      "note": "No query string, no subscribe filter. The host opens the stream with payload {} as soon as the socket upgrades.",
+      "serverSideOpen": "{ rpcId: RpcId(randomUUID()), payload: {} }",
+      "source": "cc/index.js:384-399"
+    },
+    "behaviour": {
+      "anyClientMessage": "server closes with code 1008, reason 'downlink only'",
+      "streamEnd": "a stream/error frame, then the socket is closed by the server",
+      "upgradeRejected": "raw HTTP/1.1 403 Forbidden with body 'forbidden' written straight to the socket (no WebSocket close frame)",
+      "source": "cc/index.js:424-426, 443, 451-459"
+    },
+    "reconnect": {
+      "required": true,
+      "policy": "client-owned; the protocol mandates reconnection, it does not implement it",
+      "reference": {
+        "trigger": "either stream ending or erroring",
+        "backoff": "min(10000, 500 * 2^(attempt-1)), then randomized: cap/2 + random*(cap/2) — i.e. 50%-100% jittered",
+        "baseMs": 500,
+        "factor": 2,
+        "maxMs": 10000,
+        "source": "cc/client.js:8-13, 61-65, 110-112"
+      },
+      "readinessHandshake": {
+        "description": "A connection is only declared 'connected' once BOTH sockets have opened AND host.describe has succeeded, within streamOpenTimeoutMs (3000ms). Any failure aborts the generation and retries.",
+        "note": "A native client MUST replay its RPC state after reconnect: approvals and questions are re-pushed with the SAME rpcId while unanswered.",
+        "streamOpenTimeoutMs": 3000,
+        "source": "cc/client.js:95-102, 12"
+      },
+      "replayGuarantee": "Resident pending approvals/questions are replayed on every mux open with the same rpcId, matching host replay semantics.",
+      "replaySource": "cc/client.js:7859-7862"
+    },
+    "sseAlternative": {
+      "note": "The non-browser AbstractApiClient base reads the SAME two paths as text/event-source ('\\n\\n' framing, 'data: ' lines) instead of upgrading. Only relevant if you target the in-process carrier.",
+      "source": "cc/client.js:6162-6213"
+    }
+  },
+
+  "authentication": {
+    "exists": false,
+    "statement": "There is NO authentication layer. No tokens, no cookies, no Authorization header, no API key, no session credentials are read or required anywhere on the /api surface.",
+    "source": "cc/README.md:9",
+    "sourceQuote": "The fence is a reachability policy, not authentication; the Web carrier provides no authentication layer.",
+    "whatTheFenceChecks": {
+      "name": "isTrustedApiRequest(request, trustedHosts)",
+      "source": "cc/index.js:179-193",
+      "typeSignature": "cc/types/api-request-trust.d.ts:41",
+      "orderedRules": [
+        { "rule": "Host header must be present and WHATWG-parsable", "source": "cc/index.js:180-183" },
+        { "rule": "Host hostname is loopback (localhost, [::1], or 127.0.0.0/8) OR matches a trustedHosts entry", "source": "cc/index.js:184", "loopbackImpl": "cc/index.js:95-99" },
+        { "rule": "sec-fetch-site, when present, must not be 'cross-site'", "source": "cc/index.js:185" },
+        { "rule": "Origin, when present, must equal the Host authority exactly; absent Origin passes", "source": "cc/index.js:186-192" }
+      ],
+      "trustedHostMatching": {
+        "withPort": "exact host:port match after WHATWG normalization",
+        "withoutPort": "hostname match on ANY port",
+        "source": "cc/index.js:166-172"
+      },
+      "rejects": "HTTP 403 'forbidden' before any RPC dispatch; upgrade refused before any stream starts",
+      "rejectSource": "cc/index.js:551-555, 567-570"
+    },
+    "privilegedMethods": {
+      "note": "These 15 methods pass the fence with an EMPTY trust list, so even a trusted-host deployment only reaches them over loopback.",
+      "methods": ["agentPreset.read", "agentPreset.copy", "agentPreset.openDocument", "agentPreset.remove", "host.pickDirectory", "host.openPath", "settings.describe", "settings.openDocument", "settings.update", "settings.replace", "settings.mutate", "credentials.describe", "credentials.set", "credentials.unset", "llm.discoverModels"],
+      "deliberatelyExcluded": ["llm.providers", "llm.models", "agentPreset.list", "agentPreset.select"],
+      "source": "cc/index.js:501-517",
+      "rationale": "cc/index.js:481-500"
+    },
+    "nativeClientImplication": "Any native app that can reach the socket owns the entire API. Combined with default loopback binding this is the only real control: the deployment binds 127.0.0.1 by default. A --host 0.0.0.0 deployment with trustedHosts grants an unauthenticated LAN caller 38 of the 53 methods."
+  },
+
+  "methods": [
+    { "domain": "session", "name": "session.list", "params": [{ "name": "cursor", "type": "string", "required": false }], "returns": "SessionListValue { items: SessionSummary[] }", "description": "List sessions, newest-updated first; cursor paginates.", "source": "cc/client.js:6002", "paramsSource": "cc/client.js:5202", "valueSource": "cc/client.js:5204", "shapeSource": "cc/client.js:5191-5201" },
+    { "domain": "session", "name": "session.search", "params": [{ "name": "query", "type": "string (trimmed, 1..500, no NUL)", "required": true }], "returns": "SessionSearchValue { items: {sessionId, snippet}[<=20], hasMore: boolean }", "description": "Full-text session search; snippet capped at 240 Unicode code points.", "source": "cc/client.js:6003", "paramsSource": "cc/client.js:5205", "valueSource": "cc/client.js:5207-5213" },
+    { "domain": "session", "name": "session.create", "params": [{ "name": "workspaceId", "type": "string", "required": false }, { "name": "cwd", "type": "string", "required": false }, { "name": "sessionId", "type": "string", "required": false }, { "name": "agentPreset", "type": "string", "required": false }], "returns": "SessionCreateValue { sessionId, agentPreset? }", "description": "Create a session. workspaceId and cwd are mutually exclusive.", "source": "cc/client.js:6004", "paramsSource": "cc/client.js:5214-5219", "valueSource": "cc/client.js:5221-5224" },
+    { "domain": "session", "name": "session.history", "params": [{ "name": "sessionId", "type": "string", "required": true }, { "name": "beforeSeq", "type": "int >= 0", "required": false }, { "name": "maxMessages", "type": "int > 0", "required": false }], "returns": "SessionHistoryValue { events: HistoryEntry[], hasMore: boolean, projections? }", "description": "Page the session event journal backwards; the projections baseline rides only the tail page.", "source": "cc/client.js:6005", "paramsSource": "cc/client.js:5240-5244", "valueSource": "cc/client.js:5307-5311" },
+    { "domain": "session", "name": "session.models", "params": [{ "name": "sessionId", "type": "string", "required": true }], "returns": "SessionModelsValue { current, routable: boolean, groups, failures }", "description": "Current model selection plus the routable catalog and per-provider load failures.", "source": "cc/client.js:6006", "paramsSource": "cc/client.js:5312", "valueSource": "cc/client.js:5314-5319" },
+    { "domain": "session", "name": "session.selectModel", "params": [{ "name": "sessionId", "type": "string", "required": true }, { "name": "provider", "type": "string (min 1)", "required": true }, { "name": "model", "type": "string (min 1)", "required": true }, { "name": "reasoningEffort", "type": "string (min 1)", "required": false }], "returns": "SessionSelectModelValue { selected: ModelSelection }", "description": "Pin the session to an exact provider/model pair.", "source": "cc/client.js:6007", "paramsSource": "cc/client.js:5320-5325", "valueSource": "cc/client.js:5327" },
+    { "domain": "session", "name": "session.rename", "params": [{ "name": "sessionId", "type": "string", "required": true }, { "name": "title", "type": "string", "required": true }], "returns": "SessionRenameValue { title (min 1), seq }", "description": "Set the session title; returns the normalized title and its event seq.", "source": "cc/client.js:6008", "paramsSource": "cc/client.js:5225-5228", "valueSource": "cc/client.js:5230-5233" },
+    { "domain": "session", "name": "session.fork", "params": [{ "name": "sessionId", "type": "string", "required": true }, { "name": "atSeq", "type": "int >= 0", "required": false }], "returns": "SessionForkValue { sessionId }", "description": "Fork a session from a given sequence (or its head).", "source": "cc/client.js:6009", "paramsSource": "cc/client.js:5234-5237", "valueSource": "cc/client.js:5239" },
+    { "domain": "session", "name": "session.prompt", "params": [{ "name": "sessionId", "type": "string", "required": true }, { "name": "mode", "type": "'queue' | 'steer'", "required": true }, { "name": "content", "type": "PromptContentPart[]", "required": true }], "returns": "SessionPromptValue { accepted: true, command?: { kind: 'success', text? } }", "description": "Submit a turn. mode=queue enqueues behind the running turn; mode=steer injects into it. The command slot appears only when the text dispatched a slash command.", "source": "cc/client.js:6010", "paramsSource": "cc/client.js:5347-5351", "valueSource": "cc/client.js:5353-5359", "partSource": "cc/client.js:5338-5346" },
+    { "domain": "session", "name": "session.attachment", "params": [{ "name": "sessionId", "type": "string", "required": true }, { "name": "attachmentId", "type": "string (min 1)", "required": true }], "returns": "SessionAttachmentValue { attachment: ImageAttachmentRef, data: string(base64) }", "description": "Fetch a durable image attachment by id; data is a base64 payload sized against maxMessageImageBytes.", "source": "cc/client.js:6011", "paramsSource": "cc/client.js:5371-5374", "valueSource": "cc/client.js:5376-5379", "refSource": "cc/client.js:5363-5370" },
+    { "domain": "session", "name": "session.updateQueue", "params": [{ "name": "sessionId", "type": "string", "required": true }, { "name": "itemId", "type": "string (min 1)", "required": true }, { "name": "action", "type": "QueueAction = {kind:'edit',content:ContentBlock[]} | {kind:'remove'} | {kind:'steer'}", "required": true }], "returns": "SessionUpdateQueueValue { accepted: true }", "description": "Edit, remove, or promote-to-steer one queued inbox item.", "source": "cc/client.js:6012", "paramsSource": "cc/client.js:5380-5391", "valueSource": "cc/client.js:5393" },
+    { "domain": "session", "name": "session.cancel", "params": [{ "name": "sessionId", "type": "string", "required": true }], "returns": "SessionCancelValue { accepted: true }", "description": "Cancel the running turn.", "source": "cc/client.js:6013", "paramsSource": "cc/client.js:5394", "valueSource": "cc/client.js:5396" },
+
+    { "domain": "subagents", "name": "subagent.list", "params": [{ "name": "parentSessionId", "type": "string", "required": true }], "returns": "SubagentListValue { entries: SubagentListEntry[], parentAvailable: boolean }", "description": "List a parent's child subagents, including unhealthy diagnostics rows.", "source": "cc/client.js:6014", "paramsSource": "cc/client.js:5963", "valueSource": "cc/client.js:5965-5968", "entrySource": "cc/client.js:5936-5962" },
+    { "domain": "subagents", "name": "subagent.history", "params": [{ "name": "parentSessionId", "type": "string", "required": true }, { "name": "childSessionId", "type": "string", "required": true }, { "name": "mode", "type": "'one-shot' | 'continuable'", "required": true }, { "name": "beforeSeq", "type": "int >= 0", "required": false }, { "name": "maxMessages", "type": "int > 0", "required": false }], "returns": "{ events: HistoryEntry[], hasMore: boolean, projections? }", "description": "Page a child subagent's journal.", "source": "cc/client.js:6015", "paramsSource": "cc/client.js:5969-5975", "valueSource": "cc/client.js:5977-5981" },
+    { "domain": "subagents", "name": "subagent.prompt", "params": [{ "name": "parentSessionId", "type": "string", "required": true }, { "name": "childSessionId", "type": "string", "required": true }, { "name": "mode", "type": "'continuable'", "required": true }, { "name": "content", "type": "ContentBlock[]", "required": true }], "returns": "{ messageId: string }", "description": "Send a follow-up turn to a continuable child subagent.", "source": "cc/client.js:6016", "paramsSource": "cc/client.js:5982-5987" },
+    { "domain": "subagents", "name": "subagent.interrupt", "params": [{ "name": "parentSessionId", "type": "string", "required": true }, { "name": "childSessionId", "type": "string", "required": true }, { "name": "mode", "type": "'continuable'", "required": true }], "returns": "SubagentInterruptValue { accepted: true }", "description": "Interrupt a running continuable child subagent.", "source": "cc/client.js:6017", "paramsSource": "cc/client.js:5988-5992", "valueSource": "cc/client.js:5994" },
+
+    { "domain": "host", "name": "host.describe", "params": [], "returns": "HostDescription { version, cwd, provider?, model?, attachedSessions }", "description": "Host version, cwd, active model, attached session count. Doubles as the connection readiness handshake — call it before trusting the event streams.", "source": "cc/client.js:6018", "paramsSource": "cc/client.js:5617", "valueSource": "cc/client.js:5619-5625" },
+    { "domain": "host", "name": "host.pickDirectory", "params": [], "returns": "{ path: string | null }", "description": "Open the native directory picker on the host machine; null means the user cancelled. LOOPBACK-ONLY and caller-paced (no built-in timeout).", "source": "cc/client.js:6019", "paramsSource": "cc/client.js:5626", "valueSource": "cc/client.js:5628", "timeoutSource": "cc/client.js:6236" },
+    { "domain": "host", "name": "host.listDirectory", "params": [{ "name": "path", "type": "string", "required": false }], "returns": "DirectoryListing { path, home, crumbs: DirectoryEntry[], entries: DirectoryEntry[], truncated: boolean }", "description": "List a host directory with breadcrumbs; omitted path starts at the host default.", "source": "cc/client.js:6020", "paramsSource": "cc/client.js:5635", "valueSource": "cc/client.js:5637-5643", "entrySource": "cc/client.js:5630-5634" },
+    { "domain": "host", "name": "host.createDirectory", "params": [{ "name": "path", "type": "string", "required": true }, { "name": "name", "type": "string (single non-blank segment, no / or \\, not . or ..)", "required": true }], "returns": "{ path: string }", "description": "Create one directory; returns its absolute path.", "source": "cc/client.js:6021", "paramsSource": "cc/client.js:5644-5647", "valueSource": "cc/client.js:5649" },
+    { "domain": "host", "name": "host.openPath", "params": [{ "name": "path", "type": "string (min 1)", "required": true }], "returns": "{ opened: true }", "description": "Reveal/open a path on the host desktop. LOOPBACK-ONLY (acts on the host machine).", "source": "cc/client.js:6022", "paramsSource": "cc/client.js:5650", "valueSource": "cc/client.js:5652" },
+
+    { "domain": "workspace", "name": "workspace.list", "params": [], "returns": "{ items: WorkspaceView[], archivedSessionIds: string[] }", "description": "List workspaces and the current archive set.", "source": "cc/client.js:6023", "paramsSource": "cc/client.js:5427", "valueSource": "cc/client.js:5429-5432", "viewSource": "cc/client.js:5419-5426" },
+    { "domain": "workspace", "name": "workspace.create", "params": [{ "name": "path", "type": "string", "required": true }], "returns": "{ workspace: WorkspaceView, created: boolean }", "description": "Create (or attach to) a workspace at a host path; created=false when it already existed.", "source": "cc/client.js:6024", "paramsSource": "cc/client.js:5433", "valueSource": "cc/client.js:5435-5438" },
+    { "domain": "workspace", "name": "workspace.rename", "params": [{ "name": "workspaceId", "type": "string", "required": true }, { "name": "title", "type": "string (must be non-blank after trim)", "required": true }], "returns": "{ workspace: WorkspaceView }", "description": "Rename a workspace title.", "source": "cc/client.js:6025", "paramsSource": "cc/client.js:5439-5442", "valueSource": "cc/client.js:5444" },
+    { "domain": "workspace", "name": "workspace.delete", "params": [{ "name": "workspaceId", "type": "string", "required": true }], "returns": "{ deleted: true }", "description": "Delete a workspace.", "source": "cc/client.js:6026", "paramsSource": "cc/client.js:5445", "valueSource": "cc/client.js:5447" },
+    { "domain": "workspace", "name": "workspace.insertSessionBefore", "params": [{ "name": "workspaceId", "type": "string", "required": true }, { "name": "sessionId", "type": "string", "required": true }, { "name": "beforeSessionId", "type": "string", "required": false }], "returns": "{ workspace: WorkspaceView }", "description": "Move/reorder a session within a workspace; omitting beforeSessionId moves it to the head.", "source": "cc/client.js:6027", "paramsSource": "cc/client.js:5448-5452", "valueSource": "cc/client.js:5454" },
+    { "domain": "workspace", "name": "workspace.archiveSession", "params": [{ "name": "sessionId", "type": "string", "required": true }], "returns": "{ archivedSessionIds: string[] }", "description": "Archive a session; returns the complete updated archive set.", "source": "cc/client.js:6028", "paramsSource": "cc/client.js:5455", "valueSource": "cc/client.js:5457" },
+
+    { "domain": "commands", "name": "command.list", "params": [{ "name": "sessionId", "type": "string", "required": true }], "returns": "{ commands: CommandDescriptor[] }", "description": "List the slash commands available to a session.", "source": "cc/client.js:6029", "paramsSource": "cc/client.js:5665", "valueSource": "cc/client.js:5667", "descriptorSource": "cc/client.js:5660-5664" },
+    { "domain": "commands", "name": "command.execute", "params": [{ "name": "sessionId", "type": "string", "required": true }, { "name": "line", "type": "string", "required": true }], "returns": "{ matched: boolean, commandId? }", "description": "Pure admission only — outcomes arrive later as logged lifecycle events correlated by commandId. Caller-paced (no timeout).", "source": "cc/client.js:6030", "paramsSource": "cc/client.js:5668-5671", "valueSource": "cc/client.js:5676-5679", "timeoutSource": "cc/client.js:6251" },
+
+    { "domain": "skills", "name": "skill.list", "params": [{ "name": "sessionId", "type": "string", "required": true }], "returns": "{ skills: SkillEntry[] }", "description": "List skills visible to a session.", "source": "cc/client.js:6031", "paramsSource": "cc/client.js:5693", "valueSource": "cc/client.js:5695", "entrySource": "cc/client.js:5687-5692" },
+
+    { "domain": "agent-presets", "name": "agentPreset.list", "params": [], "returns": "{ presets: AgentPresetEntry[], authorable: boolean, hasDocument: boolean }", "description": "List agent presets with trust level and default flag. Not loopback-gated.", "source": "cc/client.js:6032", "paramsSource": "cc/client.js:5711", "valueSource": "cc/client.js:5713-5717", "entrySource": "cc/client.js:5703-5710" },
+    { "domain": "agent-presets", "name": "agentPreset.select", "params": [{ "name": "sessionId", "type": "string", "required": true }, { "name": "agentPreset", "type": "string (min 1)", "required": true }], "returns": "{ agentPreset: string }", "description": "Bind a session to a preset. Not loopback-gated.", "source": "cc/client.js:6033", "paramsSource": "cc/client.js:5718-5721", "valueSource": "cc/client.js:5723" },
+    { "domain": "agent-presets", "name": "agentPreset.read", "params": [{ "name": "agentPreset", "type": "string (min 1)", "required": true }], "returns": "{ agentPreset, trust: 'system'|'user', content, name?, description? }", "description": "Read a preset's composition text. LOOPBACK-ONLY — a composition names the plugins a session runs, so reading is reconnaissance.", "source": "cc/client.js:6034", "paramsSource": "cc/client.js:5724", "valueSource": "cc/client.js:5726-5732" },
+    { "domain": "agent-presets", "name": "agentPreset.copy", "params": [{ "name": "from", "type": "string (min 1)", "required": true }, { "name": "agentPreset", "type": "string (min 1)", "required": true }, { "name": "name", "type": "string", "required": false }], "returns": "{ agentPreset: string }", "description": "Copy a preset to a new user-trust id (the only authoring write). LOOPBACK-ONLY.", "source": "cc/client.js:6035", "paramsSource": "cc/client.js:5733-5737", "valueSource": "cc/client.js:5739" },
+    { "domain": "agent-presets", "name": "agentPreset.openDocument", "params": [{ "name": "agentPreset", "type": "string (min 1)", "required": true }], "returns": "{ opened: true } | { opened: false, path: string }", "description": "Open the preset document; when not a document it returns the path instead. LOOPBACK-ONLY.", "source": "cc/client.js:6036", "paramsSource": "cc/client.js:5740", "valueSource": "cc/client.js:5742-5745" },
+    { "domain": "agent-presets", "name": "agentPreset.remove", "params": [{ "name": "agentPreset", "type": "string (min 1)", "required": true }], "returns": "{}", "description": "Delete a user preset. LOOPBACK-ONLY.", "source": "cc/client.js:6037", "paramsSource": "cc/client.js:5746", "valueSource": "cc/client.js:5748" },
+
+    { "domain": "goals", "name": "goal.create", "params": [{ "name": "sessionId", "type": "string", "required": true }, { "name": "objective", "type": "string (min 1)", "required": true }, { "name": "maxGoalRounds", "type": "int > 0", "required": false }], "returns": "{ ref: GoalRef }", "description": "Create a persisted goal. Mutation-only: every value is just a ref acknowledgement — current goal state travels exclusively on the 'goal' session projection.", "source": "cc/client.js:6038", "paramsSource": "cc/client.js:5763-5767", "valueSource": "cc/client.js:5769", "refSource": "cc/client.js:5757-5760", "noteSource": "cc/client.js:5751-5755" },
+    { "domain": "goals", "name": "goal.edit", "params": [{ "name": "sessionId", "type": "string", "required": true }, { "name": "ref", "type": "GoalRef", "required": true }, { "name": "objective", "type": "string (min 1)", "required": false }, { "name": "maxGoalRounds", "type": "int > 0", "required": false }], "returns": "{ ref: GoalRef }", "description": "Edit a goal; at least one of objective / maxGoalRounds is required.", "source": "cc/client.js:6039", "paramsSource": "cc/client.js:5770-5775", "valueSource": "cc/client.js:5777" },
+    { "domain": "goals", "name": "goal.pause", "params": [{ "name": "sessionId", "type": "string", "required": true }, { "name": "ref", "type": "GoalRef", "required": true }], "returns": "{ ref: GoalRef }", "description": "Pause an active goal.", "source": "cc/client.js:6040", "paramsSource": "cc/client.js:5778-5781", "valueSource": "cc/client.js:5783" },
+    { "domain": "goals", "name": "goal.resume", "params": [{ "name": "sessionId", "type": "string", "required": true }, { "name": "ref", "type": "GoalRef", "required": true }], "returns": "{ ref: GoalRef }", "description": "Resume a paused goal.", "source": "cc/client.js:6041", "paramsSource": "cc/client.js:5784-5787", "valueSource": "cc/client.js:5789" },
+    { "domain": "goals", "name": "goal.complete", "params": [{ "name": "sessionId", "type": "string", "required": true }, { "name": "ref", "type": "GoalRef", "required": true }], "returns": "{ ref: GoalRef }", "description": "Mark a goal complete.", "source": "cc/client.js:6042", "paramsSource": "cc/client.js:5790-5793", "valueSource": "cc/client.js:5795" },
+    { "domain": "goals", "name": "goal.clear", "params": [{ "name": "sessionId", "type": "string", "required": true }, { "name": "ref", "type": "GoalRef", "required": true }], "returns": "{ cleared: true }", "description": "Clear the goal entirely (the only non-ref value).", "source": "cc/client.js:6043", "paramsSource": "cc/client.js:5796-5799", "valueSource": "cc/client.js:5801" },
+
+    { "domain": "settings", "name": "settings.describe", "params": [], "returns": "{ writable: boolean, hasDocument: boolean, namespaces: SettingsNamespaceView[] }", "description": "Describe every exposed settings namespace with redacted secrets. LOOPBACK-ONLY (returns the full exposed configuration).", "source": "cc/client.js:6044", "paramsSource": "cc/client.js:5824", "valueSource": "cc/client.js:5826-5830", "viewSource": "cc/client.js:5814-5823" },
+    { "domain": "settings", "name": "settings.openDocument", "params": [], "returns": "{ opened: true }", "description": "Open the settings document on the host desktop. LOOPBACK-ONLY.", "source": "cc/client.js:6045", "paramsSource": "cc/client.js:5831", "valueSource": "cc/client.js:5833" },
+    { "domain": "settings", "name": "settings.update", "params": [{ "name": "ns", "type": "string (min 1)", "required": true }, { "name": "patch", "type": "Record<string, unknown>", "required": true }, { "name": "expectedRevision", "type": "number", "required": false }], "returns": "SettingsNamespaceView", "description": "Shallow-merge a patch into a namespace. optimistic-concurrency via expectedRevision; mismatch yields settings-conflict. LOOPBACK-ONLY.", "source": "cc/client.js:6046", "paramsSource": "cc/client.js:5834-5838", "valueSource": "cc/client.js:5840" },
+    { "domain": "settings", "name": "settings.replace", "params": [{ "name": "ns", "type": "string (min 1)", "required": true }, { "name": "section", "type": "Record<string, unknown>", "required": true }, { "name": "expectedRevision", "type": "number", "required": false }], "returns": "SettingsNamespaceView", "description": "Replace one section wholesale. LOOPBACK-ONLY.", "source": "cc/client.js:6047", "paramsSource": "cc/client.js:5841-5845", "valueSource": "cc/client.js:5863" },
+    { "domain": "settings", "name": "settings.mutate", "params": [{ "name": "ns", "type": "string (min 1)", "required": true }, { "name": "ops", "type": "SettingsPathOp[] = {op:'set',path:string[],value} | {op:'unset',path:string[]}", "required": true }, { "name": "expectedRevision", "type": "number", "required": false }], "returns": "SettingsNamespaceView", "description": "Apply path-addressed set/unset edits atomically. LOOPBACK-ONLY.", "source": "cc/client.js:6048", "paramsSource": "cc/client.js:5855-5859", "valueSource": "cc/client.js:5861", "opSource": "cc/client.js:5847-5854" },
+
+    { "domain": "credentials", "name": "credentials.describe", "params": [{ "name": "refs", "type": "string[] (<=64, POSIX env-var name pattern)", "required": true }], "returns": "{ credentials: Record<string, CredentialView> }", "description": "Probe which credential refs are configured and their source. LOOPBACK-ONLY — arbitrary env-var probing is reconnaissance.", "source": "cc/client.js:6049", "paramsSource": "cc/client.js:5880", "valueSource": "cc/client.js:5882", "viewSource": "cc/client.js:5875-5879" },
+    { "domain": "credentials", "name": "credentials.set", "params": [{ "name": "ref", "type": "string (env-var name pattern)", "required": true }, { "name": "value", "type": "string (min 1)", "required": true }], "returns": "{}", "description": "Write a secret into the host store. LOOPBACK-ONLY.", "source": "cc/client.js:6050", "paramsSource": "cc/client.js:5883-5886", "valueSource": "cc/client.js:5888" },
+    { "domain": "credentials", "name": "credentials.unset", "params": [{ "name": "ref", "type": "string (env-var name pattern)", "required": true }], "returns": "{}", "description": "Remove a stored secret. LOOPBACK-ONLY.", "source": "cc/client.js:6051", "paramsSource": "cc/client.js:5889", "valueSource": "cc/client.js:5891" },
+
+    { "domain": "llm", "name": "llm.providers", "params": [], "returns": "{ providers: ConfigurableProviderView[] }", "description": "List configurable LLM providers. Deliberately NOT loopback-gated — no endpoints or key state.", "source": "cc/client.js:6052", "paramsSource": "cc/client.js:5907", "valueSource": "cc/client.js:5909", "viewSource": "cc/client.js:5899-5906" },
+    { "domain": "llm", "name": "llm.models", "params": [], "returns": "{ groups: ModelProviderGroup[], failures: ModelCatalogFailure[] }", "description": "Global model catalog grouped by provider, with per-provider load failures.", "source": "cc/client.js:6053", "paramsSource": "cc/client.js:5910", "valueSource": "cc/client.js:5912-5915", "groupSource": "cc/client.js:5268-5272" },
+    { "domain": "llm", "name": "llm.discoverModels", "params": [{ "name": "settingsNs", "type": "string (min 1)", "required": true }, { "name": "provider", "type": "string (min 1)", "required": false }, { "name": "baseURL", "type": "string (min 1)", "required": false }, { "name": "api", "type": "string (min 1)", "required": false }, { "name": "apiKey", "type": "string (min 1)", "required": false }], "returns": "{ models: DiscoveredModelView[] }", "description": "Make the HOST issue a GET to a caller-chosen URL and report back models or an error. LOOPBACK-ONLY — it is an SSRF probe for anything the host can reach but the browser cannot.", "source": "cc/client.js:6054", "paramsSource": "cc/client.js:5923-5929", "valueSource": "cc/client.js:5931", "rationaleSource": "cc/index.js:491-495" }
+  ],
+
+  "remoteMethods": {
+    "comment": "SECOND wire surface. Generic Connection RPC on the same /api channel with SLASHED endpoints (POST /api/<ns>/<method>), dispatched through the TypeRT gateway. Envelope shape is identical to surface A. Verified from the controllers' generated remote maps; the goal endpoints are fixture-only.",
+    "transportSource": "cc/client.js:9858-9878",
+    "transportNote": "rpc.call(channel, endpoint, payload) mints its own rpcId, POSTs {type:'client-request',rpcId,method:endpoint,payload} to `${channel}/${endpoint}`, and returns result after verifying the rpcId echo.",
+    "endpointPattern": "^[A-Za-z0-9_$.-]+$ per slash-separated segment; empty, '.' and '..' segments rejected",
+    "endpointPatternSource": "cc/client.js:9852-9853, 9884-9887",
+    "sessionController": [
+      { "name": "fileReferences/list", "params": "positional: agentId, query, signal?", "returns": "RemoteResult<FileReferenceCandidate[]>", "source": "sc/typert.remote-client.d.ts:40" },
+      { "name": "session/attachment", "params": "SessionAttachmentRequest", "returns": "RemoteResult<SessionAttachmentValue>", "source": "sc/typert.remote-client.d.ts:41" },
+      { "name": "session/cancel", "params": "SessionCancelRequest", "returns": "RemoteResult<SessionCancelValue>", "source": "sc/typert.remote-client.d.ts:42" },
+      { "name": "session/canOpenWorkspacePath", "params": "none", "returns": "RemoteResult<boolean>", "source": "sc/typert.remote-client.d.ts:43" },
+      { "name": "session/control", "params": "signal?", "returns": "RemoteStreamHandle<SessionControlFrame, never> — STREAMING", "source": "sc/typert.remote-client.d.ts:44" },
+      { "name": "session/create", "params": "SessionCreateRequest", "returns": "RemoteResult<SessionCreateValue>", "source": "sc/typert.remote-client.d.ts:45" },
+      { "name": "session/follow", "params": "SessionFollowRequest, signal?", "returns": "RemoteStreamHandle<SessionFollowFrame, never> — STREAMING", "source": "sc/typert.remote-client.d.ts:46" },
+      { "name": "session/fork", "params": "SessionForkRequest", "returns": "RemoteResult<SessionForkValue>", "source": "sc/typert.remote-client.d.ts:47" },
+      { "name": "session/initializeDefaultModel", "params": "none", "returns": "RemoteResult<void>", "source": "sc/typert.remote-client.d.ts:48" },
+      { "name": "session/list", "params": "SessionListRequest, signal?", "returns": "RemoteResult<SessionListValue>", "source": "sc/typert.remote-client.d.ts:49" },
+      { "name": "session/modelCatalog", "params": "none", "returns": "RemoteResult<ModelCatalog>", "source": "sc/typert.remote-client.d.ts:50" },
+      { "name": "session/openWorkspacePath", "params": "SessionOpenWorkspacePathRequest, signal?", "returns": "RemoteResult<SessionOpenWorkspacePathValue>", "source": "sc/typert.remote-client.d.ts:51" },
+      { "name": "session/page", "params": "SessionPageRequest, signal?", "returns": "RemoteResult<SessionPage>", "source": "sc/typert.remote-client.d.ts:52" },
+      { "name": "session/projections", "params": "SessionProjectionsRequest, signal?", "returns": "RemoteResult<SessionProjectionsValue>", "source": "sc/typert.remote-client.d.ts:53" },
+      { "name": "session/prompt", "params": "SessionPromptRequest, signal?", "returns": "RemoteResult<SessionPromptValue>", "source": "sc/typert.remote-client.d.ts:54" },
+      { "name": "session/rename", "params": "SessionRenameRequest", "returns": "RemoteResult<SessionRenameValue>", "source": "sc/typert.remote-client.d.ts:55" },
+      { "name": "session/search", "params": "SessionSearchRequest, signal?", "returns": "RemoteResult<SessionSearchValue>", "source": "sc/typert.remote-client.d.ts:56" },
+      { "name": "session/selectModel", "params": "SessionSelectModelRequest", "returns": "RemoteResult<SessionSelectModelValue>", "source": "sc/typert.remote-client.d.ts:57" },
+      { "name": "session/updateQueue", "params": "SessionUpdateQueueRequest", "returns": "RemoteResult<SessionUpdateQueueValue>", "source": "sc/typert.remote-client.d.ts:58" },
+      { "name": "session/workspacePathApplications", "params": "{ path: string }, signal?", "returns": "RemoteResult<readonly SessionWorkspacePathApplication[]>", "source": "sc/typert.remote-client.d.ts:59" },
+      { "name": "skills/list", "params": "SkillListRequest, signal?", "returns": "RemoteResult<SkillListValue>", "source": "sc/typert.remote-client.d.ts:60" }
+    ],
+    "workspaceController": [
+      { "name": "directoryPicker/createDirectory", "params": "positional: path, name", "returns": "RemoteResult<string>", "source": "wc/typert.remote-client.d.ts:30" },
+      { "name": "directoryPicker/list", "params": "positional: path|undefined, signal?", "returns": "RemoteResult<DirectoryListing>", "source": "wc/typert.remote-client.d.ts:31" },
+      { "name": "directoryPicker/pick", "params": "signal?", "returns": "RemoteResult<string|null>", "source": "wc/typert.remote-client.d.ts:32" },
+      { "name": "workspace/archiveSession", "params": "WorkspaceArchiveSessionRequest", "returns": "RemoteResult<WorkspaceArchiveValue>", "source": "wc/typert.remote-client.d.ts:33" },
+      { "name": "workspace/create", "params": "WorkspaceCreateRequest", "returns": "RemoteResult<WorkspaceCreateValue>", "source": "wc/typert.remote-client.d.ts:34" },
+      { "name": "workspace/delete", "params": "WorkspaceDeleteRequest", "returns": "RemoteResult<WorkspaceDeleteValue>", "source": "wc/typert.remote-client.d.ts:35" },
+      { "name": "workspace/follow", "params": "signal?", "returns": "RemoteStreamHandle<WorkspaceFollowFrame, never> — STREAMING", "source": "wc/typert.remote-client.d.ts:36" },
+      { "name": "workspace/initializeDefault", "params": "signal?", "returns": "RemoteResult<WorkspaceValue|undefined>", "source": "wc/typert.remote-client.d.ts:37" },
+      { "name": "workspace/insertBefore", "params": "WorkspaceInsertBeforeRequest", "returns": "RemoteResult<WorkspaceOrderValue>", "source": "wc/typert.remote-client.d.ts:38" },
+      { "name": "workspace/insertSessionBefore", "params": "WorkspaceInsertSessionBeforeRequest", "returns": "RemoteResult<WorkspaceValue>", "source": "wc/typert.remote-client.d.ts:39" },
+      { "name": "workspace/pinSession", "params": "WorkspacePinSessionRequest", "returns": "RemoteResult<WorkspacePinValue>", "source": "wc/typert.remote-client.d.ts:40" },
+      { "name": "workspace/rename", "params": "WorkspaceRenameRequest", "returns": "RemoteResult<WorkspaceValue>", "source": "wc/typert.remote-client.d.ts:41" },
+      { "name": "workspace/unarchiveSession", "params": "WorkspaceUnarchiveSessionRequest", "returns": "RemoteResult<WorkspaceArchiveValue>", "source": "wc/typert.remote-client.d.ts:42" },
+      { "name": "workspace/unpinSession", "params": "WorkspaceUnpinSessionRequest", "returns": "RemoteResult<WorkspacePinValue>", "source": "wc/typert.remote-client.d.ts:43" }
+    ],
+    "goalsUnverified": [
+      { "name": "goals/create", "params": "{ args: { agentId, request?: { objective, maxGoalRounds? } } }", "source": "cc/client.js:9604", "confidence": "low", "note": "Appears ONLY inside the client-side fixture carrier. No server-side registration found in the downloaded packages." },
+      { "name": "goals/edit", "params": "{ args: { agentId, ref, request? } }", "source": "cc/client.js:9608", "confidence": "low" },
+      { "name": "goals/pause", "params": "{ args: { agentId, ref } }", "source": "cc/client.js:9609", "confidence": "low" },
+      { "name": "goals/resume", "params": "{ args: { agentId, ref } }", "source": "cc/client.js:9610", "confidence": "low" },
+      { "name": "goals/complete", "params": "{ args: { agentId, ref } }", "source": "cc/client.js:9611", "confidence": "low" },
+      { "name": "goals/clear", "params": "{ args: { agentId, ref } }", "source": "cc/client.js:9612", "confidence": "low" }
+    ]
+  },
+
+  "responseEndpoints": [
+    {
+      "domain": "approvals",
+      "name": "/api/respond (approval)",
+      "trigger": "a mux frame with type 'approval/requested'",
+      "params": "RpcResult<{ approvalId: string, outcome: 'allowed-once' | 'rejected' }>, sent as { type: 'client-response', rpcId: <the frame's rpcId>, result }",
+      "returns": "{ accepted: true } | { accepted: false, reason: 'not-pending' | 'bad-response' }",
+      "description": "Answer a tool-approval prompt. The rpcId is HOST-MINTED and stable while the approval is unanswered. A not-ok result resolves the request as cancelled.",
+      "source": "cc/client.js:5400-5410",
+      "payloadSource": "cc/client.js:5406-5410",
+      "receiptSource": "cc/client.js:5140-5143",
+      "transportSource": "cc/client.js:6291-6295",
+      "replaySource": "cc/client.js:7859-7863",
+      "resolvedOutcomeEnumSource": "cc/client.js:5517-5522"
+    },
+    {
+      "domain": "approvals",
+      "name": "/api/respond (question)",
+      "trigger": "a mux frame with type 'question/requested'",
+      "params": "RpcResult<QuestionResponse>, sent as { type: 'client-response', rpcId: <the frame's rpcId>, result } — payload shape UNVERIFIED",
+      "returns": "{ accepted: true } | { accepted: false, reason: 'not-pending' | 'bad-response' }",
+      "description": "Answer an ask-user question prompt. Result outcome maps to question/resolved outcome 'answered' when ok and 'cancelled' when not ok.",
+      "source": "cc/client.js:9585-9596",
+      "confidence": "low",
+      "note": "QuestionResponsePayload is exported as a type (cc/types/client/api.d.ts:1) but its zod schema is NOT in the bundled schema regions and no server implementation was available. Infer its field names from AskUserQuestionItemSchema (cc/client.js:5466-5480) at your own risk."
+    }
+  ],
+
+  "events": [
+    { "stream": "mux", "name": "session/event", "payload": [{ "name": "sessionId", "type": "string" }, { "name": "event", "type": "SessionEvent { type: string, seq: int>=0, time: number, data: unknown, sourceEventSeqs?: number[], surfaceOp?: unknown }" }, { "name": "view", "type": "ToolEventView?", "required": false }], "description": "One durable session journal event. The workhorse of the whole UI.", "source": "cc/client.js:5494-5499", "eventSource": "cc/client.js:5182-5189" },
+    { "stream": "mux", "name": "session/subscribed", "payload": [{ "name": "sessionId", "type": "string" }, { "name": "lastSeq", "type": "int" }], "description": "Confirms the session journal subscription and its current head seq — use it to detect a gap after reconnect.", "source": "cc/client.js:5500-5504" },
+    { "stream": "mux", "name": "approval/requested", "payload": [{ "name": "sessionId", "type": "string" }, { "name": "approvalId", "type": "string" }, { "name": "toolName", "type": "string" }, { "name": "callId", "type": "string", "required": false }, { "name": "reason", "type": "string", "required": false }], "description": "A tool needs human approval. ANSWERABLE: send a client-response to /api/respond using this frame's rpcId.", "source": "cc/client.js:5505-5512" },
+    { "stream": "mux", "name": "approval/resolved", "payload": [{ "name": "sessionId", "type": "string" }, { "name": "approvalId", "type": "string" }, { "name": "outcome", "type": "'allowed-once' | 'rejected' | 'cancelled' | 'unavailable'" }], "description": "An approval reached a terminal outcome (possibly decided by another client).", "source": "cc/client.js:5513-5523" },
+    { "stream": "mux", "name": "question/requested", "payload": [{ "name": "sessionId", "type": "string" }, { "name": "questions", "type": "AskUserQuestionItem[] (min 1)" }], "description": "The agent is asking the user questions. ANSWERABLE via /api/respond using this frame's rpcId.", "source": "cc/client.js:5524-5528", "itemSource": "cc/client.js:5466-5480" },
+    { "stream": "mux", "name": "question/resolved", "payload": [{ "name": "sessionId", "type": "string" }, { "name": "questionRpcId", "type": "string" }, { "name": "outcome", "type": "'answered' | 'cancelled'" }], "description": "A question prompt reached a terminal outcome.", "source": "cc/client.js:5529-5534" },
+    { "stream": "mux", "name": "session/queue", "payload": [{ "name": "sessionId", "type": "string" }, { "name": "items", "type": "{ id, placement: 'queued'|'steering'|'context', message: Message }[]" }], "description": "Full transient queue state for a session (not a delta).", "source": "cc/client.js:5535-5547", "messageSource": "cc/client.js:5482-5491" },
+    { "stream": "mux", "name": "session/projection", "payload": [{ "name": "sessionId", "type": "string" }, { "name": "key", "type": "string (min 1)" }, { "name": "value", "type": "unknown" }, { "name": "seq", "type": "int >= 0" }], "description": "One derived projection key changed. Key 'goal' carries the current goal state.", "source": "cc/client.js:5548-5554", "goalKeySource": "cc/client.js:5751-5755" },
+    { "stream": "mux", "name": "stream/error", "payload": [{ "name": "error", "type": "RpcError" }], "description": "Terminal stream failure. The pump breaks out of its loop on this and the socket is closed — reconnect.", "source": "cc/client.js:5555-5558", "breakSource": "cc/client.js:124" },
+
+    { "stream": "host", "name": "host/session-added", "payload": [{ "name": "sessionId", "type": "string" }, { "name": "blank", "type": "boolean" }, { "name": "parentSessionId", "type": "string", "required": false }, { "name": "origin", "type": "'subagent'", "required": false }, { "name": "cwd", "type": "string", "required": false }, { "name": "agentPreset", "type": "string", "required": false }], "description": "A session appeared.", "source": "cc/client.js:5562-5570" },
+    { "stream": "host", "name": "host/session-removed", "payload": [{ "name": "sessionId", "type": "string" }], "description": "A session disappeared.", "source": "cc/client.js:5571-5574" },
+    { "stream": "host", "name": "host/session-status", "payload": [{ "name": "sessionId", "type": "string" }, { "name": "running", "type": "boolean" }], "description": "A session started or stopped running.", "source": "cc/client.js:5575-5579" },
+    { "stream": "host", "name": "host/agent-error", "payload": [{ "name": "sessionId", "type": "string" }, { "name": "message", "type": "string" }], "description": "A session's agent failed with a human-readable message.", "source": "cc/client.js:5580-5584" },
+    { "stream": "host", "name": "host/workspace-changed", "payload": [{ "name": "workspace", "type": "WorkspaceView" }], "description": "A workspace was created, renamed or reordered.", "source": "cc/client.js:5585-5588", "viewSource": "cc/client.js:5419-5426" },
+    { "stream": "host", "name": "host/workspace-removed", "payload": [{ "name": "workspaceId", "type": "string" }], "description": "A workspace was deleted.", "source": "cc/client.js:5589-5592" },
+    { "stream": "host", "name": "host/archived-sessions-changed", "payload": [{ "name": "archivedSessionIds", "type": "string[]" }], "description": "The complete archive set changed.", "source": "cc/client.js:5593-5596" },
+    { "stream": "host", "name": "host/commands-changed", "payload": [], "description": "The slash-command roster changed; re-fetch command.list.", "source": "cc/client.js:5597" },
+    { "stream": "host", "name": "host/session-preset-changed", "payload": [{ "name": "sessionId", "type": "string" }, { "name": "agentPreset", "type": "string" }], "description": "A session's agent preset binding changed.", "source": "cc/client.js:5598-5602" },
+    { "stream": "host", "name": "host/settings-changed", "payload": [{ "name": "ns", "type": "string" }], "description": "A settings namespace changed on disk; re-fetch settings.describe.", "source": "cc/client.js:5603-5606" },
+    { "stream": "host", "name": "host/credentials-changed", "payload": [{ "name": "ref", "type": "string" }], "description": "One credential ref changed.", "source": "cc/client.js:5607-5610" },
+    { "stream": "host", "name": "host/models-changed", "payload": [], "description": "The model catalog changed; re-fetch session.models or llm.models.", "source": "cc/client.js:5611" },
+    { "stream": "host", "name": "stream/error", "payload": [{ "name": "error", "type": "RpcError" }], "description": "Terminal host-stream failure; the socket closes and must be reconnected.", "source": "cc/client.js:5612-5615" }
+  ],
+
+  "sharedValueTypes": [
+    { "name": "SessionSummary", "shape": "{ sessionId, updatedAt: number, running: boolean, blank: boolean, parentSessionId?, origin?: 'subagent', cwd?, agentPreset?, projections?: { asOfSeq: int>=-1, values: Record<string,unknown> } }", "source": "cc/client.js:5191-5201" },
+    { "name": "SessionEvent", "shape": "{ type: string, seq: int>=0, time: number, data: unknown, sourceEventSeqs?: number[], surfaceOp?: unknown } — strict envelope, WIDE data; unknown event types must fall through to a documented default", "source": "cc/client.js:5182-5189" },
+    { "name": "ToolEventView", "shape": "{ for: 'call'|'result', view: { card: string, ...loose } } — only the discriminant and the card tag are locked; the interior is a host-computed product", "source": "cc/client.js:5285-5291" },
+    { "name": "HistoryEntry", "shape": "{ event: SessionEvent, view?: ToolEventView }", "source": "cc/client.js:5293-5296" },
+    { "name": "WorkspaceView", "shape": "{ workspaceId, path, title, sessionIds: string[], createdAt: string, updatedAt: string } — note createdAt/updatedAt are ISO STRINGS, unlike every other timestamp on the wire", "source": "cc/client.js:5419-5426" },
+    { "name": "PromptContentPart", "shape": "{ type: 'text', text } | { type: 'image', mediaType: 'image/png'|'image/jpeg'|'image/webp'|'image/gif', data: base64, name? }", "source": "cc/client.js:5338-5346", "mediaTypeSource": "cc/client.js:5331-5336" },
+    { "name": "ImageAttachmentRef", "shape": "{ attachmentId, mediaType, bytes: int>0, width: int>0, height: int>0, name? }", "source": "cc/client.js:5363-5370" },
+    { "name": "ModelSelection", "shape": "{ provider, model, reasoningEffort? }", "source": "cc/client.js:5246-5250" },
+    { "name": "ModelProviderGroup", "shape": "{ id, name, models: ModelCatalogModel[] }", "source": "cc/client.js:5268-5272" },
+    { "name": "ModelCatalogModel", "shape": "{ id, name, description?, reasoning?: { efforts: {id,name,description?}[>=1], defaultEffort? } }", "source": "cc/client.js:5261-5266" },
+    { "name": "ModelCatalogFailure", "shape": "{ id, name, message }", "source": "cc/client.js:5274-5278" },
+    { "name": "CommandDescriptor", "shape": "{ name (min 1), description, input?: { hint } }", "source": "cc/client.js:5660-5664" },
+    { "name": "SkillEntry", "shape": "{ name (min 1), description, whenToUse?, modelInvocable: boolean }", "source": "cc/client.js:5687-5692" },
+    { "name": "AgentPresetEntry", "shape": "{ id (min 1), trust: 'system'|'user', isDefault: boolean, name?, description?, broken? }", "source": "cc/client.js:5703-5710" },
+    { "name": "GoalRef", "shape": "{ id: string, revision: int>0 }", "source": "cc/client.js:5757-5760" },
+    { "name": "SettingsNamespaceView", "shape": "{ ns (min 1), schema: unknown, value: unknown, base?, user?, applies: 'live'|'restart', secrets: { path: string[], set: boolean }[], revision: number }", "source": "cc/client.js:5814-5823", "secretSource": "cc/client.js:5809-5812" },
+    { "name": "CredentialView", "shape": "{ configured: boolean, source?, writable: boolean }", "source": "cc/client.js:5875-5879" },
+    { "name": "ConfigurableProviderView", "shape": "{ provider (min 1), displayName (min 1), settingsNs, settingsPath: string[], active: boolean, declared? }", "source": "cc/client.js:5899-5906" },
+    { "name": "DiscoveredModelView", "shape": "{ id (min 1), name?, contextWindow?: int>0, maxTokens?: int>0 }", "source": "cc/client.js:5917-5922" },
+    { "name": "SubagentListEntry", "shape": "{ kind:'child', id, mode:'one-shot', activity:'running'|'inactive', hasChildren, label? } | { kind:'child', id, mode:'continuable', activity, hasChildren, label } | { kind:'diagnostic', id, reason:'corrupt'|'unsupported'|'unavailable' }", "source": "cc/client.js:5936-5962" },
+    { "name": "DirectoryEntry", "shape": "{ name, path, hidden: boolean }", "source": "cc/client.js:5630-5634" },
+    { "name": "AskUserQuestionItem", "shape": "{ id, question, header?, detail?, options?: { label, description? }[], multiSelect?, intent?: { kind:'plan-review', approve } }", "source": "cc/client.js:5466-5480" },
+    { "name": "Message", "shape": "{ id (min 1), role: 'system'|'user'|'assistant', content: ContentBlock[], source: { kind: string, ...loose } }", "source": "cc/client.js:5482-5491" }
+  ],
+
+  "gaps": [
+    { "item": "job / terminal / account RPC domains", "status": "NOT FOUND", "evidence": "No string literal matching \"job.*\", \"terminal.*\" or \"account.*\" exists anywhere in the six downloaded packages. These domains do not exist in this wire contract." },
+    { "item": "QuestionResponsePayload schema", "status": "UNVERIFIED", "evidence": "Exported as a type (cc/types/client/api.d.ts:1) but its zod definition is absent from every bundled schema region and the server-side /api/respond pending table lives in @deepseek-ai/dsh-host-apiproxy, which was not downloaded." },
+    { "item": "Server-side /api/respond routing and the pending table", "status": "UNVERIFIED", "evidence": "cc/index.js:545 delegates every unmatched /api request to the apiProxy service; the pending-table implementation is in the undownloaded apiproxy package. Only the client contract and a fixture simulation (cc/client.js:9561-9597) were available." },
+    { "item": "goals/* generic RPC endpoints", "status": "UNVERIFIED", "evidence": "Found only in the client-side fixture carrier (cc/client.js:9604-9612). No server registration is present in the downloaded packages, and the payload envelope { args: {...} } is fixture-specific." },
+    { "item": "SSE vs WebSocket selection", "status": "VERIFIED but situational", "evidence": "AbstractApiClient reads the same two paths as SSE (cc/client.js:6162-6168); WebApiClient overrides with a real WebSocket upgrade (cc/client.js:9777-9782). A native client should use the WebSocket path." },
+    { "item": "SessionEvent.data contents", "status": "DELIBERATELY WIDE", "evidence": "cc/client.js:5186 declares data as unknown(); the durable core is merge-extensible and carries an unknown-type branch at the union level. Per-event data shapes are NOT in the connection package — they live in dsh-session/types and dsh-client-ui-chat, which expose only view types." },
+    { "item": "settings schema/value JSON shapes", "status": "DELIBERATELY WIDE", "evidence": "cc/client.js:5816-5817 declare schema and value as unknown(); the namespace schema is host-supplied at runtime." },
+    { "item": "Stream framing for session/control, session/follow, workspace/follow", "status": "UNVERIFIED", "evidence": "These are RemoteStreamHandle endpoints (sc/typert.remote-client.d.ts:44, :46; wc/typert.remote-client.d.ts:36). Their frame unions and wire framing live in the apiproxy/gateway packages, which were not downloaded." }
+  ]
+}

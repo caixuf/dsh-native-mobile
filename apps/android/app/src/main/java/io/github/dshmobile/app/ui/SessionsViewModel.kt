@@ -1,0 +1,97 @@
+package io.github.dshmobile.app.ui
+
+import androidx.lifecycle.ViewModel
+import androidx.lifecycle.viewModelScope
+import io.github.dshmobile.app.net.DshConnection
+import io.github.dshmobile.app.render.JsonRender
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.launch
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.put
+
+data class SessionsUiState(
+    val rows: List<SessionRow> = emptyList(),
+    val loading: Boolean = true,
+    val error: String? = null,
+    val query: String = "",
+)
+
+class SessionsViewModel(private val conn: DshConnection?) : ViewModel() {
+
+    private val _state = MutableStateFlow(SessionsUiState())
+    val state: StateFlow<SessionsUiState> = _state.asStateFlow()
+
+    fun load() {
+        val c = conn
+        if (c == null) {
+            _state.update { it.copy(loading = false, error = "尚未连接到任何电脑") }
+            return
+        }
+        _state.update { it.copy(loading = true, error = null) }
+        viewModelScope.launch {
+            c.call("session.list", JsonObject(emptyMap())).onSuccess { value ->
+                val obj = value.jsonObject
+                val items = JsonRender.arr(obj, "items").orEmpty()
+                val rows = items.mapNotNull { el ->
+                    val item = el as? JsonObject ?: return@mapNotNull null
+                    val id = JsonRender.str(item, "sessionId", "id") ?: return@mapNotNull null
+                    SessionRow(
+                        sessionId = id,
+                        title = JsonRender.str(item, "title") ?: "未命名会话",
+                        preview = JsonRender.str(item, "preview", "lastMessage", "summary") ?: "",
+                        updatedAt = JsonRender.long(item, "updatedAt", "createdAt", "time") ?: 0L,
+                        running = JsonRender.str(item, "status")?.contains("run", true) == true,
+                    )
+                }
+                _state.update { it.copy(rows = rows, loading = false) }
+            }.onFailure { error ->
+                _state.update { it.copy(loading = false, error = error.message) }
+            }
+        }
+    }
+
+    fun search(query: String) {
+        _state.update { it.copy(query = query) }
+        val q = query.trim()
+        if (q.isEmpty()) {
+            load()
+            return
+        }
+        val c = conn ?: return
+        viewModelScope.launch {
+            c.call("session.search", buildJsonObject { put("query", q) }).onSuccess { value ->
+                val items = JsonRender.arr(value.jsonObject, "items").orEmpty()
+                val rows = items.mapNotNull { el ->
+                    val item = el as? JsonObject ?: return@mapNotNull null
+                    val id = JsonRender.str(item, "sessionId", "id") ?: return@mapNotNull null
+                    SessionRow(
+                        sessionId = id,
+                        title = JsonRender.str(item, "title") ?: "搜索结果",
+                        preview = JsonRender.str(item, "snippet", "preview") ?: "",
+                        updatedAt = JsonRender.long(item, "updatedAt") ?: 0L,
+                        running = false,
+                    )
+                }
+                _state.update { it.copy(rows = rows, loading = false) }
+            }.onFailure { error -> _state.update { it.copy(error = error.message) } }
+        }
+    }
+
+    fun create(onCreated: (SessionRow) -> Unit) {
+        val c = conn ?: return
+        viewModelScope.launch {
+            c.call("session.create", JsonObject(emptyMap())).onSuccess { value ->
+                val id = JsonRender.str(value.jsonObject, "sessionId") ?: return@onSuccess
+                val row = SessionRow(id, "新会话", "", System.currentTimeMillis(), false)
+                _state.update { it.copy(rows = listOf(row) + it.rows) }
+                onCreated(row)
+            }.onFailure { error -> _state.update { it.copy(error = error.message) } }
+        }
+    }
+}
