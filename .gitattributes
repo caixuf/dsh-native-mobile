@@ -1,0 +1,5 @@
+# 统一 LF：DSH 自己写的文件一律是纯 LF 无 BOM，混进 CRLF 会让 diff 失真。
+* text=auto eol=lf
+
+*.jar binary
+*.apk binary
