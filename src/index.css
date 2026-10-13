@@ -1,0 +1,108 @@
+@import "tailwindcss";
+
+@layer base {
+  :root {
+    --color-primary: #3964fe;
+    --color-primary-active: #2b4ec9;
+    --color-primary-container: #edf2ff;
+    --color-bg-system: #f2f2f7;
+    --color-surface-card: #ffffff;
+    --color-surface-secondary: #f9f9fb;
+    --color-border-subtle: rgba(60, 60, 67, 0.12);
+    --color-border-hairline: rgba(60, 60, 67, 0.08);
+    --color-text-main: #000000;
+    --color-text-body: #1c1c1e;
+    --color-text-secondary: #8e8e93;
+    --color-text-tertiary: #aeaeb2;
+    --color-tool: #8b5cf6;
+    --color-success: #34c759;
+    --color-danger: #ff3b30;
+    --color-warning: #ff9500;
+  }
+
+  * {
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  html, body {
+    height: 100%;
+    margin: 0;
+    padding: 0;
+    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text", "Helvetica Neue", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    background-color: var(--color-bg-system);
+    color: var(--color-text-body);
+    overscroll-behavior-y: none;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  /* Custom iOS-like slim scrollbar */
+  ::-webkit-scrollbar {
+    width: 4px;
+    height: 4px;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: rgba(0, 0, 0, 0.16);
+    border-radius: 9999px;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: rgba(0, 0, 0, 0.28);
+  }
+}
+
+/* iOS frosted glass blur effects */
+.ios-glass {
+  background: rgba(255, 255, 255, 0.85);
+  backdrop-filter: blur(24px) saturate(180%);
+  -webkit-backdrop-filter: blur(24px) saturate(180%);
+}
+
+.ios-glass-card {
+  background: rgba(255, 255, 255, 0.95);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+}
+
+.ios-glass-dark {
+  background: rgba(28, 28, 30, 0.82);
+  backdrop-filter: blur(24px) saturate(180%);
+  -webkit-backdrop-filter: blur(24px) saturate(180%);
+}
+
+/* iOS spring press feedback */
+.ios-spring-tap {
+  transition: transform 0.16s cubic-bezier(0.34, 1.56, 0.64, 1), opacity 0.16s ease;
+}
+.ios-spring-tap:active {
+  transform: scale(0.97);
+  opacity: 0.88;
+}
+
+/* Animations for pulses & waves */
+@keyframes breathing {
+  0%, 100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.55;
+    transform: scale(1.2);
+  }
+}
+
+.animate-breathing {
+  animation: breathing 2.4s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+}
+
+@keyframes voiceWave {
+  0%, 100% { height: 6px; }
+  50% { height: 32px; }
+}
+
+.voice-bar {
+  animation: voiceWave 1s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+}

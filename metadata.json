@@ -1,0 +1,6 @@
+{
+  "name": "DSH Native Mobile Remote",
+  "description": "Native mobile companion client for DeepSeek Harness (DSH). Remote execution, session management, real-time tool tracking, and desktop device pairing.",
+  "permissions": [],
+  "capabilities": []
+}
