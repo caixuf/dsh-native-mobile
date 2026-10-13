@@ -57,6 +57,31 @@ const log = createLogger(join(tmpdir(), `dsh-mgw-test-${randomUUID()}.log`), {
 const calls = [];
 const privilegedLeak = [];
 
+/**
+ * 官方载体里被「空信任表」钉在回环的那批方法 —— **硬编码基线，故意不从被测代码导入**。
+ *
+ * 如果这里改成读 `PRIVILEGED_METHODS`，就会出现「测试依赖被测对象」的循环：
+ * 常量被改坏时桩也跟着变，泄漏检测随之失效。突变测试正是靠这份独立基线
+ * 才能发现「清空名单后测试仍全绿」的假绿。
+ */
+const PRIVILEGED_BASELINE = [
+  'settings.describe',
+  'settings.update',
+  'settings.replace',
+  'settings.mutate',
+  'settings.openDocument',
+  'credentials.describe',
+  'credentials.set',
+  'credentials.unset',
+  'agentPreset.read',
+  'agentPreset.copy',
+  'agentPreset.openDocument',
+  'agentPreset.remove',
+  'host.pickDirectory',
+  'host.openPath',
+  'llm.discoverModels',
+];
+
 /** 模拟 `ctx.connection.createSharedFetchHandler('/api')`。 */
 async function fakeApiFetch(request) {
   const url = new URL(request.url);
@@ -65,7 +90,8 @@ async function fakeApiFetch(request) {
   calls.push({ method, body });
 
   // 特权方法在官方载体里靠「空信任表」钉在回环；这里如实复现：只有回环能到。
-  if (PRIVILEGED_METHODS.includes(method)) {
+  // 用独立基线判断，而不是被测的 PRIVILEGED_METHODS。
+  if (PRIVILEGED_BASELINE.includes(method)) {
     privilegedLeak.push(method);
     return Response.json(
       { type: 'server-response', result: { ok: true, value: { shouldNotHappen: true } } },
@@ -201,30 +227,79 @@ check(
   prefixRoutes.map((r) => r.path).join(', '),
 );
 
+// 桩自身也要被验证：如果 dispatch 写错了，后面所有断言都会失去意义。
+// 这组用假路由直接检验权威语义的三条要点（见 matchesRoute 上方注释）。
+{
+  const fakeExact = { kind: 'exact', path: '/x/y', tag: 'exact' };
+  const fakeShort = { kind: 'prefix', path: '/x', tag: 'short' };
+  const fakeLong = { kind: 'prefix', path: '/x/y', tag: 'long' };
+  const table = [fakeShort, fakeExact, fakeLong];
+
+  check('桩语义: exact 优先于 prefix', dispatch(table, '/x/y')?.tag === 'exact');
+  check('桩语义: 最长前缀胜出', dispatch(table, '/x/y/z')?.tag === 'long');
+  check('桩语义: 短前缀仍可命中', dispatch(table, '/x/other')?.tag === 'short');
+  check('桩语义: 无关路径不命中', dispatch(table, '/nope') === undefined);
+  // 这一条直接对应那次事故：带尾斜杠的 prefix 只能精确匹配。
+  const trailing = { kind: 'prefix', path: '/t/' };
+  check('桩语义: 带尾斜杠的 prefix 只精确匹配', dispatch([trailing], '/t/deep') === undefined);
+  check('桩语义: 带尾斜杠的 prefix 精确相等仍命中', dispatch([trailing], '/t/')?.path === '/t/');
+}
+
 /**
- * 复刻 DSH `webServer.register` 的真实匹配语义。
+ * 复刻 DSH `webServer.match()` 的真实语义。
  *
- * 这段是本次最大的教训：原来的桩写成宽松的 `pathname.startsWith(r.path)`，
- * 比现实更宽松，于是放过了「prefix path 带尾斜杠」这个 bug ——
- * 18 项断言全绿，真机上一个路由都命中不了。
+ * 逐行对照权威实现 `@deepseek-ai/dsh-host-webserver/lib/index.js:322-332`
+ * （从 app.asar 抠出，原文）：
  *
- * 由实测反推的规则（对照能正常工作的 dsh-bot-gateway）：
- *   path='/bot-gateway'    →  /bot-gateway       命中
- *                             /bot-gateway/      命中
- *                             /bot-gateway/anything 命中
- *   path='/mobile-gateway/'→  /mobile-gateway/     命中（精确相等）
- *                             /mobile-gateway/health **不命中**
- * 即：exact 相等，或 pathname 以 `path + '/'` 开头。带尾斜杠会让后半条永远为假。
+ *     /** Longest-prefix-wins over the prefix table after an exact-table miss. *\/
+ *     match(pathname) {
+ *       const exact = this.exact.get(pathname);
+ *       if (exact !== void 0) return exact;
+ *       let best;
+ *       for (const [prefix, route] of this.prefixes) {
+ *         if (pathname !== prefix && !pathname.startsWith(`${prefix}/`)) continue;
+ *         if (best === void 0 || prefix.length > best.path.length) best = route;
+ *       }
+ *       return best;
+ *     }
+ *
+ * 三条要点，缺一不可：
+ *   1. **exact 优先于 prefix**（先查 exact 表）。
+ *   2. 匹配条件是 `pathname === prefix || pathname.startsWith(prefix + '/')`
+ *      —— 这就是「prefix path 带尾斜杠则子路径永不命中」的权威证据。
+ *   3. **longest-prefix-wins**：多条 prefix 命中时取最长者。
+ *
+ * 本插件的旧桩只写了裸 `startsWith(path)`，比现实宽松，因而放过了那次事故。
  */
 function matchesRoute(route, pathname) {
   if (route.kind === 'exact') return route.path === pathname;
   return pathname === route.path || pathname.startsWith(`${route.path}/`);
 }
 
+/** 与 match() 等价的派发：exact 优先，其次 prefix 中最长者胜出。 */
+function dispatch(routes, pathname) {
+  const exact = routes.find((r) => r.kind === 'exact' && r.path === pathname);
+  if (exact !== undefined) return exact;
+  let best;
+  for (const route of routes) {
+    if (route.kind !== 'prefix') continue;
+    if (!matchesRoute(route, pathname)) continue;
+    if (best === undefined || route.path.length > best.path.length) best = route;
+  }
+  return best;
+}
+
 const server = http.createServer((req, res) => {
   const pathname = (req.url ?? '/').split('?')[0];
-  const hit = routes.find((r) => matchesRoute(r, pathname));
-  if (!hit) return sendError(res, 404, 'not_found', `no route for ${pathname}`);
+  const hit = dispatch(routes, pathname);
+  if (!hit) {
+    // 复刻宿主的兜底行为：**空响应体** 404。
+    // 这一点很重要——实测确认未命中时 body 长度为 0，而插件自己的 404 会带 JSON。
+    // 桩如果在这里返回 JSON，就会掩盖「路由没命中」这类故障（正是本次事故的形态）。
+    res.writeHead(404);
+    res.end();
+    return;
+  }
   void hit.handler(req, res);
 });
 server.on('upgrade', (req, socket, head) => {
@@ -236,8 +311,26 @@ server.on('upgrade', (req, socket, head) => {
   }
   handler(req, socket, head);
 });
-await new Promise((r) => server.listen(0, '127.0.0.1', r));
-const base = `http://127.0.0.1:${server.address().port}`;
+// 绑 0.0.0.0 而不是 127.0.0.1：这样才有机会从**非回环**来源发起请求，
+// 从而真正验证管理面的回环闸门。只绑回环的话，remoteAddress 永远是 127.0.0.1，
+// 那条断言就只是自说自话（这正是本次审计发现的假绿之一）。
+await new Promise((r) => server.listen(0, '0.0.0.0', r));
+const port = server.address().port;
+const base = `http://127.0.0.1:${port}`;
+
+// 找一个非回环的本机地址，用来模拟「局域网/公网来的请求」。
+const os = await import('node:os');
+function findNonLoopbackIPv4() {
+  for (const list of Object.values(os.networkInterfaces())) {
+    for (const ni of list ?? []) {
+      if (ni.family === 'IPv4' && !ni.internal) return ni.address;
+    }
+  }
+  return null;
+}
+const lanIp = findNonLoopbackIPv4();
+const lanBase = lanIp ? `http://${lanIp}:${port}` : null;
+console.log(`  测试服务器: 0.0.0.0:${port}  回环=${base}  非回环=${lanBase ?? '(无可用网卡)'}`);
 
 async function api(method, { token, body } = {}) {
   const res = await fetch(`${base}/mobile-gateway/api/${method}`, {
@@ -321,6 +414,34 @@ check('拒绝时没有触达宿主', privilegedLeak.length === before);
 const creds = await api('credentials.set', { token });
 check('credentials.set 被拒绝(403)', creds.status === 403, `status=${creds.status}`);
 
+// 🔴 两道闸必须**各自**被覆盖。
+// 突变测试发现：清空 PRIVILEGED_METHODS 后测试仍全绿，因为这些方法同时被
+// PRIVILEGED_PREFIXES 的前缀规则拦下 —— 也就是说那张精确名单此前从未被真正测到。
+// 这里专门挑「只可能由精确名单拦住」的方法：它们不在任何前缀之下。
+const exactOnly = ['host.pickDirectory', 'host.openPath', 'llm.discoverModels'];
+for (const method of exactOnly) {
+  const res = await api(method, { token });
+  check(`${method} 被精确名单拒绝(403)`, res.status === 403, `status=${res.status}`);
+}
+// 反向对照：一个普通方法必须能过，证明闸门不是「一刀切全拒」。
+const allowed = await api('session.list', { token });
+check('普通方法未被闸门误伤', allowed.status === 200, `status=${allowed.status}`);
+
+// 前缀闸门也要**独立**覆盖：挑那些「不在精确名单里、只能靠前缀拦住」的方法。
+// 突变测试发现：清空 PRIVILEGED_PREFIXES 时测试曾全绿，因为 settings.*/credentials.*
+// 同时也在精确名单里 —— 两道闸互为掩护。这几个方法只在精确名单之外，
+// 因此只有前缀规则能拦住它们。
+const prefixOnly = [
+  'settings.openDocument',
+  'credentials.describe',
+  'pluginManager.install',
+  'agentPreset.copy',
+].filter((m) => !PRIVILEGED_METHODS.includes(m));
+for (const method of prefixOnly) {
+  const res = await api(method, { token });
+  check(`${method} 被前缀闸门拒绝(403)`, res.status === 403, `status=${res.status}`);
+}
+
 console.log('\n[5] 事件流');
 async function readFrames(path, token, expected) {
   const ws = new WebSocket(base.replace('http', 'ws') + path, { headers: { authorization: `Bearer ${token}` } });
@@ -375,7 +496,82 @@ console.log('\n[8] 管理面回环闸门');
 const manageRemote = await fetch(`${base}/mobile-gateway/manage/api/state`, {
   headers: { 'x-forwarded-for': '8.8.8.8' },
 });
-check('管理面只应答回环(本进程是回环所以 200)', manageRemote.status === 200, `status=${manageRemote.status}`);
+check('伪造 XFF 头不影响回环判定', manageRemote.status === 200, `status=${manageRemote.status}`);
+
+// 🔴 真正验证闸门：从**非回环**地址访问，必须被拒。
+// 这一条此前是假绿 —— 服务器只绑 127.0.0.1，remoteAddress 永远是回环，
+// 断言无论如何都会通过。管理面是铸配对码的入口（完全控制凭据的种子），
+// 它挡不住非回环就等于把配对权交给了整个局域网。
+if (lanBase) {
+  let lanStatus = null;
+  try {
+    const res = await fetch(`${lanBase}/mobile-gateway/manage/api/state`);
+    lanStatus = res.status;
+  } catch (error) {
+    lanStatus = `ERR:${error.message}`;
+  }
+  check(
+    '非回环来源访问管理面被拒(403)',
+    lanStatus === 403,
+    `status=${lanStatus}（来源 ${lanIp}）`,
+  );
+
+  // 非回环也必须拿不到配对码 —— 这才是闸门真正的意义。
+  let mintStatus = null;
+  try {
+    const res = await fetch(`${lanBase}/mobile-gateway/manage/api/mint`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: '{}',
+    });
+    mintStatus = res.status;
+  } catch (error) {
+    mintStatus = `ERR:${error.message}`;
+  }
+  check('非回环来源无法铸配对码(403)', mintStatus === 403, `status=${mintStatus}`);
+
+  // 但**公开的配对端点**在非回环下必须可用 —— 否则手机根本没法配对。
+  // 这是「闸门只挡管理面，不挡配对面」的边界验证。
+  let pairStatus = null;
+  try {
+    const res = await fetch(`${lanBase}/mobile-gateway/pair`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ code: 'dshm1.INVALID-CODE-XXXX-YYYY' }),
+    });
+    pairStatus = res.status;
+  } catch (error) {
+    pairStatus = `ERR:${error.message}`;
+  }
+  check(
+    '非回环仍可访问配对端点(应 403 码不匹配而非被闸门拦)',
+    pairStatus === 403 || pairStatus === 404,
+    `status=${pairStatus}`,
+  );
+} else {
+  console.log('  （无可用非回环网卡，跳过非回环验证）');
+}
+
+// ---- 9. 路由命中回归：防「宿主兜底 404」这种静默故障 -------------------
+// 本次事故的形态：路由注册语句写错（prefix path 带尾斜杠），所有子路径都落到
+// 宿主兜底 404。它的特征是**响应体为空**，与插件自己的 404（带 JSON error）不同。
+// 这一组断言把「插件确实应答了」和「宿主替它应答了」区分开。
+console.log('\n[9] 路由命中回归（区分宿主兜底与插件应答）');
+for (const [label, path, method] of [
+  ['health', '/mobile-gateway/health', 'GET'],
+  ['pair（无码应被插件拒绝，不是兜底）', '/mobile-gateway/pair', 'POST'],
+  ['未知子路径应被插件应答', '/mobile-gateway/nope', 'GET'],
+]) {
+  const res = await fetch(`${base}${path}`, {
+    method,
+    ...(method === 'POST'
+      ? { headers: { 'content-type': 'application/json' }, body: '{}' }
+      : {}),
+  });
+  const text = await res.text();
+  const pluginAnswered = text.length > 0;
+  check(`${label}：由插件应答（非宿主兜底）`, pluginAnswered, `status=${res.status} bodyLen=${text.length}`);
+}
 
 await bridge.dispose();
 await store.flush();
