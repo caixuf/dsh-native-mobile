@@ -148,7 +148,13 @@ async function start(ctx, config, log, dataDir) {
     () =>
       webServer.register({
         kind: 'prefix',
-        path: '/mobile-gateway/',
+        // 🔴 path **不能带尾部斜杠**。
+        // 写成 '/mobile-gateway/' 时 DSH 只匹配这一个精确字符串，
+        // /mobile-gateway/health 会直接落到宿主兜底 404（空响应体），
+        // 表现为「路由明明注册成功却全部 404」，且日志里毫无异常。
+        // 对照本机能正常工作的 dsh-bot-gateway：它注册的是 '/bot-gateway'，
+        // 于是 /bot-gateway/anything 也能命中（实测确认）。
+        path: '/mobile-gateway',
         async handler(req, res) {
           const pathname = (req.url ?? '/').split('?')[0];
           try {
@@ -172,40 +178,40 @@ async function start(ctx, config, log, dataDir) {
               });
               if (!result.ok) {
                 sendError(
-                res,
-                result.reason === 'no_active_code' ? 404 : 403,
-                result.reason,
-                pairErrorText(result.reason),
-              );
-              log.warn('pairing rejected', { reason: result.reason, remote: req.socket?.remoteAddress });
+                  res,
+                  result.reason === 'no_active_code' ? 404 : 403,
+                  result.reason,
+                  pairErrorText(result.reason),
+                );
+                log.warn('pairing rejected', { reason: result.reason, remote: req.socket?.remoteAddress });
+                return;
+              }
+              log.info('device paired', { deviceId: result.device.id, name: result.device.name });
+              sendJson(res, 200, {
+                device: result.device,
+                token: result.token,
+                instance,
+                apiPrefix: API_PREFIX,
+                events: { mux: '/mobile-gateway/events.mux', host: '/mobile-gateway/events.host' },
+              });
               return;
             }
-            log.info('device paired', { deviceId: result.device.id, name: result.device.name });
-            sendJson(res, 200, {
-              device: result.device,
-              token: result.token,
-              instance,
-              apiPrefix: API_PREFIX,
-              events: { mux: '/mobile-gateway/events.mux', host: '/mobile-gateway/events.host' },
-            });
-            return;
+
+            if (pathname.startsWith(API_PREFIX)) {
+              await bridge.handleApi(req, res, pathname.slice(API_PREFIX.length - 1));
+              return;
+            }
+
+            if (await handleManage(req, res, pathname)) return;
+
+            sendError(res, 404, 'not_found', `no mobile-gateway route for ${pathname}`);
+          } catch (error) {
+            const status = error?.statusCode ?? 500;
+            log.error('http route failed', { pathname, error: String(error?.message ?? error) });
+            sendError(res, status, status === 500 ? 'internal_error' : 'bad_request', String(error?.message ?? error));
           }
-
-          if (pathname.startsWith(API_PREFIX)) {
-            await bridge.handleApi(req, res, pathname.slice(API_PREFIX.length - 1));
-            return;
-          }
-
-          if (await handleManage(req, res, pathname)) return;
-
-          sendError(res, 404, 'not_found', `no mobile-gateway route for ${pathname}`);
-        } catch (error) {
-          const status = error?.statusCode ?? 500;
-          log.error('http route failed', { pathname, error: String(error?.message ?? error) });
-          sendError(res, status, status === 500 ? 'internal_error' : 'bad_request', String(error?.message ?? error));
-        }
-      },
-    }),
+        },
+      }),
   );
 
   // ---- 两条下行事件流 -----------------------------------------------------
@@ -230,10 +236,10 @@ async function start(ctx, config, log, dataDir) {
     devices: store.list().length,
   });
   await log.flush();
-
-  await bridge.dispose();
-  await store.flush();
-  log.info('mobile gateway stopped');
+  // 注意：这里**不要**再跟 bridge.dispose() / store.flush()。
+  // 那三行原本属于 apply 的 disposer 函数体，删 disposer 时若把函数体留在
+  // start() 末尾，就会出现「刚 ready 就 stopped」——路由注册完立刻被自己拆掉，
+  // 表现为健康检查恒 404，而日志两行都是 info，看着像正常启停。
 }
 
 function pairErrorText(reason) {

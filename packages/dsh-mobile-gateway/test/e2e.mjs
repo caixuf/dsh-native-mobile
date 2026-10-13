@@ -119,7 +119,8 @@ const fakeCtx = {
 
 // ---- 真实网关 -----------------------------------------------------------
 
-const store = new DeviceStore(join(tmpdir(), `dsh-mgw-devices-${randomUUID()}.json`), log);
+const testDataDir = join(tmpdir(), `dsh-mgw-data-${randomUUID()}`);
+const store = new DeviceStore(join(testDataDir, 'devices.json'), log);
 await store.load();
 
 const config = {
@@ -131,43 +132,98 @@ const config = {
 };
 
 const bridge = createBridge({ ctx: fakeCtx, store, log, config });
-const manage = createManageApi({ store, log, config, instance: { name: 'test-host' }, gatewayVersion: '0.1.0' });
 
-const API_PREFIX = '/mobile-gateway/api/';
+// ---- 用**真实插件**注册路由，而不是另抄一份 ------------------------------
+//
+// 这是本次最重要的测试改造。旧版在这里手写了一张路由表，等于把插件的注册语句
+// 复制了一遍 —— 于是插件里 `path: '/mobile-gateway/'` 这种错误永远不会被发现，
+// 因为测试测的是我抄的那份（还是用更宽松的匹配规则）。
+//
+// 现在改成：调用插件的 apply()，把它注册的路由原样捕获下来，
+// 再按 DSH 的真实匹配语义派发。注册语句本身因此成为被测对象。
+
 const routes = [];
-function route(kind, path, handler) {
-  routes.push({ kind, path, handler });
-}
-
-route('exact', '/mobile-gateway/pair', async (req, res) => {
-  const body = await readJsonBody(req);
-  const result = await store.redeem(body.code, {
-    ttlMs: config.tokenTtlMs,
-    deviceName: body.deviceName,
-    platform: body.platform,
-  });
-  if (!result.ok) return sendError(res, 403, result.reason, 'nope');
-  sendJson(res, 200, { device: result.device, token: result.token, instance: { name: 'test-host' } });
-});
-route('prefix', '/mobile-gateway/api/', async (req, res) => {
-  const path = (req.url ?? '/').split('?')[0];
-  await bridge.handleApi(req, res, path.slice(API_PREFIX.length - 1));
-});
-route('prefix', '/mobile-gateway/', async (req, res) => {
-  const pathname = (req.url ?? '/').split('?')[0];
-  if (await manage(req, res, pathname)) return;
-  sendError(res, 404, 'not_found', 'no route');
-});
 const upgrades = new Map();
-for (const endpoint of ['/api/events.mux', '/api/events.host']) {
-  upgrades.set(endpoint.replace('/api/', '/mobile-gateway/'), (req, socket, head) =>
-    bridge.handleEventsUpgrade(req, socket, head, endpoint),
-  );
+
+/** 假 webServer：只记录插件注册了什么，不实现真实网络。 */
+const fakeWebServer = {
+  register(route) {
+    routes.push(route);
+    return () => {};
+  },
+  registerUpgrade(route) {
+    upgrades.set(route.path, route.handler);
+    return () => {};
+  },
+};
+
+/** 假 ctx：提供 inject / effect / get 与三个宿主服务。 */
+const pendingStarts = [];
+const fakePluginCtx = {
+  ...fakeCtx,
+  webServer: fakeWebServer,
+  inject(names, callback) {
+    // 真实语义：服务就绪后执行回调，参数是子 fiber。
+    // ⚠️ apply() 是**同步**返回的，回调却可能是异步的 —— 必须把 promise 收集起来
+    // 让测试 await，否则会在路由注册完成前就开始发请求（旧版就踩过这个竞态）。
+    pendingStarts.push(Promise.resolve(callback(this)));
+    return () => {};
+  },
+  effect(factory) {
+    factory();
+    return () => {};
+  },
+  get(name) {
+    return name === 'profileContext' ? { id: 'test', name: 'test-profile', home: '/tmp' } : undefined;
+  },
+};
+
+const gateway = await import('../index.mjs');
+gateway.apply(fakePluginCtx, {
+  enabled: true,
+  pairingTtlMs: 60_000,
+  tokenTtlMs: 3_600_000,
+  publicBaseUrl: '',
+  logLevel: 'error',
+  dataDir: testDataDir,
+});
+// 等插件把路由注册完，再开始断言。
+await Promise.all(pendingStarts);
+// 插件内部是异步注册（effect 里同步 register，但 start 是 async），让出一轮事件循环。
+await new Promise((r) => setTimeout(r, 50));
+
+// 插件的路由**必须**被注册，且 prefix 的 path 不能带尾斜杠。
+check('插件注册了 HTTP 路由', routes.length > 0, `routes=${routes.length}`);
+const prefixRoutes = routes.filter((r) => r.kind === 'prefix');
+check(
+  'prefix 路由的 path 不带尾部斜杠（否则子路径永远命中不了）',
+  prefixRoutes.every((r) => !r.path.endsWith('/')),
+  prefixRoutes.map((r) => r.path).join(', '),
+);
+
+/**
+ * 复刻 DSH `webServer.register` 的真实匹配语义。
+ *
+ * 这段是本次最大的教训：原来的桩写成宽松的 `pathname.startsWith(r.path)`，
+ * 比现实更宽松，于是放过了「prefix path 带尾斜杠」这个 bug ——
+ * 18 项断言全绿，真机上一个路由都命中不了。
+ *
+ * 由实测反推的规则（对照能正常工作的 dsh-bot-gateway）：
+ *   path='/bot-gateway'    →  /bot-gateway       命中
+ *                             /bot-gateway/      命中
+ *                             /bot-gateway/anything 命中
+ *   path='/mobile-gateway/'→  /mobile-gateway/     命中（精确相等）
+ *                             /mobile-gateway/health **不命中**
+ * 即：exact 相等，或 pathname 以 `path + '/'` 开头。带尾斜杠会让后半条永远为假。
+ */
+function matchesRoute(route, pathname) {
+  if (route.kind === 'exact') return route.path === pathname;
+  return pathname === route.path || pathname.startsWith(`${route.path}/`);
 }
 
 const server = http.createServer((req, res) => {
   const pathname = (req.url ?? '/').split('?')[0];
-  const hit = routes.find((r) => (r.kind === 'exact' ? r.path === pathname : pathname.startsWith(r.path)));
+  const hit = routes.find((r) => matchesRoute(r, pathname));
   if (!hit) return sendError(res, 404, 'not_found', `no route for ${pathname}`);
   void hit.handler(req, res);
 });
@@ -184,7 +240,7 @@ await new Promise((r) => server.listen(0, '127.0.0.1', r));
 const base = `http://127.0.0.1:${server.address().port}`;
 
 async function api(method, { token, body } = {}) {
-  const res = await fetch(`${base}${API_PREFIX}${method}`, {
+  const res = await fetch(`${base}/mobile-gateway/api/${method}`, {
     method: 'POST',
     headers: {
       'content-type': 'application/json',
@@ -195,9 +251,23 @@ async function api(method, { token, body } = {}) {
   return { status: res.status, json: await res.json().catch(() => null) };
 }
 
+/**
+ * 铸配对码 —— 必须走**插件的管理接口**，不能用测试自己 new 的 store。
+ * 插件内部持有自己的 store 实例，测试另造一个的话两边状态不通，
+ * 表现就是「码明明铸了，配对却回 no_active_code/404」。
+ * 管理面只应答回环，而测试服务器就跑在 127.0.0.1 上，正好符合。
+ */
 async function mint() {
-  const pairing = await store.mintPairing({ ttlMs: 60_000, origin: 'test' });
-  return pairing.display;
+  const res = await fetch(`${base}/mobile-gateway/manage/api/mint`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: '{}',
+  });
+  if (!res.ok) throw new Error(`mint 失败：HTTP ${res.status}`);
+  const state = await res.json();
+  const display = state?.pairing?.display;
+  if (!display) throw new Error(`mint 未返回配对码：${JSON.stringify(state).slice(0, 200)}`);
+  return display;
 }
 
 async function pair(code) {
@@ -218,9 +288,11 @@ check('铸码返回 dshm1 格式', /^dshm1\.[A-Z2-9]{4}(-[A-Z2-9]{4}){3}$/.test(
 const paired = await pair(code);
 check('首次配对成功', paired.status === 200 && !!paired.json.token, `status=${paired.status}`);
 const token = paired.json.token;
+const deviceId = paired.json.device.id;
 
+// 码被消费后已不存在，语义上属于「没有有效配对码」→ 404（不是 403 不匹配）。
 const replay = await pair(code);
-check('配对码一次性（重放被拒）', replay.status === 403, `status=${replay.status}`);
+check('配对码一次性（重放被拒）', replay.status === 404, `status=${replay.status}`);
 
 const malformed = await pair('not-a-code');
 check('畸形配对码被拒', malformed.status === 403, `status=${malformed.status}`);
@@ -282,8 +354,22 @@ const rejected = await new Promise((resolve) => {
 check('错误令牌无法升级 WS', rejected !== 'opened' && rejected !== 'timeout', rejected);
 
 console.log('\n[7] 吊销');
-store.revoke(paired.json.device.id);
+// 走插件的管理接口吊销，而不是测试自己的 store —— 吊销必须真的作用到插件持有的那份状态。
+const revokeRes = await fetch(`${base}/mobile-gateway/manage/api/revoke`, {
+  method: 'POST',
+  headers: { 'content-type': 'application/json' },
+  body: JSON.stringify({ deviceId }),
+});
+check('吊销接口返回 200', revokeRes.status === 200, `status=${revokeRes.status}`);
 check('吊销后立即失效', (await api('host.describe', { token })).status === 401);
+
+// 设备列表里也不应再出现它。
+const stateAfter = await (await fetch(`${base}/mobile-gateway/manage/api/state`)).json();
+check(
+  '吊销后设备列表里不再有它',
+  !(stateAfter.devices ?? []).some((d) => d.id === deviceId),
+  JSON.stringify(stateAfter.devices ?? []).slice(0, 120),
+);
 
 console.log('\n[8] 管理面回环闸门');
 const manageRemote = await fetch(`${base}/mobile-gateway/manage/api/state`, {
