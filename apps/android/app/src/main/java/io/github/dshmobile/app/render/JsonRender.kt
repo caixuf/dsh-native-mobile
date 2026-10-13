@@ -20,7 +20,9 @@ object JsonRender {
 
     fun isNull(el: JsonElement?): Boolean = el == null || el is JsonNull
 
-    fun str(obj: JsonObject, vararg keys: String): String? {
+    /** 入参可空：真实事件里 data / message 经常缺失，不该因此抛异常。 */
+    fun str(obj: JsonObject?, vararg keys: String): String? {
+        if (obj == null) return null
         for (k in keys) {
             val v = obj[k]
             if (v is JsonPrimitive && v.isString) {
@@ -33,7 +35,9 @@ object JsonRender {
         return null
     }
 
-    fun long(obj: JsonObject, vararg keys: String): Long? {
+    /** 入参可空，同 [str]。 */
+    fun long(obj: JsonObject?, vararg keys: String): Long? {
+        if (obj == null) return null
         for (k in keys) {
             val v = obj[k] as? JsonPrimitive ?: continue
             v.content.toLongOrNull()?.let { return it }
@@ -47,8 +51,18 @@ object JsonRender {
 
     /**
      * 从任意内容块里抽出可读文本。
-     * 覆盖官方已知形状：`{type:'text', text}`、`{type:'reasoning', text}`、
-     * `{type:'tool', name, arguments}`，以及直接给字符串的情况。
+     *
+     * 形状全部经真实主机实测确认（`scripts/inspect-event-shapes.mjs`，300 条记录）：
+     *
+     *   assistant/message → data = { turn, step, message:{role,content,source,id}, usage, stream }
+     *   user/message      → data = { content:[…], source, role, id }     ← 内容在**顶层**
+     *   system/message    → data = { turn, step, message:{role,content,…} }
+     *   tool/call         → data = { turn, step, callId, name, arguments }  ← arguments 是 **JSON 字符串**
+     *   tool/result       → data = { turn, step, message:{role,source,toolCallId,content,isError} }
+     *   step/start|end    → data = { turn, step }
+     *   turn/start|end    → data = { turn } / { turn, reason:{kind,error} }
+     *
+     * ⚠️ 注意 `tool/call` 的 `arguments` 是**字符串**（内含 JSON），不是对象。
      */
     fun textOf(el: JsonElement?): String? = when (el) {
         null, is JsonNull -> null
@@ -71,7 +85,9 @@ object JsonRender {
                         direct != null -> direct
                         type != null && el.size <= 4 && el["type"] != null -> "[$type]"
                         else -> {
-                            // 再往里找一层常见容器
+                            // 再往里找一层常见容器。
+                            // 注意顺序：真实事件里 `message`（assistant/system/tool_result）
+                            // 与 `content`（user）都承载正文，两者都要试。
                             val nested = el["content"] ?: el["message"] ?: el["data"]
                             nested?.let { textOf(it) } ?: compact(el, 400)
                         }
@@ -81,18 +97,85 @@ object JsonRender {
         }
     }
 
-    /** 角色推断，用于左右分栏。 */
-    fun roleOf(entry: JsonObject): String {
-        str(entry, *ROLE_KEYS.toTypedArray())?.let { role ->
-            val r = role.lowercase()
-            return when {
-                "user" in r || "human" in r || "prompt" in r -> "user"
-                "assistant" in r || "model" in r || "ai" in r -> "assistant"
-                "system" in r -> "system"
-                else -> role
+    /**
+     * 把任意 content 数组渲染成文本。
+     *
+     * 实测真实事件的 content 元素类型：
+     *   `{type:'text', text:'…'}`        —— 正文
+     *   `{type:'reasoning', text:'…'}`   —— 思考过程（assistant/message 里常见）
+     *   `{type:'tool-call', id, name, arguments}` —— 内嵌工具调用
+     *   `{type:'image', …}`              —— 图片
+     *
+     * ⚠️ 实测确认内嵌工具调用的 type 是 **`tool-call`**（连字符），
+     * 与顶层 `tool/call` 事件的命名空间写法不同，别只认 `tool_use`。
+     *
+     * 旧版只走 `str()` 抓顶层键，遇到对象数组就落到 `compact()`，
+     * 于是界面出现 `[object Object]`。这里逐个元素显式处理。
+     */
+    fun contentToText(content: JsonElement?): String? {
+        if (content == null) return null
+        val parts = when (content) {
+            is JsonArray -> content.mapNotNull { el ->
+                val obj = el as? JsonObject
+                when {
+                    obj == null -> textOf(el)
+                    // text / value 是正文（reasoning 也带 text）
+                    str(obj, "text", "value") != null -> str(obj, "text", "value")
+                    else -> when (str(obj, "type")) {
+                        "image", "image_url" -> "[图片]"
+                        // 内嵌工具调用：type 是 tool-call（连字符），不是 tool_use
+                        "tool-call", "tool_use", "tool" -> {
+                            val name = str(obj, "name", "tool") ?: "工具"
+                            val args = obj["arguments"] ?: obj["input"]
+                            if (args == null) "调用 $name" else "调用 $name · ${compact(args, 160)}"
+                        }
+                        // reasoning 等纯过程元素不单独展示（其 text 上面已取过）
+                        else -> null
+                    }
+                }
             }
+            is JsonObject -> listOfNotNull(str(content, "text", "value") ?: textOf(content))
+            else -> listOfNotNull(textOf(content))
         }
-        return "unknown"
+        return parts.takeIf { it.isNotEmpty() }?.joinToString("\n")
+    }
+
+    /**
+     * 角色推断，用于左右分栏。
+     *
+     * 🔴 必须从 **data** 里读，不是从 entry 顶层 —— 实测真实事件的 role 在
+     * `data.role`（user/message）或 `data.message.role`（assistant/system/tool_result），
+     * entry 本身只有 seq/time/data。从顶层读会永远拿到 unknown。
+     *
+     * 但 `tool/call` **根本没有 role 字段**（它的 data 是
+     * `{turn, step, callId, name, arguments}`），只能按事件类型推断。
+     */
+    fun roleOf(entry: JsonObject): String {
+        val data = entry["data"] as? JsonObject
+        val message = data?.get("message") as? JsonObject
+
+        // 依次试 data.role → data.message.role
+        val raw = str(data, "role")
+            ?: str(message, "role")
+            ?: return roleFromType(typeOf(entry))
+
+        val r = raw.lowercase()
+        return when {
+            "user" in r || "human" in r || "prompt" in r -> "user"
+            "assistant" in r || "model" in r || "ai" in r -> "assistant"
+            "system" in r -> "system"
+            "tool" in r -> "tool"
+            else -> raw
+        }
+    }
+
+    /** 无 role 字段时按事件类型推断（实测 tool/call 就属于这种情况）。 */
+    private fun roleFromType(kind: String): String = when (kind) {
+        "user/message" -> "user"
+        "assistant/message" -> "assistant"
+        "system/message" -> "system"
+        "tool/call", "tool/result" -> "tool"
+        else -> "unknown"
     }
 
     /** 紧凑的单行 JSON，用于未知结构的兜底展示。 */

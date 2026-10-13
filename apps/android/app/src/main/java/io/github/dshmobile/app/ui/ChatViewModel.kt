@@ -281,17 +281,53 @@ class ChatViewModel(private val conn: DshConnection?) : ViewModel() {
         }
     }
 
+    /**
+     * 把一条 `session.page` 记录转成一行气泡。
+     *
+     * 事件类型全集经真实主机实测确认（`scripts/inspect-event-shapes.mjs`，
+     * 300 条记录、13 种类型）：
+     *
+     *   user/message      → 右侧气泡（用户说的）
+     *   assistant/message → 左侧气泡（AI 回的）
+     *   system/message    → 居中系统提示
+     *   tool/call         → 工具调用（arguments 是 JSON **字符串**）
+     *   tool/result       → 工具结果
+     *   step/start|end、turn/start|end、model/selection、request/context、
+     *   request/header、workspace/changes、agent/inbox/spliced → **不显示**
+     *     （这些是过程噪音；旧版会把 step/start 也渲染成 "[step/start]" 行，
+     *       300 条记录里 108 条是这类，气泡列表会被淹掉）
+     */
     private fun toLine(entry: JsonObject?, index: Int): ChatLine? {
         if (entry == null) return null
         val seq = JsonRender.long(entry, "seq") ?: index.toLong()
         val kind = JsonRender.typeOf(entry)
+
+        // 只渲染「有内容可看」的类型，其余直接丢弃。
+        when (kind) {
+            "user/message", "assistant/message", "system/message", "tool/call", "tool/result" -> Unit
+            else -> return null
+        }
+
         val role = JsonRender.roleOf(entry)
-        val text = JsonRender.textOf(entry["data"])
-            ?: JsonRender.textOf(entry["message"])
-            ?: JsonRender.textOf(entry["content"])
-            ?: JsonRender.textOf(entry["result"])
-            ?: JsonRender.textOf(entry)
-            ?: return null
+        val data = entry["data"] as? JsonObject
+
+        // tool/call 特例：arguments 是字符串，需要单独拼装，不能走通用 textOf。
+        val text = if (kind == "tool/call") {
+            val name = JsonRender.str(data, "name") ?: "工具"
+            val args = data?.get("arguments")
+            if (args == null) "调用 $name" else "调用 $name · ${JsonRender.compact(args, 200)}"
+        } else {
+            // 优先按 content 数组抽正文 —— 实测 tool/result 的正文在
+            // data.message.content[]（元素是 {type:'text',text} 对象），
+            // 直接走 textOf 会落到 compact() 而显示 [object Object]。
+            val content = (data?.get("message") as? JsonObject)?.get("content")
+                ?: data?.get("content")
+            JsonRender.contentToText(content)
+                ?: JsonRender.textOf(data)
+                ?: JsonRender.textOf(entry["message"])
+                ?: JsonRender.textOf(entry["content"])
+                ?: return null
+        }
         return ChatLine(key = "$seq-$kind-$index", role = role, text = text, kind = kind)
     }
 

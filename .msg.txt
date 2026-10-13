@@ -1,0 +1,26 @@
+feat(app): 按真实事件形状修正渲染；新增渲染验证脚本
+
+用 scripts/inspect-event-shapes.mjs 抓了 300 条真实记录（13 种事件类型），
+据此修正三处渲染缺陷：
+
+1. role 必须从 data / data.message 读，entry 顶层没有 role 字段。
+   且 tool/call 完全没有 role（data 只有 callId/name/arguments），
+   只能按事件类型推断 —— 否则 51 条 tool/call 全显示为 unknown。
+2. 正文要走 content 数组逐个抽。tool/result 的正文在
+   data.message.content[]，直接走通用 textOf 会落到 compact()
+   而在界面显示 [object Object]。
+3. 内嵌工具调用的 type 是 tool-call（连字符），不是 tool_use ——
+   不认它就会把 assistant 消息里的工具调用整段丢掉。
+
+另外按类型白名单过滤：299 条记录里 136 条是 step/start|end、turn/start|end、
+model/selection 等过程事件，旧版会把它们渲染成气泡，列表直接被淹掉。
+现在 299 -> 163 行。
+
+新增 scripts/verify-rendering.mjs：用 Node 逐字复刻 Kotlin 的
+str/long/typeOf/roleOf/textOf/contentToText/toLine，跑真实数据断言（11 项）。
+它抓到了一个自摆乌龙：断言「文本不含 [object Object]」恒红，因为那四个字
+出现在**会话历史本身**（之前的调试输出）。已改为检测「是否落到 compact()
+兜底」，那才是渲染器缺陷的真实信号。
+
+回归：E2E 56/0、契约审计、方法名门禁、闸门 raw 探测、协议端到端 8/0、
+渲染验证 11/0，共 8 项全绿。
