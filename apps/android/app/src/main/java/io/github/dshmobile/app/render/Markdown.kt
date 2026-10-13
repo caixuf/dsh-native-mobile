@@ -55,6 +55,34 @@ sealed interface MdNode {
 
     /** 标题 */
     data class Heading(val level: Int, val children: List<MdNode>) : MdNode
+
+    /**
+     * 表格。
+     *
+     * 🔴 DSH 的真实输出里表格很常见（对比测试结果、列配置、执行计划）。
+     * 手机上必须能渲染成**可横向滚动的网格**，而不是一堆竖线字符。
+     */
+    data class Table(
+        val header: List<List<MdNode>>,
+        /** 第二行是分隔行 `|---|---|`，不作为数据 */
+        val rows: List<List<List<MdNode>>>,
+        val aligns: List<Align>,
+    ) : MdNode
+
+    /** 分隔线 `---` / `***` / `___` */
+    data object Divider : MdNode
+
+    /** 任务列表项（`- [ ]` / `- [x]`） */
+    data class TaskItem(val checked: Boolean, val children: List<MdNode>) : MdNode
+
+    /**
+     * 图片 `![alt](url)`。
+     *
+     * 保留节点但**默认不加载远程图**（安全 + 省流量）：
+     * 由上层决定是否显示占位。本项目只渲染远程资源链接，
+     * 避免在聊天流里引入不可控的网络请求。
+     */
+    data class Image(val alt: String, val url: String) : MdNode
 }
 
 /** 行内样式（可叠加）。 */
@@ -68,6 +96,9 @@ data class MdStyle(
     fun isPlain(): Boolean =
         !bold && !italic && !code && !strike && link == null
 }
+
+/** 表格列对齐。 */
+enum class Align { Left, Center, Right }
 
 object Markdown {
 
@@ -149,6 +180,49 @@ object Markdown {
                 continue
             }
 
+            // ── 分隔线 `---` / `***` / `___` ──
+            // 必须先于列表判断，否则 `- - -` 会被当成列表项。
+            //
+            // ⚠️ 正则里**不能写 `$`**：Kotlin 字符串里 `\$` 是转义的美元符号，
+            // 不是正则的"行尾锚点"。锚点要用 `\$` 转义的正则形式时，
+            // 整个 pattern 要放在**raw string**（`"""..."""`）里，
+            // 否则 `Regex("...\$")` 匹配的是字面 $ 字符（踩过这个坑）。
+            val dividerRe = Regex("""^\s*([-*_])\s*(?:\1\s*){2,}$""")
+            if (dividerRe.matches(line)) {
+                flushAll()
+                out += MdNode.Divider
+                i++
+                continue
+            }
+
+            // ── 表格：`|a|b|` + 下一行必须是 `|---|---|` ──
+            // 要求"下一行是分隔行"是必须的，否则正文里出现的竖线会被误判成表格。
+            // ⚠️ 正则用 raw string：普通字符串里的 `\$` 是「转义的美元符号」，
+            // 不是正则锚点（同一个坑，踩第二次）。
+            val tableSepRe = Regex("""^\|?[\s:|-]+\|[\s:|-]*$""")
+            if (line.contains('|') && i + 1 < lines.size &&
+                tableSepRe.matches(lines[i + 1].trim()) &&
+                lines[i + 1].contains('-')
+            ) {
+                flushAll()
+                val header = splitRow(line)
+                val aligns = parseAligns(lines[i + 1])
+                i += 2
+                val rows = mutableListOf<List<List<MdNode>>>()
+                while (i < lines.size) {
+                    val r = lines[i]
+                    if (!r.contains('|') || r.isBlank()) break
+                    val cells = splitRow(r)
+                    // 列数不一致时按表头补齐/截断，避免渲染错位
+                    val padded = (cells + List(header.size - cells.size.coerceAtMost(header.size)) { "" })
+                        .take(header.size)
+                    rows += padded.map { inline(it) }
+                    i++
+                }
+                out += MdNode.Table(header.map { inline(it) }, rows, aligns)
+                continue
+            }
+
             // ── 引用 ──
             val quote = Regex("^\\s*>\\s?(.*)$").find(line)
             if (quote != null) {
@@ -158,15 +232,31 @@ object Markdown {
                 continue
             }
 
-            // ── 列表 ──
-            val unordered = Regex("^\\s*[-*+]\\s+(.*)$").find(line)
-            val ordered = Regex("^\\s*\\d+[.)]\\s+(.*)$").find(line)
+            // ── 列表（含任务列表）──
+            val unordered = Regex("^(\\s*)[-*+]\\s+(.*)$").find(line)
+            val ordered = Regex("^(\\s*)\\d+[.)]\\s+(.*)$").find(line)
             if (unordered != null || ordered != null) {
                 flushPara(); flushQuote()
                 val isOrdered = ordered != null
+                val m = unordered ?: ordered!!
+                val indent = m.groupValues[1].length
+                val body = m.groupValues[2]
+
+                // 任务列表：`- [ ]` / `- [x]`
+                val task = Regex("^\\[([ xX])\\]\\s+(.*)$").find(body)
+                if (task != null) {
+                    val isChecked = task.groupValues[1].lowercase() == "x"
+                    listOrdered = false
+                    listItems += listOf(
+                        MdNode.TaskItem(isChecked, inline(task.groupValues[2])),
+                    )
+                    i++
+                    continue
+                }
+
                 if (listItems.isNotEmpty() && listOrdered != isOrdered) flushList()
                 listOrdered = isOrdered
-                listItems += inline((unordered ?: ordered)!!.groupValues[1])
+                listItems += inline(body)
                 i++
                 continue
             }
@@ -182,7 +272,22 @@ object Markdown {
         return out
     }
 
-    /** 解析一行内联语法。 */
+    /** 表格行拆分：去掉首尾竖线，逐格 trim。 */
+    private fun splitRow(line: String): List<String> =
+        line.trim().trim('|').split('|').map { it.trim() }
+
+    /** 解析对齐行 `|---|:--:|---:|`。 */
+    private fun parseAligns(line: String): List<Align> =
+        line.trim().trim('|').split('|').map { cell ->
+            val c = cell.trim()
+            when {
+                c.startsWith(":") && c.endsWith(":") -> Align.Center
+                c.endsWith(":") -> Align.Right
+                else -> Align.Left
+            }
+        }
+
+    /** 表格行拆分：去掉首尾竖线，逐格 trim。 */
     private fun inline(text: String): List<MdNode> {
         val out = mutableListOf<MdNode>()
         val sb = StringBuilder()
@@ -212,6 +317,23 @@ object Markdown {
                 }
                 // 未闭合 → 当普通字符（流式常见）
                 sb.append(c); i++; continue
+            }
+
+            // 图片 ![alt](url)
+            if (c == '!' && i + 1 < text.length && text[i + 1] == '[') {
+                val closeText = text.indexOf(']', i + 2)
+                if (closeText > i && closeText + 1 < text.length && text[closeText + 1] == '(') {
+                    val closeUrl = text.indexOf(')', closeText)
+                    if (closeUrl > closeText) {
+                        flush()
+                        out += MdNode.Image(
+                            alt = text.substring(i + 2, closeText),
+                            url = text.substring(closeText + 2, closeUrl),
+                        )
+                        i = closeUrl + 1
+                        continue
+                    }
+                }
             }
 
             // 链接 [text](url)

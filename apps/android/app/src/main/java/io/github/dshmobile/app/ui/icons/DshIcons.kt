@@ -230,6 +230,32 @@ object DshIcons {
         }
     }
 
+    /** 图片占位图标 */
+    val Image: ImageVector by lazy {
+        icon("Image") {
+            path(fill = null, stroke = SolidColor(Color.Black), strokeLineWidth = STROKE) {
+                moveTo(4f, 5f)
+                curveTo(4f, 4.45f, 4.45f, 4f, 5f, 4f)
+                lineTo(19f, 4f)
+                curveTo(19.55f, 4f, 20f, 4.45f, 20f, 5f)
+                lineTo(20f, 19f)
+                curveTo(20f, 19.55f, 19.55f, 20f, 19f, 20f)
+                lineTo(5f, 20f)
+                curveTo(4.45f, 20f, 4f, 19.55f, 4f, 19f)
+                close()
+                moveTo(4f, 16f); lineTo(9f, 11f); lineTo(13f, 15f)
+                moveTo(13f, 15f); lineTo(15.5f, 12.5f); lineTo(20f, 17f)
+                // 小圆点表示"太阳"
+                moveTo(15.5f, 8.5f)
+                curveTo(15.78f, 8.5f, 16f, 8.28f, 16f, 8f)
+                curveTo(16f, 7.72f, 15.78f, 7.5f, 15.5f, 7.5f)
+                curveTo(15.22f, 7.5f, 15f, 7.72f, 15f, 8f)
+                curveTo(15f, 8.28f, 15.22f, 8.5f, 15.5f, 8.5f)
+                close()
+            }
+        }
+    }
+
     /** 文件夹（工作区分组头） */
     val Folder: ImageVector by lazy {
         icon("Folder") {

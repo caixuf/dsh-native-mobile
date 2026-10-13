@@ -217,7 +217,82 @@ class MarkdownTest {
         assertEquals("user", role("USER"))
     }
 
+    // ── 富文本扩展（表格 / 任务列表 / 分隔线 / 图片） ────────────────────────
+    //
+    // 🔴 这些不是"锦上添花"：DSH 的真实输出里表格非常常见
+    // （方法/参数/必填/源码位置这类对照表），不渲染的话整段就是一串竖线。
+
+    @Test
+    fun `table is parsed with header rows and alignment`() {
+        val src = """
+            | 方法 | 参数 | 必填 |
+            |:---|:---:|---:|
+            | a | b | c |
+            | d | e | f |
+        """.trimIndent()
+        val tables = Markdown.parse(src).filterIsInstance<MdNode.Table>()
+        assertEquals("应识别出 1 个表格", 1, tables.size)
+        val t = tables[0]
+        assertEquals(3, t.header.size)
+        assertEquals("数据行数", 2, t.rows.size)
+        assertEquals(listOf(Align.Left, Align.Center, Align.Right), t.aligns)
+    }
+
+    @Test
+    fun `pipe without separator row is not a table`() {
+        // 正文里出现 `a|b` 不该被当表格 —— 必须要求第二行是分隔行
+        val nodes = Markdown.parse("路径 C:\\a|b\\c 继续")
+        assertTrue("无分隔行不应产生表格", nodes.none { it is MdNode.Table })
+    }
+
+    @Test
+    fun `task list checkbox is parsed`() {
+        val items = Markdown.parse("- [x] 已完成\n- [ ] 未完成")
+            .filterIsInstance<MdNode.ListBlock>().first().items
+        assertEquals(2, items.size)
+        assertTrue("第一个应勾选", (items[0].first() as MdNode.TaskItem).checked)
+        assertTrue("第二个应未勾选", !(items[1].first() as MdNode.TaskItem).checked)
+    }
+
+    @Test
+    fun `divider is parsed`() {
+        val nodes = Markdown.parse("上面\n\n---\n\n下面")
+        assertTrue("应识别出分隔线", nodes.any { it is MdNode.Divider })
+    }
+
+    @Test
+    fun `divider not confused with list item`() {
+        // `- - -` 三段横杠是分隔线，不是三个列表项
+        val nodes = Markdown.parse("- - -")
+        assertTrue(nodes.any { it is MdNode.Divider })
+    }
+
+    @Test
+    fun `image becomes placeholder node with alt and url`() {
+        val nodes = Markdown.parse("![示意图](https://example.com/a.png)")
+        val img = nodes.flatMap { it.flatten() }.filterIsInstance<MdNode.Image>().first()
+        assertEquals("示意图", img.alt)
+        assertEquals("https://example.com/a.png", img.url)
+    }
+
     // ── 辅助 ────────────────────────────────────────────────────────────────
+
+    /** 递归收集所有节点（测试辅助）。 */
+    private fun MdNode.flatten(): List<MdNode> = buildList {
+        add(this@flatten)
+        when (this@flatten) {
+            is MdNode.Paragraph -> children.forEach { addAll(it.flatten()) }
+            is MdNode.Heading -> children.forEach { addAll(it.flatten()) }
+            is MdNode.Quote -> children.forEach { addAll(it.flatten()) }
+            is MdNode.ListBlock -> items.forEach { list -> list.forEach { addAll(it.flatten()) } }
+            is MdNode.TaskItem -> children.forEach { addAll(it.flatten()) }
+            is MdNode.Table -> {
+                header.forEach { cell -> cell.forEach { addAll(it.flatten()) } }
+                rows.forEach { row -> row.forEach { cell -> cell.forEach { addAll(it.flatten()) } } }
+            }
+            else -> Unit
+        }
+    }
 
     /** 直接调被测的 role 归一逻辑（它是 companion 上的 internal 函数，包内可见）。 */
     private fun role(raw: String): String = JsonRender.roleOf(
@@ -238,6 +313,8 @@ class MarkdownTest {
                     is MdNode.Quote -> walk(n.children)
                     is MdNode.ListBlock -> n.items.forEach { walk(it) }
                     is MdNode.CodeBlock -> Unit
+                    // else 兜底：新增 MdNode 类型时测试辅助函数不必跟着改
+                    else -> Unit
                 }
             }
         }
@@ -256,6 +333,7 @@ class MarkdownTest {
                         is MdNode.Quote -> walk(n.children)
                         is MdNode.ListBlock -> n.items.forEach { walk(it) }
                         is MdNode.CodeBlock -> append(n.code)
+                        else -> Unit
                     }
                 }
             }

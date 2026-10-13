@@ -1,5 +1,27 @@
 package io.github.dshmobile.app.render
 
+import androidx.compose.foundation.layout.size
+
+import androidx.compose.ui.Alignment
+
+import io.github.dshmobile.app.ui.components.DshIcon
+
+import io.github.dshmobile.app.ui.icons.DshIcons
+
+import androidx.compose.runtime.mutableStateOf
+
+import androidx.compose.runtime.setValue
+
+import androidx.compose.runtime.getValue
+
+import androidx.compose.ui.graphics.Brush
+
+import androidx.compose.foundation.border
+
+import androidx.compose.foundation.layout.RowScope
+
+import androidx.compose.foundation.layout.widthIn
+
 import androidx.compose.foundation.background
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
@@ -69,6 +91,10 @@ fun MarkdownText(
                 is MdNode.CodeBlock -> CodeBlockView(block)
                 is MdNode.ListBlock -> ListBlockView(block, color, onLinkClick)
                 is MdNode.Quote -> QuoteView(block, color, onLinkClick)
+                is MdNode.Divider -> DividerView()
+                is MdNode.Table -> TableView(block, color)
+                is MdNode.TaskItem -> TaskItemView(block, color, onLinkClick)
+                is MdNode.Image -> ImagePlaceholder(block)
                 is MdNode.Text -> InlineText(
                     nodes = listOf(block),
                     baseColor = color,
@@ -77,6 +103,235 @@ fun MarkdownText(
             }
         }
     }
+}
+
+// ── 分隔线 ──────────────────────────────────────────────────────────────────
+
+/**
+ * 分隔线。
+ *
+ * 不用实线，而用「两端渐隐 + 中间浅色」—— 纯实线在长文里太硬，
+ * 会把消息流切成两段。
+ */
+@Composable
+private fun DividerView() {
+    Box(
+        Modifier
+            .fillMaxWidth()
+            .padding(vertical = DshTheme.m.md)
+            .height(1.dp)
+            .background(
+                Brush.horizontalGradient(
+                    listOf(
+                        Color.Transparent,
+                        MaterialTheme.colorScheme.outlineVariant,
+                        Color.Transparent,
+                    ),
+                ),
+            ),
+    )
+}
+
+// ── 任务列表 ────────────────────────────────────────────────────────────────
+
+/** `- [x]` / `- [ ]`：勾选框 + 内容。 */
+@Composable
+private fun TaskItemView(
+    block: MdNode.TaskItem,
+    color: Color,
+    onLinkClick: ((String) -> Unit)?,
+) {
+    Row(
+        Modifier.padding(vertical = 2.dp),
+        verticalAlignment = Alignment.Top,
+    ) {
+        Box(
+            Modifier
+                .padding(top = 3.dp)
+                .size(15.dp)
+                .background(
+                    if (block.checked) DshTheme.online.copy(alpha = 0.18f) else Color.Transparent,
+                    RoundedCornerShape(4.dp),
+                )
+                .border(
+                    1.5.dp,
+                    if (block.checked) DshTheme.online else color.copy(alpha = 0.4f),
+                    RoundedCornerShape(4.dp),
+                ),
+            contentAlignment = Alignment.Center,
+        ) {
+            if (block.checked) {
+                DshIcon(
+                    DshIcons.Check,
+                    contentDescription = null,
+                    tint = DshTheme.online,
+                    size = 11.dp,
+                )
+            }
+        }
+        Spacer(Modifier.width(DshTheme.m.sm))
+        InlineText(
+            block.children,
+            if (block.checked) color.copy(alpha = 0.55f) else color,
+            onLinkClick,
+        )
+    }
+}
+
+// ── 图片 ────────────────────────────────────────────────────────────────────
+
+/**
+ * 图片占位。
+ *
+ * 🔴 **故意不加载远程图**：聊天流里出现任意 URL 就自动发网络请求，
+ * 既不可控（隐私 + 流量 + 失败重试风暴），也让流式渲染变慢。
+ * 所以只显示 alt + 链接，由用户决定是否点开。
+ */
+@Composable
+private fun ImagePlaceholder(block: MdNode.Image) {
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .padding(vertical = DshTheme.m.xs)
+            .background(DshTheme.codeBg, RoundedCornerShape(8.dp))
+            .padding(horizontal = DshTheme.m.md, vertical = DshTheme.m.sm),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        DshIcon(
+            DshIcons.Image,
+            contentDescription = null,
+            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+            size = 15.dp,
+        )
+        Spacer(Modifier.width(DshTheme.m.sm))
+        Column(Modifier.weight(1f)) {
+            Text(
+                text = block.alt.ifBlank { "图片" },
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurface,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            Text(
+                text = block.url,
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+    }
+}
+
+// ── 表格 ────────────────────────────────────────────────────────────────────
+
+/**
+ * 表格。
+ *
+ * 🔴 手机上表格**必须能横向滚动**：DSH 的输出里表格常有 6~8 列
+ * （方法名 / 参数 / 必填 / 源码位置…），硬塞进 360dp 会挤成一团。
+ *
+ * 取舍：
+ *  - 整体横向滚动，每列 `min=88.dp`，避免中文表头被压成竖排；
+ *  - 表头浅底 + 一条分隔线，**不用外框**（外框在窄屏上会碎成多段）；
+ *  - 单元格顶对齐，长内容不会因居中而错位。
+ */
+@Composable
+private fun TableView(block: MdNode.Table, color: Color) {
+    Column(Modifier.padding(vertical = DshTheme.m.xs)) {
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .horizontalScroll(rememberScrollState())
+                .background(MaterialTheme.colorScheme.surfaceContainerHigh)
+                .padding(vertical = DshTheme.m.sm),
+        ) {
+            block.header.forEachIndexed { i, cell ->
+                CellText(cell, color, block.aligns.getOrElse(i) { Align.Left }, header = true)
+            }
+        }
+        Box(
+            Modifier
+                .fillMaxWidth()
+                .height(1.dp)
+                .background(MaterialTheme.colorScheme.outlineVariant),
+        )
+        // 数据行共用一个滚动状态，才能横着一起滚
+        var dataScroll by remember { mutableStateOf(androidx.compose.foundation.ScrollState(0)) }
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .horizontalScroll(dataScroll)
+                .background(MaterialTheme.colorScheme.surface),
+        ) {
+            block.aligns.indices.forEach { col ->
+                Column(
+                    Modifier
+                        .widthIn(min = 88.dp)
+                        .weight(1f)
+                        .padding(horizontal = DshTheme.m.md, vertical = DshTheme.m.sm),
+                ) {
+                    block.rows.forEach { row ->
+                        Text(
+                            text = plainOf(row.getOrElse(col) { emptyList() }),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = color,
+                            softWrap = true,
+                            modifier = Modifier.padding(vertical = 3.dp),
+                        )
+                    }
+                }
+            }
+        }
+    }
+    Spacer(Modifier.height(DshTheme.m.xs))
+}
+
+@Composable
+private fun RowScope.CellText(
+    cell: List<MdNode>,
+    color: Color,
+    align: Align,
+    header: Boolean,
+) {
+    Box(
+        Modifier
+            .widthIn(min = 88.dp)
+            .weight(1f)
+            .padding(horizontal = DshTheme.m.md),
+        contentAlignment = when (align) {
+            Align.Left -> Alignment.CenterStart
+            Align.Center -> Alignment.Center
+            Align.Right -> Alignment.CenterEnd
+        },
+    ) {
+        Text(
+            text = plainOf(cell),
+            style = MaterialTheme.typography.bodySmall.copy(
+                fontWeight = if (header) FontWeight.SemiBold else FontWeight.Normal,
+            ),
+            color = color,
+            softWrap = true,
+        )
+    }
+}
+
+/** 表格单元格只取纯文本（表格里样式收益低、风险高）。 */
+private fun plainOf(nodes: List<MdNode>): String = buildString {
+    fun walk(list: List<MdNode>) {
+        list.forEach { n ->
+            when (n) {
+                is MdNode.Text -> append(n.value)
+                is MdNode.Paragraph -> walk(n.children)
+                is MdNode.Heading -> walk(n.children)
+                is MdNode.Quote -> walk(n.children)
+                is MdNode.CodeBlock -> append(n.code)
+                is MdNode.Image -> append(n.alt)
+                else -> Unit
+            }
+        }
+    }
+    walk(nodes)
 }
 
 // ── 段落 ────────────────────────────────────────────────────────────────────
@@ -266,6 +521,11 @@ private fun InlineText(
                     is MdNode.ListBlock -> Unit
                     is MdNode.Quote -> Unit
                     is MdNode.Heading -> Unit
+                    // ⚠️ 行内上下文只关心叶子节点（Text）。块级节点由外层单独渲染。
+                    // **必须写 `else -> Unit`** 而不是逐个列分支：
+                    // 否则每加一个 MdNode 实现（如 Table/Divider/TaskItem）
+                    // 这个 when 就编译不过 —— 那正是加富文本时踩到的一次。
+                    else -> Unit
                 }
             }
         }
