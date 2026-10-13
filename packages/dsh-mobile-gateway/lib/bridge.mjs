@@ -22,7 +22,13 @@
 import { WebSocketServer } from 'ws';
 import { header } from './util.mjs';
 
-/** 与官方 node 载体一致：这组方法即使在受信部署上也只对回环开放。 */
+/**
+ * 与官方 node 载体一致：这组方法即使在受信部署上也只对回环开放。
+ *
+ * ⚠️ 用**点号**书写（便于与官方文档对照），但匹配时会先归一化 ——
+ * 真实请求走的是**斜杠 endpoint**（`settings/describe`）。
+ * 曾经因为只比对点号形式，导致 `settings/describe` 直接放行（提权漏洞，实测发现）。
+ */
 export const PRIVILEGED_METHODS = [
   'settings.describe',
   'settings.update',
@@ -39,10 +45,35 @@ export const PRIVILEGED_METHODS = [
   'host.pickDirectory',
   'host.openPath',
   'llm.discoverModels',
+  'directoryPicker.pick',
 ];
 
-/** 按命名空间前缀整体拒绝（官方那批 dotted 方法的公共前缀）。 */
-export const PRIVILEGED_PREFIXES = ['settings.', 'credentials.', 'pluginManager.', 'agentPreset.'];
+/**
+ * 按命名空间前缀整体拒绝。同样用点号书写，匹配前归一化。
+ *
+ * 这两个命名空间是**配置面与凭据面**：放行等于把本机特权交给每台配对设备。
+ * `directoryPicker` 会驱动宿主桌面（弹原生目录选择器），也一并拦下。
+ */
+export const PRIVILEGED_PREFIXES = [
+  'settings.',
+  'credentials.',
+  'pluginManager.',
+  'agentPreset.',
+  'directoryPicker.',
+];
+
+/**
+ * 把方法名归一化成**点号形式**，用于与上面两张表比对。
+ *
+ * 真实 endpoint 是斜杠形式（`settings/describe`），而名单用点号书写；
+ * 只取第一个斜杠，避免误伤命名空间本身含斜杠的情况（目前没有）。
+ * 同时统一小写，防大小写绕过。
+ */
+export function normalizeMethod(method) {
+  const firstSlash = method.indexOf('/');
+  const dotted = firstSlash < 0 ? method : method.slice(0, firstSlash) + '.' + method.slice(firstSlash + 1);
+  return dotted.trim().toLowerCase();
+}
 
 const MAX_BODY_BYTES = 32 * 1024 * 1024;
 
@@ -86,12 +117,27 @@ export function createBridge({ ctx, store, log, config }) {
   const peer = ctx.connection.operator;
   const wss = new WebSocketServer({ noServer: true, maxPayload: MAX_BODY_BYTES });
 
-  const deniedExact = new Set([...(config.deniedMethods ?? PRIVILEGED_METHODS)]);
-  const deniedPrefixes = (config.deniedPrefixes ?? PRIVILEGED_PREFIXES).slice();
+  // 两张表都归一化成点号小写形式，与 normalizeMethod() 的输出可比。
+  const deniedExact = new Set(
+    [...(config.deniedMethods ?? PRIVILEGED_METHODS)].map((m) => normalizeMethod(m)),
+  );
+  const deniedPrefixes = (config.deniedPrefixes ?? PRIVILEGED_PREFIXES).map((p) =>
+    p.trim().toLowerCase(),
+  );
 
+  /**
+   * 特权方法闸门。
+   *
+   * 🔴 必须用 normalizeMethod() 归一化后再比对：真实请求走**斜杠 endpoint**
+   * （`settings/describe`），而名单用点号书写。曾经因为直接比对原字符串，
+   * 导致 `settings/describe` 一路放行 —— 实测确认那是提权（settings.describe 成功返回）。
+   *
+   * 另外先去掉首尾斜杠与空白，防 `/settings/describe`、` settings/describe ` 这类变体绕过。
+   */
   function isDenied(method) {
-    if (deniedExact.has(method)) return true;
-    return deniedPrefixes.some((p) => method.startsWith(p));
+    const normalized = normalizeMethod(String(method ?? '').replace(/^\/+|\/+$/g, ''));
+    if (deniedExact.has(normalized)) return true;
+    return deniedPrefixes.some((p) => normalized.startsWith(p));
   }
 
   // ---- HTTP: /mobile-gateway/api/<method...> -----------------------------

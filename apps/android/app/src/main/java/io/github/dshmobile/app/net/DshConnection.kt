@@ -17,7 +17,9 @@ import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.put
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -102,22 +104,28 @@ class DshConnection(
     private fun onSocketOpen() {
         if (!muxOpen.get() || !hostOpen.get()) return
         scope.launch {
-            // 官方要求：两条流都开 + host.describe 成功，才算连接就绪。
-            val described = call("host.describe", JsonObject(emptyMap()), timeoutMs = 5_000).isSuccess
+            // 就绪判定：两条流都开 + 一次真实的 RPC 成功。
+            //
+            // ⚠️ 早前用的是 `host.describe`，但**真实主机没有这个方法**
+            // （实测 `host/describe` → 404 not found；枚举出的 41 个 endpoint 里没有它）。
+            // 改用 `session.list` —— 它必然存在，且能顺带验证鉴权与 payload 形状都对。
+            val probe = call("session.list", buildJsonObject { put("_request", buildJsonObject {}) }, timeoutMs = 8_000)
             if (stopped) return@launch
-            if (described) {
+            if (probe.isSuccess) {
                 attempt = 0
-                _state.value = LinkState.Ready(describeHostName())
+                _state.value = LinkState.Ready(hostName)
             } else {
-                _state.value = LinkState.Degraded("主机未响应 host.describe", attempt)
+                _state.value = LinkState.Degraded(
+                    "主机未响应 session.list：${probe.exceptionOrNull()?.message ?: "未知原因"}",
+                    attempt,
+                )
                 scheduleReconnect("握手未完成")
             }
         }
     }
 
+    /** 实例名（从下行流里的主机信息学出来；拿不到就显示空）。 */
     private var hostName: String = ""
-
-    private fun describeHostName(): String = hostName
 
     private fun openSocket(which: String, onOpen: (WebSocket) -> Unit) {
         val path = if (which == "mux") "$WS_MUX" else "$WS_HOST"
@@ -136,9 +144,6 @@ class DshConnection(
                 val method = frame.str("method") ?: return
                 if (!answered.add(rpcId)) return // 重连重放，去重
                 val payload = frame.obj("payload") ?: JsonObject(emptyMap())
-                if (method == "host.describe") {
-                    hostName = payload.str("name") ?: payload.str("home") ?: ""
-                }
                 _hostRequests.tryEmit(HostRequest(rpcId, method, payload))
             }
 
@@ -188,15 +193,18 @@ class DshConnection(
      */
     suspend fun call(
         method: String,
-        payload: JsonObject = JsonObject(emptyMap()),
+        args: JsonObject = JsonObject(emptyMap()),
         timeoutMs: Long = 30_000,
     ): Result<JsonElement> = runCatching {
         val rpcId = "r${ids.incrementAndGet()}"
-        val body = Envelopes.clientRequest(rpcId, method, payload).toString()
+        // 注意：URL 用 **endpoint 形式**（斜杠），不是点号形式。
+        // 实测 `session/list` → 200，`session.list` → 404 not found。
+        val endpoint = Envelopes.toEndpoint(method)
+        val body = Envelopes.clientRequest(rpcId, method, args).toString()
             .toRequestBody(JSON_MEDIA)
 
         val request = Request.Builder()
-            .url(baseUrl + API_PREFIX + method)
+            .url(baseUrl + API_PREFIX + endpoint)
             .header("Authorization", "Bearer $token")
             .header("Content-Type", "application/json")
             .post(body)
@@ -247,9 +255,17 @@ class DshConnection(
     }
 
     /** 主动 ping 一问一答通道，验证令牌是否仍然有效。 */
-    suspend fun ping(): Boolean = call("host.describe", JsonObject(emptyMap()), timeoutMs = 5_000).isSuccess
+    suspend fun ping(): Boolean =
+        call("session.list", buildJsonObject { put("_request", buildJsonObject {}) }, timeoutMs = 8_000).isSuccess
 
     companion object {
+        /**
+         * `throughSeq` 的初值。真实主机要求它不超过会话 cursor，
+         * 超过时会回 "past cursor N"，届时用 N 重试（见 ChatViewModel.fetchPage）。
+         * 这里取一个常见会话量级的值，多数情况下一次就中。
+         */
+        const val DEFAULT_THROUGHPUT_SEQ = 1_000_000L
+
         const val API_PREFIX = "/mobile-gateway/api/"
         const val WS_MUX = "/mobile-gateway/events.mux"
         const val WS_HOST = "/mobile-gateway/events.host"

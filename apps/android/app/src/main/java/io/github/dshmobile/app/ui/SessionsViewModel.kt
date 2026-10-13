@@ -35,18 +35,26 @@ class SessionsViewModel(private val conn: DshConnection?) : ViewModel() {
         }
         _state.update { it.copy(loading = true, error = null) }
         viewModelScope.launch {
-            c.call("session.list", JsonObject(emptyMap())).onSuccess { value ->
+            // args 键名是服务端声明的形参 `_request`（**带下划线**，实测确认）。
+            // session/list 是唯一用下划线形参的，别照抄成 request。
+            c.call("session.list", buildJsonObject { put("_request", buildJsonObject {}) })
+                .onSuccess { value ->
                 val obj = value.jsonObject
                 val items = JsonRender.arr(obj, "items").orEmpty()
                 val rows = items.mapNotNull { el ->
                     val item = el as? JsonObject ?: return@mapNotNull null
                     val id = JsonRender.str(item, "sessionId", "id") ?: return@mapNotNull null
+                    // 标题等元数据在 projections.values 里，不在顶层。
+                    val projections = item["projections"] as? JsonObject
+                    val values = projections?.get("values") as? JsonObject
                     SessionRow(
                         sessionId = id,
-                        title = JsonRender.str(item, "title") ?: "未命名会话",
-                        preview = JsonRender.str(item, "preview", "lastMessage", "summary") ?: "",
+                        title = JsonRender.str(values ?: item, "title")
+                            ?: JsonRender.str(item, "title")
+                            ?: "未命名会话",
+                        preview = JsonRender.str(values ?: item, "preview", "lastMessage", "summary") ?: "",
                         updatedAt = JsonRender.long(item, "updatedAt", "createdAt", "time") ?: 0L,
-                        running = JsonRender.str(item, "status")?.contains("run", true) == true,
+                        running = item["running"]?.jsonPrimitive?.content == "true",
                     )
                 }
                 _state.update { it.copy(rows = rows, loading = false) }
@@ -65,7 +73,10 @@ class SessionsViewModel(private val conn: DshConnection?) : ViewModel() {
         }
         val c = conn ?: return
         viewModelScope.launch {
-            c.call("session.search", buildJsonObject { put("query", q) }).onSuccess { value ->
+            // 形参名 `request`（实测确认）。
+            c.call("session.search", buildJsonObject {
+                put("request", buildJsonObject { put("query", q) })
+            }).onSuccess { value ->
                 val items = JsonRender.arr(value.jsonObject, "items").orEmpty()
                 val rows = items.mapNotNull { el ->
                     val item = el as? JsonObject ?: return@mapNotNull null
@@ -86,7 +97,10 @@ class SessionsViewModel(private val conn: DshConnection?) : ViewModel() {
     fun create(onCreated: (SessionRow) -> Unit) {
         val c = conn ?: return
         viewModelScope.launch {
-            c.call("session.create", JsonObject(emptyMap())).onSuccess { value ->
+            // session/create 的 args 形参名是 `request`（实测确认）。
+            // 传空对象让主机用默认值建会话。
+            c.call("session.create", buildJsonObject { put("request", buildJsonObject {}) })
+                .onSuccess { value ->
                 val id = JsonRender.str(value.jsonObject, "sessionId") ?: return@onSuccess
                 val row = SessionRow(id, "新会话", "", System.currentTimeMillis(), false)
                 _state.update { it.copy(rows = listOf(row) + it.rows) }

@@ -14,6 +14,7 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonObject
@@ -79,28 +80,41 @@ class ChatViewModel(private val conn: DshConnection?) : ViewModel() {
     /**
      * 读一页会话记录。
      *
-     * ⚠️ 方法名是 `session.page`，**不是** `session.history`。
-     * 早前依据项目自己的 `docs/api-contract.json` 写成了 `session.history`，
-     * 而该文档是从下载的**客户端 bundle** 挖的，与真实主机不同步 ——
-     * 真实主机的 session 方法枚举里没有 `history`（全 bundle 字面量 0 次命中）。
+     * ## 全部经真实主机实测确认（2026-10-13）
      *
-     * 权威签名（`@deepseek-ai/dsh-api-session-controller/lib/client.js` 的 readPage）：
-     *   remote.session.page({ address, throughSeq, ...request }, signal)
-     *     address    = { kind:'session', sessionId } | { kind:'subagent', ... }
-     *     throughSeq = 必填
-     *     request    = { maxMessages?, turnWindow? }
-     *   返回 { records: [ { type:'event', event:{ type, seq, time, data } } ], ... }
+     * 方法名是 `session.page`，**不是** `session.history`（后者在真实主机上不存在）。
+     * 而且 args 的键名是服务端声明的形参名 `request`，不是业务字段名：
      *
-     * 注意结果形状是 `records[].event`，**不是** `events[]`。
+     *     args = { request: { address, throughSeq, maxMessages } }
+     *
+     * 实测返回：
+     *     { records: [ { type:'event', event:{ type, seq, time, data } } ], … }
+     *     例：event.type = "assistant/message"，seq = 3245
+     *
+     * ⚠️ `throughSeq` **不能超过当前 cursor**。实测错误：
+     *     "session page through seq 9007199254740991 is past cursor 3256"
+     * 所以不能用 Long.MAX_VALUE 表示「最新」。正确做法是先拿 cursor 再翻页；
+     * 这里用 `throughSeq` 状态保存上次已知的 cursor，首次用一个探测值，
+     * 主机报错时从错误信息里学出真实 cursor。
      */
-    private fun pageRequest(sessionId: String, maxMessages: Int): JsonObject = buildJsonObject {
-        put("address", buildJsonObject {
-            put("kind", "session")
-            put("sessionId", sessionId)
+    private fun pageArgs(sessionId: String, throughSeq: Long, maxMessages: Int): JsonObject = buildJsonObject {
+        put("request", buildJsonObject {
+            put("address", buildJsonObject {
+                put("kind", "session")
+                put("sessionId", sessionId)
+            })
+            put("throughSeq", throughSeq)
+            put("maxMessages", maxMessages)
         })
-        // throughSeq 必填；用一个足够大的值表示「要最新的一页」。
-        put("throughSeq", Long.MAX_VALUE)
-        put("maxMessages", maxMessages)
+    }
+
+    /** 当前已知的会话 cursor；超过它会报 "past cursor"。 */
+    private var cursor: Long = 0
+
+    /** 从 "past cursor N" 这类错误里学出真实 cursor。 */
+    private fun learnCursor(message: String?): Long? {
+        val m = Regex("past cursor (\\d+)").find(message ?: "") ?: return null
+        return m.groupValues[1].toLongOrNull()
     }
 
     /** 从 session.page 的结果里取出记录数组（兼容 records[].event 与裸 events）。 */
@@ -117,11 +131,30 @@ class ChatViewModel(private val conn: DshConnection?) : ViewModel() {
             .mapNotNull { it as? JsonObject }
     }
 
+    /**
+     * 读一页会话记录。
+     *
+     * `throughSeq` 有「不能超过 cursor」的约束，而 cursor 只有主机知道。
+     * 所以这里做一次**自适应重试**：先试一个值，若主机回 "past cursor N"，
+     * 就用 N 重试。这比猜一个上限可靠（实测 Long.MAX_VALUE 必被拒）。
+     */
+    private suspend fun fetchPage(c: DshConnection, sid: String, maxMessages: Int): Result<JsonElement> {
+        val guess = if (cursor > 0) cursor else DshConnection.DEFAULT_THROUGHPUT_SEQ
+        val first = c.call("session.page", pageArgs(sid, guess, maxMessages))
+        val message = first.exceptionOrNull()?.message
+        val learned = learnCursor(message)
+        if (learned != null && learned != guess) {
+            cursor = learned
+            return c.call("session.page", pageArgs(sid, learned, maxMessages))
+        }
+        return first
+    }
+
     fun reload() {
         val c = requireConn() ?: return
         val sid = _state.value.sessionId
         viewModelScope.launch {
-            c.call("session.page", pageRequest(sid, 80)).onSuccess { value ->
+            fetchPage(c, sid, 80).onSuccess { value ->
                 val obj = value.jsonObject
                 val lines = recordsOf(obj).mapIndexedNotNull { i, e -> toLine(e, i) }
                 lastSeq = lines.size.toLong()
@@ -148,12 +181,8 @@ class ChatViewModel(private val conn: DshConnection?) : ViewModel() {
                 val c = conn ?: continue
                 val sid = _state.value.sessionId
                 if (sid.isEmpty() || _state.value.pending != null) continue
-                // call() 本身返回 Result 且不抛，这里不再套 runCatching。
-                c.call(
-                    "session.page",
-                    pageRequest(sid, 30),
-                    timeoutMs = 8_000,
-                ).onSuccess { value ->
+                // 走 fetchPage 以复用 cursor 自适应逻辑。
+                fetchPage(c, sid, 30).onSuccess { value ->
                     val obj = value.jsonObject
                     val records = recordsOf(obj)
                     val fresh = records.mapIndexedNotNull { i, entry ->
@@ -220,15 +249,17 @@ class ChatViewModel(private val conn: DshConnection?) : ViewModel() {
         if (body.isEmpty() || _state.value.sending) return
         _state.update { it.copy(sending = true, error = null) }
         viewModelScope.launch {
+            // args 的键名必须是服务端声明的形参名 `request`（实测确认）。
+            // 内部的字段名则来自 SessionPromptRequest 的业务定义。
             c.call("session.prompt", buildJsonObject {
-                // ⚠️ requestId 与 sessionId 同为必填。
-                // 权威源码 `dsh-api-session-controller/lib/client.js` 自己就是
-                // `requestId: requestId ?? randomUUID()` —— 少了它会被参数校验拒绝。
-                put("requestId", java.util.UUID.randomUUID().toString())
-                put("sessionId", _state.value.sessionId)
-                put("mode", "queue")
-                put("content", kotlinx.serialization.json.buildJsonArray {
-                    add(buildJsonObject { put("type", "text"); put("text", body) })
+                put("request", buildJsonObject {
+                    // requestId 与 sessionId 同为必填。
+                    put("requestId", java.util.UUID.randomUUID().toString())
+                    put("sessionId", _state.value.sessionId)
+                    put("mode", "queue")
+                    put("content", kotlinx.serialization.json.buildJsonArray {
+                        add(buildJsonObject { put("type", "text"); put("text", body) })
+                    })
                 })
             }).onSuccess {
                 _state.update { it.copy(sending = false, running = true) }
@@ -242,7 +273,10 @@ class ChatViewModel(private val conn: DshConnection?) : ViewModel() {
     fun cancel() {
         val c = requireConn() ?: return
         viewModelScope.launch {
-            c.call("session.cancel", buildJsonObject { put("sessionId", _state.value.sessionId) })
+            // args 键名是服务端形参 `request`（实测确认）。
+            c.call("session.cancel", buildJsonObject {
+                put("request", buildJsonObject { put("sessionId", _state.value.sessionId) })
+            })
             _state.update { it.copy(running = false) }
         }
     }

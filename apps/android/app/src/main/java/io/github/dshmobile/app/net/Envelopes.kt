@@ -15,6 +15,26 @@ import kotlinx.serialization.json.put
  * 这里**不发明新协议**——网关把 DSH 的 `/api` 原样桥过来，手机端与官方 Web 客户端
  * 讲同一种协议，因此上游新增能力我们不需要跟改。
  *
+ * ## 🔴 三条经真实主机实测确认的硬约束（2026-10-13）
+ *
+ * 此前 App 三条**全错**，导致整条 `/api` 桥在真机上不可用。都是拿运行中的主机
+ * 逐项探出来的（`scripts/probe-endpoint-form.mjs` / `probe-payload-shape.mjs`）：
+ *
+ * 1. **endpoint 用斜杠分隔，不是点号。**
+ *    权威依据：`@deepseek-ai/dsh-api-gateway` 的
+ *    `function endpointOf(namespace, method) { return `${namespace}/${method}`; }`
+ *    实测：`session/list` → 200 被认领；`session.list` → 404 `not found`。
+ *
+ * 2. **payload 必须包成 `{ args: { … } }`。**
+ *    裸 `{}` 被拒：`Remote payload must contain exactly one plain-object args field`。
+ *
+ * 3. **args 的键名是服务端 TS 声明的形参名**（可能带前导下划线），不是业务字段名。
+ *    实测：`session/list` 要 `{ _request: {} }`；
+ *    `session/page` 要 `{ request: { address, throughSeq } }`。
+ *
+ * 三条全错却一路绿到真机，是因为进程内测试的假宿主对任意形状都返回成功。
+ * 已给假宿主加方法契约校验，并新增 `scripts/check-app-methods.mjs` 门禁。
+ *
  * 四种线上形态由 `type` 区分：
  *   `client-request`  手机 → 主机，POST /api/<method>
  *   `server-response` 主机 → 手机，对 client-request 的应答
@@ -35,11 +55,16 @@ object Envelopes {
         encodeDefaults = true
     }
 
-    fun clientRequest(rpcId: String, method: String, payload: JsonObject): JsonObject = buildJsonObject {
+    fun toEndpoint(dotted: String): String {
+        val i = dotted.indexOf('.')
+        return if (i < 0) dotted else dotted.substring(0, i) + "/" + dotted.substring(i + 1)
+    }
+
+    fun clientRequest(rpcId: String, method: String, args: JsonObject): JsonObject = buildJsonObject {
         put("type", TYPE_CLIENT_REQUEST)
         put("rpcId", rpcId)
-        put("method", method)
-        put("payload", payload)
+        put("method", toEndpoint(method))
+        put("payload", buildJsonObject { put("args", args) })
     }
 
     /**

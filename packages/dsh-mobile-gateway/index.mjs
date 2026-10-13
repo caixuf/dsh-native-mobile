@@ -198,7 +198,14 @@ async function start(ctx, config, log, dataDir) {
             }
 
             if (pathname.startsWith(API_PREFIX)) {
-              await bridge.handleApi(req, res, pathname.slice(API_PREFIX.length - 1));
+              // 🔴 这里必须是 API_PREFIX.length，**不能减 1**。
+              // API_PREFIX 以 '/' 结尾（'/mobile-gateway/api/'），减 1 会留下一个前导
+              // 斜杠，拼出 `http://127.0.0.1/api//host.describe` 这种双斜杠路径。
+              // 宿主 connection 的 endpointFromPath 会因「空路径段」直接判为非法
+              // endpoint 并返回 404 "not found"（不是我们的错误体）。
+              // 这个 off-by-one 让整条 /api 桥在真机上完全不可用，而进程内测试
+              // 因为直接调 bridge.handleApi(...) 绕过了这一行，50 项断言全绿也没发现。
+              await bridge.handleApi(req, res, pathname.slice(API_PREFIX.length));
               return;
             }
 
