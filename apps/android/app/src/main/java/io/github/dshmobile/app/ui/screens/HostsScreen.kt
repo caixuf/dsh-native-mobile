@@ -50,12 +50,16 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import io.github.dshmobile.app.net.LinkState
+import io.github.dshmobile.app.ui.icons.DshIcons
 import io.github.dshmobile.app.ui.DshTheme
 import io.github.dshmobile.app.ui.HostsUiState
 import io.github.dshmobile.app.ui.SessionRow
 import io.github.dshmobile.app.ui.components.ConnectionDot
+import io.github.dshmobile.app.ui.components.DshIcon
 import io.github.dshmobile.app.ui.components.EmptyState
+import io.github.dshmobile.app.ui.components.DshIcon
 import io.github.dshmobile.app.ui.components.StatusPill
+import io.github.dshmobile.app.ui.components.DshIcon
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -93,8 +97,8 @@ fun HostsScreen(
                 ),
                 actions = {
                     IconButton(onClick = onReconnect) {
-                        Icon(
-                            Icons.Default.Refresh,
+                        DshIcon(
+                            DshIcons.Refresh,
                             contentDescription = "重新连接",
                             tint = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
@@ -110,7 +114,7 @@ fun HostsScreen(
                 contentColor = MaterialTheme.colorScheme.onPrimary,
                 shape = MaterialTheme.shapes.large,
             ) {
-                Icon(Icons.Default.Add, contentDescription = null)
+                DshIcon(DshIcons.Add, contentDescription = null)
                 Spacer(Modifier.width(DshTheme.m.sm))
                 Text("配对电脑", style = MaterialTheme.typography.labelLarge)
             }
@@ -257,8 +261,8 @@ private fun HostCard(
                 )
             }
             IconButton(onClick = onForget, modifier = Modifier.size(36.dp)) {
-                Icon(
-                    Icons.Default.Delete,
+                DshIcon(
+                    DshIcons.Trash,
                     contentDescription = "移除这台电脑",
                     tint = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.size(17.dp),

@@ -55,12 +55,16 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import io.github.dshmobile.app.net.LinkState
+import io.github.dshmobile.app.ui.icons.DshIcons
 import io.github.dshmobile.app.ui.DshTheme
 import io.github.dshmobile.app.ui.SessionRow
 import io.github.dshmobile.app.ui.SessionsViewModel
 import io.github.dshmobile.app.ui.components.EmptyState
+import io.github.dshmobile.app.ui.components.DshIcon
 import io.github.dshmobile.app.ui.components.MetaTag
+import io.github.dshmobile.app.ui.components.DshIcon
 import io.github.dshmobile.app.ui.components.StatusPill
+import io.github.dshmobile.app.ui.components.DshIcon
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -111,20 +115,20 @@ fun SessionsScreen(
                         searchOpen = !searchOpen
                         if (!searchOpen) vm.search("")
                     }) {
-                        Icon(
-                            if (searchOpen) Icons.Filled.Close else Icons.Filled.Search,
+                        DshIcon(
+                            if (searchOpen) DshIcons.Close else DshIcons.Search,
                             contentDescription = if (searchOpen) "关闭搜索" else "搜索",
                         )
                     }
                     IconButton(onClick = { vm.toggleSubagents() }) {
-                        Icon(
-                            if (state.showSubagents) Icons.Filled.VisibilityOff
-                            else Icons.Filled.Visibility,
+                        DshIcon(
+                            if (state.showSubagents) DshIcons.EyeOff
+                            else DshIcons.Eye,
                             contentDescription = "显示/隐藏子代理会话",
                         )
                     }
                     IconButton(onClick = { vm.load() }) {
-                        Icon(Icons.Filled.Refresh, contentDescription = "刷新")
+                        DshIcon(DshIcons.Refresh, contentDescription = "刷新")
                     }
                 },
             )
@@ -137,7 +141,7 @@ fun SessionsScreen(
                     contentColor = MaterialTheme.colorScheme.onPrimary,
                     shape = MaterialTheme.shapes.large,
                 ) {
-                    Icon(Icons.Filled.Add, contentDescription = null)
+                    DshIcon(DshIcons.Add, contentDescription = null)
                     Spacer(Modifier.width(DshTheme.m.sm))
                     Text("新会话", style = MaterialTheme.typography.labelLarge)
                 }
@@ -204,13 +208,13 @@ fun SessionsScreen(
                 }
 
                 state.rows.isEmpty() && state.query.isNotBlank() -> EmptyState(
-                    icon = Icons.Outlined.ChatBubbleOutline,
+                    icon = DshIcons.ChatBubble,
                     title = "没有匹配的会话",
                     hint = "换个关键词试试，或者清空搜索框看全部。",
                 )
 
                 state.rows.isEmpty() -> EmptyState(
-                    icon = Icons.Outlined.ChatBubbleOutline,
+                    icon = DshIcons.ChatBubble,
                     title = "这台电脑上还没有会话",
                     hint = "点右下角「新会话」，或在电脑上开一个再回来刷新。",
                 )
@@ -246,8 +250,27 @@ fun SessionsScreen(
                         }
                     }
 
-                    items(state.rows, key = { it.sessionId }) { row ->
-                        SessionCard(row) { onOpen(row) }
+                    // 🔴 按工作区分组 —— 对齐 MiniMax 的 `rc_workspace_section_item`。
+                    //
+                    // 为什么要分组：我们的产品是「电脑干活，手机遥控」。用户点开会话时，
+                    // 真正想知道的是「这件事是在哪个目录里做的」。把所有会话平铺成
+                    // 一列，就丢掉了这个最关键的组织维度。
+                    // 实测 `session.list` 每条都带 `cwd`，且**同一台电脑上通常有好几个
+                    // 不同项目目录**，不分组就分不清。
+                    val groups = state.rows.groupBy { it.workspace }
+                    // 目录多的排前面？否 —— 保持列表原有顺序（按更新时间），
+                    // 只是把**相邻的同目录会话**聚到一起，最新的那个目录在最前。
+                    val ordered = groups.entries.sortedByDescending { e ->
+                        e.value.maxOf { it.updatedAt }
+                    }
+
+                    ordered.forEach { (ws, rows) ->
+                        item(key = "ws-header-${ws ?: "none"}") {
+                            WorkspaceHeader(ws, rows.size)
+                        }
+                        items(rows, key = { it.sessionId }) { row ->
+                            SessionCard(row) { onOpen(row) }
+                        }
                     }
                 }
             }
@@ -309,8 +332,8 @@ private fun SurfaceBanner(
         )
         if (onDismiss != null) {
             IconButton(onClick = onDismiss, modifier = Modifier.size(24.dp)) {
-                Icon(
-                    Icons.Filled.Close,
+                DshIcon(
+                    DshIcons.Close,
                     contentDescription = "关闭",
                     tint = fg,
                     modifier = Modifier.size(15.dp),
@@ -318,6 +341,51 @@ private fun SurfaceBanner(
             }
         }
     }
+}
+
+/**
+ * 工作区分组标题。
+ *
+ * 借鉴 MiniMax 的 `rc_workspace_section_item`：一个分组头 + 数量，
+ * 目录名用等宽字体（是路径，不是标题）。
+ */
+@Composable
+private fun WorkspaceHeader(workspace: String?, count: Int) {
+    Row(
+        Modifier.padding(top = DshTheme.m.md, bottom = DshTheme.m.xs),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        DshIcon(
+            DshIcons.Folder,
+            contentDescription = null,
+            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+            size = 14.dp,
+        )
+        Spacer(Modifier.width(6.dp))
+        Text(
+            text = workspace?.let { shortPath(it) } ?: "未关联目录",
+            style = MaterialTheme.typography.labelMedium,
+            fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.weight(1f, fill = false),
+        )
+        Spacer(Modifier.width(DshTheme.m.sm))
+        Text(
+            text = "$count",
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
+        )
+    }
+}
+
+/** 路径只显示最后两段。 */
+private fun shortPath(path: String, keep: Int = 2): String {
+    val normalized = path.replace('\\', '/').trimEnd('/')
+    val parts = normalized.split('/').filter { it.isNotBlank() }
+    if (parts.size <= keep) return normalized
+    return "…/" + parts.takeLast(keep).joinToString("/")
 }
 
 @Composable
@@ -419,8 +487,8 @@ private fun SubagentCard(row: SessionRow) {
                 .background(MaterialTheme.colorScheme.outlineVariant, CircleShape),
             contentAlignment = Alignment.Center,
         ) {
-            Icon(
-                Icons.Outlined.ChatBubbleOutline,
+            DshIcon(
+                DshIcons.ChatBubble,
                 contentDescription = null,
                 tint = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.size(15.dp),

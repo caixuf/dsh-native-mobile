@@ -112,6 +112,11 @@ private fun AppRoot(app: DshMobileApp) {
                 title = current?.title.orEmpty(),
                 onBack = { route = Route.Sessions },
                 vm = chatVm,
+                // 执行上下文：让用户看出「事情正在哪台电脑、哪个目录里跑」。
+                // 电脑名来自事件流 ready 帧的 hostName。
+                hostName = (state.link as? io.github.dshmobile.app.net.LinkState.Ready)
+                    ?.hostName?.takeIf { it.isNotBlank() },
+                workspace = current?.workspace,
             )
         }
     }

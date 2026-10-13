@@ -46,6 +46,20 @@ data class SessionRow(
     val isSubagent: Boolean = false,
     /** 子代理会话的所属父会话；fork 出来的普通会话也可能带，**不能当判据**。 */
     val parentSessionId: String? = null,
+    /**
+     * 会话所在的工作区（电脑上那个项目目录）。
+     *
+     * 🔴 这个字段是**产品模型的关键**，不是装饰：
+     * 我们的产品定位是「手机 = 遥控器，电脑 = 干活的」，不是「在手机上写代码」。
+     * 所以列表必须让人一眼看出**这件事是在哪个电脑上、哪个目录里做的** ——
+     * 否则用户看到一列会话，根本不知道它们和自己有没有关系。
+     *
+     * 对齐逆向 MiniMax 移动端 `com.xproducer.yingshiai` 的结构：
+     * 它有 `chat_rc_workspace_item` / `chat_rc_workspace_picker` /
+     * `rc_workspace_section_item` 一整套布局，文案是 `workspace_select`、
+     * `Workspace_sidebar_*`，即**会话按工作区分组**。
+     */
+    val workspace: String? = null,
 )
 
 data class HostsUiState(

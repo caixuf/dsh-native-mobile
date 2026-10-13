@@ -76,6 +76,11 @@ class SessionsViewModel(private val conn: DshConnection?) : ViewModel() {
                         // 本来能正常打开的会话藏进「子代理」里，属于误伤。
                         isSubagent = origin == "subagent",
                         parentSessionId = parent,
+                        // 工作区：主机 `session.list` 的 `cwd` 字段（实测存在，
+                        // 例如 "C:\\Users\\…\\Downloads\\aiwork"）。
+                        // 这是「事情在哪台电脑的哪个目录里跑」的唯一真相来源。
+                        workspace = JsonRender.str(item, "cwd")
+                            ?: JsonRender.str(values ?: item, "cwd"),
                     )
                 }
                 // 主列表只放普通会话；子代理会话单独收着，默认不显示。
