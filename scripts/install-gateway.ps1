@@ -24,18 +24,33 @@ $utf8 = New-Object System.Text.UTF8Encoding($false)
 
 function Info($m) { Write-Host ('==> ' + $m) }
 
+# 插件要落到**两个**位置。实测教训：
+#   - <dsh-home>\node_modules\dsh-bot-gateway 与 profiles\desktop\node_modules\dsh-bot-gateway
+#     两处都有；只放 dsh-home 那份时，本插件的 fiber 直接 failed（module 解析不到）。
+#   - 因此这里对两处都装，行为与已知能工作的 bot-gateway 保持一致。
+$targets = @(
+  (Join-Path $DshHome ('node_modules\' + $pkgName)),
+  (Join-Path $DshHome ('profiles\desktop\node_modules\' + $pkgName))
+)
+
 if ($Uninstall) {
-  if (Test-Path $dst) { Remove-Item $dst -Recurse -Force; Info ('已移除 ' + $dst) }
+  foreach ($t in $targets) {
+    if (Test-Path $t) { Remove-Item $t -Recurse -Force; Info ('已移除 ' + $t) }
+  }
   Info '请手动从 patch 文件里删除 mobile-gateway 那一段'
   exit 0
 }
 
 if (-not (Test-Path $src)) { throw ('找不到源目录：' + $src) }
 
-Info ('复制插件到 ' + $dst)
-if (Test-Path $dst) { Remove-Item $dst -Recurse -Force }
-New-Item -ItemType Directory -Force -Path $dst | Out-Null
-Copy-Item -Path (Join-Path $src '*') -Destination $dst -Recurse -Force -Exclude 'node_modules', 'test'
+foreach ($dst in $targets) {
+  Info ('复制插件到 ' + $dst)
+  if (Test-Path $dst) { Remove-Item $dst -Recurse -Force }
+  New-Item -ItemType Directory -Force -Path $dst | Out-Null
+  Copy-Item -Path (Join-Path $src '*') -Destination $dst -Recurse -Force -Exclude 'node_modules', 'test'
+}
+
+$primary = $targets[0]
 
 Info '安装运行时依赖（ws / qrcode）'
 $runtime = 'C:\Users\me\AppData\Local\Programs\DeepSeek Harness\resources\runtime'
@@ -45,8 +60,15 @@ if (-not $node) { throw '找不到 node 可执行文件' }
 $pnpm = Join-Path $runtime 'pnpm\bin\pnpm.cjs'
 if (-not (Test-Path $pnpm)) { throw '找不到 DSH 自带的 pnpm.cjs' }
 
-& $node $pnpm install --dir $dst --ignore-workspace --node-linker=hoisted --prod --ignore-scripts 2>&1 |
+& $node $pnpm install --dir $primary --ignore-workspace --node-linker=hoisted --prod --ignore-scripts 2>&1 |
   Select-Object -Last 6
+
+# 第二处直接复用第一处的 node_modules（pnpm 的目录布局是自洽的，
+# 复制整棵树比再跑一次安装更省事，也避免两份 lockfile 不一致）。
+if ($targets.Count -gt 1 -and (Test-Path (Join-Path $primary 'node_modules'))) {
+  Copy-Item -Path (Join-Path $primary 'node_modules') -Destination $targets[1] -Recurse -Force
+  Info '已把依赖树复制到 profile 位置'
+}
 
 Info ('注册到机器级 patch：' + $patch)
 $content = [System.IO.File]::ReadAllText($patch)

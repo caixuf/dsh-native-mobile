@@ -53,7 +53,7 @@ export const defaults = {
 };
 
 function resolveInstance(ctx) {
-  const profile = ctx.get?.('profileContext');
+  const profile = safeGet(ctx, 'profileContext');
   return {
     id: profile?.id ?? null,
     name: profile?.name ?? process.env.DSH_PROFILE ?? 'desktop',
@@ -64,20 +64,62 @@ function resolveInstance(ctx) {
   };
 }
 
-export async function apply(ctx, userConfig) {
+/**
+ * `ctx.get(name)` 在服务尚未就绪时会直接抛错，而插件的 apply 跑在启动竞态里。
+ * 这里一律吞掉：拿不到就用缺省值，**绝不能让一次探测失败把整个 fiber 带崩**。
+ */
+function safeGet(ctx, name) {
+  try {
+    return typeof ctx?.get === 'function' ? ctx.get(name) : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+export function apply(ctx, userConfig) {
   const config = { ...defaults, ...(userConfig ?? {}) };
   const dshHome = resolveDshHome();
   const dataDir = resolvePath(config.dataDir, join(dshHome, 'dsh-mobile-gateway'));
   const log = createLogger(join(dataDir, 'gateway.log'), { minLevel: config.logLevel, console: true });
+
+  // 先落一行盘：fiber 失败时 DSH 不会把异常交给我们，这里是唯一的现场证据。
+  log.info('applying', { version: PLUGIN_VERSION, node: process.version, dataDir });
 
   if (!config.enabled) {
     log.info('disabled by config; registering nothing');
     return () => {};
   }
 
-  // webServer / connection / typertGateway 都是异步就绪的，必须 inject 等它们，
-  // 否则启动竞态下路由会静默丢失（dsh-bot-gateway 为此专门注掉了 webserver 行的 deps）。
-  const disposeServices = await ctx.inject(['webServer', 'connection', 'typertGateway']);
+  /**
+   * `ctx.inject(服务名[], 回调)` —— 第二个参数是**回调**，不是能 await 成 disposer 的东西。
+   * 回调在三个服务都就绪后执行，参数是该子 fiber；服务要从**它**身上取。
+   *
+   * 踩过的坑：写成 `await ctx.inject([...])` 之后用 `ctx.webServer`，
+   * cordis 会在解析参数时抛 `Cannot read properties of undefined (reading 'name')`，
+   * fiber 直接 failed。本机可用的 dsh-bot-gateway 是这么写的：
+   *
+   *     ctx.inject(['webServer'], mountWebuiRoutes);
+   *     // 回调里：webCtx.effect(() => webServer.register({...}), '标签')
+   *
+   * 这里还把整个启动包了一层 try/catch 并落盘，保证再出问题时有现场可查。
+   */
+  ctx.inject(['webServer', 'connection', 'typertGateway'], async (fiberCtx) => {
+    try {
+      await start(fiberCtx, config, log, dataDir);
+    } catch (error) {
+      log.error('apply failed', {
+        message: String(error?.message ?? error),
+        stack: String(error?.stack ?? '').split('\n').slice(0, 6).join(' | '),
+      });
+      await log.flush();
+      // 不再往上抛：宁可停在「未就绪」，也不要让一个附属插件把宿主的 fiber 弄崩。
+    }
+  });
+
+  return () => {};
+}
+
+async function start(ctx, config, log, dataDir) {
   const { webServer } = ctx;
 
   const instance = { ...resolveInstance(ctx), gatewayVersion: PLUGIN_VERSION };
@@ -94,40 +136,42 @@ export async function apply(ctx, userConfig) {
     describeChannel: bridge.describe,
   });
 
-  const disposers = [];
+  // 路由注册挂在 fiber 的 effect 上：fiber 卸载时由 cordis 统一回收，
+  // 不用自己维护 disposer 数组（本机 dsh-bot-gateway 的 webui 路由也是这个写法）。
 
   // ---- 所有 HTTP 面共用**一个** prefix 路由，在内部按 pathname 分派 ---------
   // 不拆成 exact + prefix：`/mobile-gateway/pair` 会被 `/mobile-gateway/` 这个
   // prefix 命中，拆开就得依赖「exact 优先于 prefix」这条未公开的调度顺序。
   const API_PREFIX = '/mobile-gateway/api/';
 
-  disposers.push(
-    webServer.register({
-      kind: 'prefix',
-      path: '/mobile-gateway/',
-      async handler(req, res) {
-        const pathname = (req.url ?? '/').split('?')[0];
-        try {
-          if (pathname === '/mobile-gateway/health') {
-            sendJson(res, 200, {
-              ok: true,
-              service: 'dsh-mobile-gateway',
-              version: PLUGIN_VERSION,
-              instance: { name: instance.name, home: instance.home },
-            });
-            return;
-          }
+  ctx.effect(
+    () =>
+      webServer.register({
+        kind: 'prefix',
+        path: '/mobile-gateway/',
+        async handler(req, res) {
+          const pathname = (req.url ?? '/').split('?')[0];
+          try {
+            if (pathname === '/mobile-gateway/health') {
+              sendJson(res, 200, {
+                ok: true,
+                service: 'dsh-mobile-gateway',
+                version: PLUGIN_VERSION,
+                instance: { name: instance.name, home: instance.home },
+              });
+              return;
+            }
 
-          if (pathname === '/mobile-gateway/pair') {
-            if (req.method !== 'POST') return sendError(res, 405, 'method_not_allowed', '请用 POST 配对');
-            const body = await readJsonBody(req);
-            const result = await store.redeem(body.code, {
-              ttlMs: config.tokenTtlMs,
-              deviceName: body.deviceName,
-              platform: body.platform,
-            });
-            if (!result.ok) {
-              sendError(
+            if (pathname === '/mobile-gateway/pair') {
+              if (req.method !== 'POST') return sendError(res, 405, 'method_not_allowed', '请用 POST 配对');
+              const body = await readJsonBody(req);
+              const result = await store.redeem(body.code, {
+                ttlMs: config.tokenTtlMs,
+                deviceName: body.deviceName,
+                platform: body.platform,
+              });
+              if (!result.ok) {
+                sendError(
                 res,
                 result.reason === 'no_active_code' ? 404 : 403,
                 result.reason,
@@ -167,13 +211,15 @@ export async function apply(ctx, userConfig) {
   // ---- 两条下行事件流 -----------------------------------------------------
   for (const endpoint of ['/api/events.mux', '/api/events.host']) {
     const path = endpoint.replace('/api/', '/mobile-gateway/');
-    disposers.push(
-      webServer.registerUpgrade({
-        path,
-        handler(req, socket, head) {
-          bridge.handleEventsUpgrade(req, socket, head, endpoint);
-        },
-      }),
+    ctx.effect(
+      () =>
+        webServer.registerUpgrade({
+          path,
+          handler(req, socket, head) {
+            bridge.handleEventsUpgrade(req, socket, head, endpoint);
+          },
+        }),
+      `dsh-mobile-gateway: upgrade ${path}`,
     );
   }
 
@@ -183,14 +229,11 @@ export async function apply(ctx, userConfig) {
     manageUrl: '/mobile-gateway/manage',
     devices: store.list().length,
   });
+  await log.flush();
 
-  return async () => {
-    for (const dispose of disposers.reverse()) dispose();
-    disposeServices();
-    await bridge.dispose();
-    await store.flush();
-    log.info('mobile gateway stopped');
-  };
+  await bridge.dispose();
+  await store.flush();
+  log.info('mobile gateway stopped');
 }
 
 function pairErrorText(reason) {
