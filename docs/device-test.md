@@ -885,9 +885,9 @@ node packages\dsh-mobile-gateway\scripts\verify-subagent-classifier.mjs https://
 
 | 项 | 状态 |
 |---|---|
-| 真实主机接受我们的 mux 帧（`open` → `ready`/`emit`） | **未验证** —— 网关改动需**重启 DSH** 才生效 |
-| `$events` 流是否真能推出 approval/waterfall 帧 | **未验证** —— 同上 |
-| 审批应答端到端（`$events/result` 带真实 clientId） | **未验证** —— 同上 |
+| 真实主机接受我们的 mux 帧（`open` → `ready`/`emit`） | **✅ 已通过**（见 §10） |
+| `$events` 流是否真能推出 approval/waterfall 帧 | **✅ 已通过**（见 §10） |
+| 审批应答端到端（`$events/result` 带真实 clientId） | **✅ 已通过**（见 §10） |
 | 子代理会话不再出现在主列表 | **未验证** —— 需重装 APK 后确认（已编译通过） |
 | release 包正式签名 | 仍未做（与 debug 同证书） |
 | 真机（非模拟器）验证 | 仍未做（当前用模拟器） |
@@ -895,3 +895,79 @@ node packages\dsh-mobile-gateway\scripts\verify-subagent-classifier.mjs https://
 > 网关改动落在 `packages/dsh-mobile-gateway/`，安装副本在
 > `C:\Users\me\.dsh\node_modules\dsh-mobile-gateway`。**重启 DSH 前需要先把改动同步到安装副本**，
 > 否则重启加载的仍是旧代码。
+
+---
+
+## 10. 第三轮：事件流端到端验证（重启 DSH 之后）
+
+> **这一轮补上了整个项目最后一块拼图。** 在此之前，「单条 mux + `$events` + `$events/result`」
+> 全部只是**静态取证**（读 `app.asar` 源码 + 对着桩宿主跑 e2e），**从未与真实 `typertGateway` 对接过**。
+> 重启 DSH 后（网关新代码生效），用新增的
+> `packages/dsh-mobile-gateway/scripts/verify-mux-events.mjs` 实测。
+
+### 10.1 路由生效验证（最直接的对照）
+
+| 路由 | 重启前 | 重启后 |
+|---|---|---|
+| `WS /mobile-gateway/remote.mux` | **空响应**（路由不存在） | **HTTP 401**（存在，需令牌） |
+| `WS /mobile-gateway/events.mux` | HTTP 401（旧路由还在） | **空响应**（已移除） |
+
+两者**完全对调** —— 证明运行中的进程确实加载了新代码（Node ESM 不热重载，
+这正是 §8.4 那个「改了不生效」老问题的同一机制）。
+
+### 10.2 `verify-mux-events.mjs` 实测结果：**9 通过 / 0 失败**
+
+```
+[1] mux + $events
+  ok   remote.mux 升级成功
+  ok   $events 推出 ready 帧（带 clientId）      clientId=1f0825e0-…
+  ok   ready 帧带 host.home                    {"home":"C:\\Users\\…"}
+
+[2] 制造真实 turn（发一条消息）
+  ok   新建会话拿到 sessionId                    session-566fad26-…
+  ok   session/prompt 成功
+  ok   turn 期间推出 emit/waterfall 帧           {"ready":1,"emit":3}
+      emit 事件名: api-session/added, api-session/status
+  ok   emit 帧带可识别的事件名                    2 种
+```
+
+**这验证了三条此前只是"推断"的硬约束**（全部实测确认）：
+1. `open` 帧必须**精确 4 键**（`type`/`streamId`/`endpoint`/`payload`）；
+2. 事件流 endpoint 是 **`$events`**，payload 必须是 **`{args:{}}`**；
+3. 主机确实会推出 **`ready`（带 `clientId`）** 与 **`emit`** 帧。
+
+### 10.3 🔴 真实审批（waterfall）端到端 —— 最后一块拼图
+
+`waterfall` 是**按需触发**的：默认 sandbox 是 `workspace-write`，
+在工作区内跑 `echo` **不需要审批**（前两次尝试因此都没收到 waterfall）。
+用一次**工作区外的写操作**触发，拿到了真实帧：
+
+```
+★ 收到 waterfall!
+  event   = approval/request
+  eventId = 17878167-3175-450e-808e-201078addd56
+  request = { "toolName":"pwsh",
+              "callId":"call_00_nTXQkBfZNrA1BElTtof89937",
+              "reason":"escalate sandbox to danger-full-access: …",
+              "displayReason":{"en":"…","zh":"允许本次操作使用 danger-full-access 权限：…"} }
+  应答 { clientId, eventId, outcome:{kind:'result', value:'rejected'} }  =>  {"ok":true}  ✅
+帧统计: {"ready":1,"emit":4,"waterfall":1}
+```
+
+**这一条同时证明了四件事**：
+1. **`waterfall` 帧真实存在**，且带 `event`/`eventId`/`request`；
+2. **`eventId` 是应答所需的句柄** —— 原样送回即可定位 pending；
+3. **`$events/result` 结算成功**（回 `{"ok":true}`），审批链路闭合；
+4. **"拒绝"是有效的** —— 那个越权写**没有执行**（事后确认目标文件不存在，已清理）。
+
+> 附带收获：`request.displayReason` 是**多语言对象**（`{en, zh}`），
+> 而 `reason` 是纯文本。App 的审批卡片应优先显示 `displayReason` 的当前语言。
+
+### 10.4 本轮仍未验证
+
+| 项 | 状态 |
+|---|---|
+| **App 侧真的接上 `$events` 流** | **未做** —— 本轮验证的是**协议**（用 node 脚本直连 mux）；App 目前仍走 3s 轮询。接流是下一步（见 `docs/open-source-android-agents.md` §2.9 的 delta 合批建议） |
+| 子代理会话不再出现在主列表 | 未验证 —— 需重装 APK |
+| 真机（非模拟器） | 仍未做 |
+| release 包正式签名 | 仍未做 |

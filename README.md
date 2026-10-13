@@ -149,9 +149,9 @@ cd apps\android
 
 **已知取舍**：
 
-- **历史读取走 `session.page` 分页 + 增量轮询**，不是官方 `session/follow` 订阅。
-  事件流（单条 mux + `$events`）已实现，但**尚未端到端验证**（需重启 DSH 后真机确认）；
-  在那之前轮询是唯一已验证可用的路径。
+- **历史读取走 `session.page` 分页 + 增量轮询**。事件流（单条 mux + `$events`）
+  **已与真实主机端到端验证通过**（`scripts/verify-mux-events.mjs`，9/9）；
+  App 侧正在从「纯轮询」过渡到「事件流为主、轮询兜底」。
 - **子代理会话默认折叠**：真实主机把它们也列在 `session/list` 里，但它们**不能用裸
   sessionId 打开**（会得到 `subagent Sessions require their durable parent address`）。
   判据**只认 `origin == "subagent"`** —— 用 id 前缀或 `parentSessionId` 都会误伤
