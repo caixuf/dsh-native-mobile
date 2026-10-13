@@ -82,6 +82,53 @@ const PRIVILEGED_BASELINE = [
   'llm.discoverModels',
 ];
 
+/**
+ * 真实主机上**确实存在**的 RPC 方法名 —— 硬编码基线，用于让假宿主拒绝未知方法。
+ *
+ * 为什么必须这样：早前假宿主对**任意**方法名都返回 `{echoed: method}` 成功应答，
+ * 于是「App 调用了不存在的方法」这类错误在测试里完全不可见 —— 我们就是这样让
+ * `session.history`（真实主机没有此方法，真名 `session.page`）一路绿到真机的。
+ *
+ * 取证来源（按可信度排序，见 docs/api-contract.md 顶部警告）：
+ *   1. 真实主机源码 app.asar 内 @deepseek-ai/dsh-api-<包>/lib/*.js（含 @Remote 注册）
+ *   2. 对运行中的主机发真实请求
+ *   3. 客户端 bundle（**最不可信**，已出现过 session.history 这种错误）
+ *
+ * 下面的清单是从真实主机侧确认过的（asar 内字面量存在 + zod schema）。
+ * 新增方法时必须先去主机侧核实，不要从 docs/api-contract.json 抄。
+ */
+const HOST_METHODS = new Set([
+  'host.describe',
+  'session.list',
+  'session.page',
+  'session.prompt',
+  'session.cancel',
+  'session.search',
+  'session.create',
+  'session.rename',
+  'session.fork',
+  'session.models',
+  'session.selectModel',
+  'session.attachment',
+  'session.updateQueue',
+  'session.projections',
+  'session.follow',
+  'workspace.list',
+  'workspace.create',
+  'respond',
+  // 测试专用的故障注入方法：只存在于测试桩里，用于验证「业务错误透传」这条路径。
+  // 命名上刻意与真实方法区分开，避免被误认为真实方法。
+  'boom',
+]);
+
+/** 每个方法在真实主机上的必填参数 —— 用于让假宿主校验，而不是无条件接受。 */
+const HOST_REQUIRED_ARGS = {
+  'session.page': ['address', 'throughSeq'],
+  'session.prompt': ['requestId', 'sessionId', 'mode', 'content'],
+  'session.cancel': ['sessionId'],
+  'session.search': ['query'],
+};
+
 /** 模拟 `ctx.connection.createSharedFetchHandler('/api')`。 */
 async function fakeApiFetch(request) {
   const url = new URL(request.url);
@@ -97,6 +144,43 @@ async function fakeApiFetch(request) {
       { type: 'server-response', result: { ok: true, value: { shouldNotHappen: true } } },
       { status: 200 },
     );
+  }
+
+  // 🔴 未知方法必须像真实主机那样失败，而不是假装成功。
+  // 这是本次事故的直接教训：假宿主曾经对任何方法名都回 {echoed}，
+  // 于是「调了不存在的方法」在测试里完全不可见。
+  if (!HOST_METHODS.has(method)) {
+    return Response.json({
+      type: 'server-response',
+      result: {
+        ok: false,
+        error: {
+          code: 'unknown-method',
+          message: `真实主机没有 ${method} 这个方法`,
+          details: { method },
+        },
+      },
+    });
+  }
+
+  // 必填参数校验：漏传必填项时真实主机会拒绝，假宿主也必须拒绝。
+  const required = HOST_REQUIRED_ARGS[method];
+  if (required) {
+    const payload = body?.payload ?? {};
+    const missing = required.filter((k) => payload[k] === undefined);
+    if (missing.length) {
+      return Response.json({
+        type: 'server-response',
+        result: {
+          ok: false,
+          error: {
+            code: 'invalid-params',
+            message: `${method} 缺少必填参数: ${missing.join(', ')}`,
+            details: { missing },
+          },
+        },
+      });
+    }
   }
 
   if (method === 'host.describe') {
@@ -416,6 +500,50 @@ check('信封 method 与路径一致', calls.at(-1).method === 'session.list');
 
 const boom = await api('boom', { token });
 check('业务错误原样透传', boom.json?.result?.ok === false && boom.json.result.error.code === 'bad_thing');
+
+// ---- 3b. 假宿主的方法契约校验本身必须有效 ------------------------------
+// 这一组防的是「测试桩对任意方法都回成功」这种最危险的假绿形态：
+// 它曾让 App 调用不存在的 session.history 一路绿到真机。
+console.log('\n[3b] 假宿主会拒绝未知方法与缺失必填项（防假绿）');
+const unknownMethod = await api('session.history', { token });
+check(
+  '不存在的方法名被假宿主拒绝（不再假装成功）',
+  unknownMethod.json?.result?.ok === false,
+  JSON.stringify(unknownMethod.json).slice(0, 120),
+);
+check(
+  '拒绝原因是 unknown-method',
+  unknownMethod.json?.result?.error?.code === 'unknown-method',
+  JSON.stringify(unknownMethod.json?.result?.error).slice(0, 100),
+);
+
+// session.page 缺 throughSeq 必须被拒 —— 对应「漏传必填参数」这类错误。
+const missingArg = await api('session.page', {
+  token,
+  body: {
+    type: 'client-request',
+    rpcId: 'r1',
+    method: 'session.page',
+    payload: { address: { kind: 'session', sessionId: 's-1' } },
+  },
+});
+check(
+  '缺必填参数被假宿主拒绝',
+  missingArg.json?.result?.ok === false && missingArg.json.result.error.code === 'invalid-params',
+  JSON.stringify(missingArg.json).slice(0, 120),
+);
+
+// 反向对照：参数齐全时必须放行，证明校验不是一刀切。
+const okPage = await api('session.page', {
+  token,
+  body: {
+    type: 'client-request',
+    rpcId: 'r1',
+    method: 'session.page',
+    payload: { address: { kind: 'session', sessionId: 's-1' }, throughSeq: 999 },
+  },
+});
+check('参数齐全时放行', okPage.json?.result?.ok === true, JSON.stringify(okPage.json).slice(0, 120));
 
 console.log('\n[4] 特权方法闸门');
 const before = privilegedLeak.length;

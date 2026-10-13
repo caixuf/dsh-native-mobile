@@ -33,7 +33,10 @@
   },
   "scripts": {
     "test": "node test/e2e.mjs",
-    "check": "node --check index.mjs && node --check lib/util.mjs && node --check lib/store.mjs && node --check lib/http.mjs && node --check lib/bridge.mjs && node --check lib/manage.mjs"
+    "check": "node --check index.mjs && node --check lib/util.mjs && node --check lib/store.mjs && node --check lib/http.mjs && node --check lib/bridge.mjs && node --check lib/manage.mjs",
+    "check:methods": "node scripts/check-app-methods.mjs",
+    "check:contract": "node scripts/audit-contract.mjs",
+    "verify": "npm run check && npm run test && npm run check:methods && npm run check:contract"
   },
   "dependencies": {
     "qrcode": "^1.5.4",

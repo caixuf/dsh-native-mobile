@@ -1,0 +1,42 @@
+fix(app): session.history 在真实主机上不存在 —— 改用 session.page；补方法名门禁
+
+由 app-tester 的独立验证发现，我随后用 asar 扫描器独立复现：
+
+  "session.history"  →  0 次命中（遍历 11470 个文件节点、实扫 423 个包）
+  "session.page"     →  dsh-api-session-controller/lib/client.js
+
+真实源码 readPage() 的权威签名：
+  remote.session.page({ address, throughSeq, ...request }, signal)
+  → address = {kind:'session',sessionId} | {kind:'subagent',...}
+  → throughSeq 必填；返回 records[].event
+
+这是致命缺陷：App 的整个对话读路径（进会话 + 1.6s 轮询）100% 会失败。
+另有 session.prompt 的 requestId 是必填（官方自己传 requestId ?? randomUUID()），
+App 之前没传，发消息会被参数校验拒绝。
+
+根因：契约文档的来源不可信
+--------------------------
+docs/api-contract.* 是从客户端 bundle（npm 包）挖的，与真实运行的主机不同步。
+已修文档并加了置顶警告，明确取证顺序：
+  1. 真实主机源码 app.asar 内 @deepseek-ai/dsh-api-<包>/lib/*.js
+  2. 对运行中的主机发真实请求
+  3. 客户端 bundle（最不可信，已出现过这次错误）
+
+补上架构缺口：App 与主机的方法名一致性此前无任何守护
+----------------------------------------------------
+突变测试暴露的：把 App 改回 session.history，网关 50 项断言仍然全绿 ——
+因为那些测试测的是网关，不读 Kotlin 源码。新增 check-app-methods.mjs 门禁：
+从 app.asar 枚举真实主机方法名，与 App 调用逐个比对。实测两种不存在的方法名
+（session.history / session.abort）都被抓住并给出精确行号，还原后归零。
+找不到 app.asar 时明确报无法验证并非零退出，不静默跳过。
+
+测试桩也补了方法契约校验
+------------------------
+假宿主此前对任意方法名都回 {echoed} 成功，这是最危险的假绿形态。
+现在只接受白名单方法，且校验必填参数（session.page 缺 throughSeq 会被拒）。
+新增 4 条断言验证这层防护本身有效；突变删掉 session.page 会红 2 条。
+
+另修 App 的 client-response 信封：官方要求 result = { ok, value }，
+之前把裸业务对象当 result 传，主机会回 bad-response（点了允许没反应）。
+
+断言 46 -> 50，全绿。verify 流程：语法 + E2E + 方法名门禁 + 契约审计。

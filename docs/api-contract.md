@@ -6,6 +6,32 @@
 
 ---
 
+## ⚠️ 首要警告：本文来源是**客户端 bundle**，与真实主机可能不同步
+
+**本文的方法清单是从下载的 npm 包 `@deepseek-ai/dsh-client-connection`（客户端 bundle）里挖出来的，
+不是从真实运行的主机里枚举的。这两者已经出现过不一致，并导致过一个真实故障。**
+
+已确认的事故案例：
+
+| 本文原写法 | 真实主机 | 后果 |
+|---|---|---|
+| `session.history` | **不存在**。真名 `session.page`，参数是 `{address, throughSeq}`、返回 `records[].event` | App 的会话读取与轮询 100% 失败 |
+
+核实方式（可复现）：在 `app.asar` 里扫全部 423 个 `@deepseek-ai/dsh-*` 包，
+`"session.history"` 字面量出现 **0 次**，`session.page` 命中
+`dsh-api-session-controller/lib/client.js`。
+
+**因此：凡是要写进客户端的调用，必须以下列顺序取证——**
+
+1. **首选**：真实主机源码 `app.asar` 内 `@deepseek-ai/dsh-api-*/lib/*.js`（含 zod schema 与 `@Remote(...)` 注册）
+2. **其次**：对运行中的主机发一次真实请求，看它接受什么
+3. **最后**：本文（客户端 bundle），且必须标注为「待与主机核对」
+
+`scripts/audit-contract.mjs` 会用本文核对 App 的调用参数，但它**只能发现参数不一致，
+发现不了「方法名在主机上不存在」** —— 后者必须按上面第 1、2 条核实。
+
+---
+
 ## 0. 关于版本与来源（重要）
 
 任务描述中给出的 `dsh-client-connection@0.2.0-rc.2` **在磁盘上并不存在**。实际下载到的是 `0.0.1-rc.1`。本文所有引用均指向磁盘上真实存在的文件：
@@ -205,12 +231,12 @@ content-type: application/json
 | `session.list` | `cursor?: string` | `{ items: SessionSummary[] }` | 列出会话，`cursor` 分页 | `cc/client.js:6002` / 参数 `:5202` |
 | `session.search` | `query: string`（trim，1..500，不含 NUL） | `{ items: {sessionId,snippet}[≤20], hasMore }` | 全文检索，snippet 上限 240 码点 | `cc/client.js:6003` / `:5205-5213` |
 | `session.create` | `workspaceId?`, `cwd?`, `sessionId?`, `agentPreset?` | `{ sessionId, agentPreset? }` | `workspaceId` 与 `cwd` **互斥** | `cc/client.js:6004` / `:5214-5224` |
-| `session.history` | `sessionId`, `beforeSeq?: int≥0`, `maxMessages?: int>0` | `{ events: HistoryEntry[], hasMore, projections? }` | 倒序翻页；`projections` 基线只在末页出现 | `cc/client.js:6005` / `:5240-5244` |
+| `session.page` | `address: {kind:'session',sessionId} \| {kind:'subagent',…}`, `throughSeq: number`（必填）, `beforeSeq?`, `maxMessages?`, `turnWindow?` | `{ records: [ {type:'event', event:{type,seq,time,data}} ], … }` | 倒序翻页读会话事件 | **真实主机** `dsh-api-session-controller/lib/client.js` 的 `readPage()` |
 | `session.models` | `sessionId` | `{ current, routable, groups, failures }` | 当前模型 + 可路由目录 + 逐 provider 失败 | `cc/client.js:6006` / `:5312-5319` |
 | `session.selectModel` | `sessionId`, `provider`, `model`, `reasoningEffort?` | `{ selected: ModelSelection }` | 锁定精确 provider/model | `cc/client.js:6007` / `:5320-5327` |
 | `session.rename` | `sessionId`, `title` | `{ title, seq }` | 返回归一化后的标题及其事件 seq | `cc/client.js:6008` / `:5225-5233` |
 | `session.fork` | `sessionId`, `atSeq?: int≥0` | `{ sessionId }` | 从指定 seq（缺省为头部）分叉 | `cc/client.js:6009` / `:5234-5239` |
-| `session.prompt` | `sessionId`, `mode: 'queue'\|'steer'`, `content: PromptContentPart[]` | `{ accepted: true, command?: { kind:'success', text? } }` | `queue` 排到运行轮之后；`steer` 注入当前轮。`command` 仅在文本触发了斜杠命令时出现 | `cc/client.js:6010` / `:5347-5359` |
+| `session.prompt` | `requestId: string`（**必填**）, `sessionId`, `mode: 'queue'\|'steer'`, `content: PromptContentPart[]`, `clientTimeZone?` | `{ accepted: true, command?: { kind:'success', text? } }` | `queue` 排到运行轮次之后；`steer` 注入当前轮。**`requestId` 与 `sessionId` 同为必填**——官方客户端自己传 `requestId ?? randomUUID()`（`dsh-api-session-controller/lib/client.js`） | 真实主机源码 |
 | `session.attachment` | `sessionId`, `attachmentId` | `{ attachment: ImageAttachmentRef, data: base64 }` | 取持久化图片附件 | `cc/client.js:6011` / `:5371-5379` |
 | `session.updateQueue` | `sessionId`, `itemId`, `action: {kind:'edit',content} \| {kind:'remove'} \| {kind:'steer'}` | `{ accepted: true }` | 编辑/删除/提升队列项 | `cc/client.js:6012` / `:5380-5393` |
 | `session.cancel` | `sessionId` | `{ accepted: true }` | 取消当前轮 | `cc/client.js:6013` / `:5394-5396` |

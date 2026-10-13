@@ -76,18 +76,55 @@ class ChatViewModel(private val conn: DshConnection?) : ViewModel() {
         return conn
     }
 
+    /**
+     * 读一页会话记录。
+     *
+     * ⚠️ 方法名是 `session.page`，**不是** `session.history`。
+     * 早前依据项目自己的 `docs/api-contract.json` 写成了 `session.history`，
+     * 而该文档是从下载的**客户端 bundle** 挖的，与真实主机不同步 ——
+     * 真实主机的 session 方法枚举里没有 `history`（全 bundle 字面量 0 次命中）。
+     *
+     * 权威签名（`@deepseek-ai/dsh-api-session-controller/lib/client.js` 的 readPage）：
+     *   remote.session.page({ address, throughSeq, ...request }, signal)
+     *     address    = { kind:'session', sessionId } | { kind:'subagent', ... }
+     *     throughSeq = 必填
+     *     request    = { maxMessages?, turnWindow? }
+     *   返回 { records: [ { type:'event', event:{ type, seq, time, data } } ], ... }
+     *
+     * 注意结果形状是 `records[].event`，**不是** `events[]`。
+     */
+    private fun pageRequest(sessionId: String, maxMessages: Int): JsonObject = buildJsonObject {
+        put("address", buildJsonObject {
+            put("kind", "session")
+            put("sessionId", sessionId)
+        })
+        // throughSeq 必填；用一个足够大的值表示「要最新的一页」。
+        put("throughSeq", Long.MAX_VALUE)
+        put("maxMessages", maxMessages)
+    }
+
+    /** 从 session.page 的结果里取出记录数组（兼容 records[].event 与裸 events）。 */
+    private fun recordsOf(obj: JsonObject): List<JsonObject> {
+        val records = JsonRender.arr(obj, "records")
+        if (records != null) {
+            return records.mapNotNull { r ->
+                val entry = r as? JsonObject ?: return@mapNotNull null
+                (entry["event"] as? JsonObject) ?: entry
+            }
+        }
+        // 兼容：万一主机直接给了 events[]。
+        return (JsonRender.arr(obj, "events") ?: JsonArray(emptyList()))
+            .mapNotNull { it as? JsonObject }
+    }
+
     fun reload() {
         val c = requireConn() ?: return
+        val sid = _state.value.sessionId
         viewModelScope.launch {
-            c.call("session.history", buildJsonObject {
-                put("sessionId", _state.value.sessionId)
-                put("maxMessages", 80)
-            }).onSuccess { value ->
+            c.call("session.page", pageRequest(sid, 80)).onSuccess { value ->
                 val obj = value.jsonObject
-                val events = JsonRender.arr(obj, "events") ?: JsonArray(emptyList())
-                val lines = events.mapIndexedNotNull { i, e -> toLine(e as? JsonObject, i) }
-                lastSeq = obj["cursor"]?.jsonPrimitive?.content?.toLongOrNull()
-                    ?: lines.size.toLong()
+                val lines = recordsOf(obj).mapIndexedNotNull { i, e -> toLine(e, i) }
+                lastSeq = lines.size.toLong()
                 _state.update { it.copy(lines = lines, loading = false, error = null) }
             }.onFailure { error ->
                 _state.update { it.copy(loading = false, error = error.message) }
@@ -98,10 +135,10 @@ class ChatViewModel(private val conn: DshConnection?) : ViewModel() {
     /**
      * 轮询而不是订阅流。
      *
-     * 官方把 `session/follow` 定义成 RemoteStreamHandle——客户端要用稳定的 rpcId 发起，
+     * 官方把 `session/follow` 定义成 RemoteStreamHandle——客户端要用稳定 rpcId 发起，
      * 主机再以 `server-request` 帧回推、客户端逐帧回 `client-response`。那条链路的帧形状
      * 在已公开的官方包里没有可验证的定义。与其猜一个可能错的形式，不如先用必然可用的
-     * `session.history` 轮询把体验跑通；确认了流协议再切换（见 docs/api-contract.md 的 Gaps）。
+     * `session.page` 轮询把体验跑通；确认了流协议再切换（见 docs/api-contract.md 的 Gaps）。
      */
     private fun startPolling() {
         pollJob?.cancel()
@@ -113,17 +150,13 @@ class ChatViewModel(private val conn: DshConnection?) : ViewModel() {
                 if (sid.isEmpty() || _state.value.pending != null) continue
                 // call() 本身返回 Result 且不抛，这里不再套 runCatching。
                 c.call(
-                    "session.history",
-                    buildJsonObject {
-                        put("sessionId", sid)
-                        put("maxMessages", 30)
-                    },
+                    "session.page",
+                    pageRequest(sid, 30),
                     timeoutMs = 8_000,
                 ).onSuccess { value ->
                     val obj = value.jsonObject
-                    val events = JsonRender.arr(obj, "events") ?: return@onSuccess
-                    val fresh = events.mapIndexedNotNull { i, e ->
-                        val entry = e as? JsonObject ?: return@mapIndexedNotNull null
+                    val records = recordsOf(obj)
+                    val fresh = records.mapIndexedNotNull { i, entry ->
                         val seq = entry["seq"]?.jsonPrimitive?.content?.toLongOrNull()
                         if (seq != null && lastSeq >= 0 && seq <= lastSeq) null else toLine(entry, i)
                     }
@@ -188,6 +221,10 @@ class ChatViewModel(private val conn: DshConnection?) : ViewModel() {
         _state.update { it.copy(sending = true, error = null) }
         viewModelScope.launch {
             c.call("session.prompt", buildJsonObject {
+                // ⚠️ requestId 与 sessionId 同为必填。
+                // 权威源码 `dsh-api-session-controller/lib/client.js` 自己就是
+                // `requestId: requestId ?? randomUUID()` —— 少了它会被参数校验拒绝。
+                put("requestId", java.util.UUID.randomUUID().toString())
                 put("sessionId", _state.value.sessionId)
                 put("mode", "queue")
                 put("content", kotlinx.serialization.json.buildJsonArray {
@@ -224,11 +261,10 @@ class ChatViewModel(private val conn: DshConnection?) : ViewModel() {
         return ChatLine(key = "$seq-$kind-$index", role = role, text = text, kind = kind)
     }
 
-    private fun detectRunning(history: JsonObject): Boolean {
-        val events = JsonRender.arr(history, "events") ?: return false
+    private fun detectRunning(page: JsonObject): Boolean {
+        val records = recordsOf(page)
         var running = false
-        events.forEach { e ->
-            val entry = e as? JsonObject ?: return@forEach
+        records.forEach { entry ->
             when (JsonRender.typeOf(entry)) {
                 "turn/start", "step/start" -> running = true
                 "turn/end", "turn/complete", "step/end" -> running = false
