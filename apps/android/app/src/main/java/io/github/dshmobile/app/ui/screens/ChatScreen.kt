@@ -5,6 +5,7 @@ import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -666,16 +667,23 @@ private fun LineBubble(line: ChatLine) {
     ) {
         // .userStack { max-width: min(748px * .702, 82%) }
         // 手机上没有 748px 的"内容宽度"概念，用 contentMaxWidth 等价。
-        Box(Modifier.widthIn(max = DshTheme.m.contentMaxWidth)) {
+        Box(Modifier.widthIn(max = if (fromUser) 310.dp else DshTheme.m.contentMaxWidth)) {
             if (fromUser) {
-                // .bubble { background: var(--dsw-specific-bubble); radius-xl; padding:10px 16px }
-                Text(
-                    text = line.text,
-                    style = MessageTextStyle,
-                    color = MaterialTheme.colorScheme.onPrimary,
+                val isDark = isSystemInDarkTheme()
+                Box(
                     modifier = Modifier
                         .background(
-                            MaterialTheme.colorScheme.primary,
+                            color = if (isDark) Color(0xFF27272A) else Color(0xFFF4F4F5),
+                            shape = RoundedCornerShape(
+                                topStart = 18.dp,
+                                topEnd = 18.dp,
+                                bottomStart = 18.dp,
+                                bottomEnd = 5.dp,
+                            ),
+                        )
+                        .border(
+                            1.dp,
+                            if (isDark) Color(0xFF3F3F46) else Color(0xFFE4E4E7),
                             RoundedCornerShape(
                                 topStart = 18.dp,
                                 topEnd = 18.dp,
@@ -683,8 +691,13 @@ private fun LineBubble(line: ChatLine) {
                                 bottomEnd = 5.dp,
                             ),
                         )
-                        .padding(horizontal = 16.dp, vertical = 10.dp),
-                )
+                        .padding(horizontal = 14.dp, vertical = 10.dp),
+                ) {
+                    MarkdownText(
+                        text = line.text,
+                        color = if (isDark) Color(0xFFFAFAFA) else Color(0xFF18181B),
+                    )
+                }
             } else {
                 // agent 消息：走 Markdown 渲染（Web 端同样是 markdown）
                 MarkdownText(

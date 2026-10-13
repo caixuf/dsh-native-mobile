@@ -83,6 +83,13 @@ sealed interface MdNode {
      * 避免在聊天流里引入不可控的网络请求。
      */
     data class Image(val alt: String, val url: String) : MdNode
+
+    /** GitHub 风格 Callout 引述警告块（> [!NOTE] / > [!TIP] / > [!WARNING]） */
+    data class Callout(
+        val type: CalloutType,
+        val customTitle: String? = null,
+        val children: List<MdNode>,
+    ) : MdNode
 }
 
 /** 行内样式（可叠加）。 */
@@ -100,6 +107,22 @@ data class MdStyle(
 /** 表格列对齐。 */
 enum class Align { Left, Center, Right }
 
+/** GitHub / 现代富文本警告块类型。 */
+enum class CalloutType(val defaultTitle: String, val keyword: String) {
+    Note("说明", "NOTE"),
+    Tip("提示", "TIP"),
+    Important("重要", "IMPORTANT"),
+    Warning("警告", "WARNING"),
+    Caution("危险", "CAUTION");
+
+    companion object {
+        fun from(tag: String): CalloutType? {
+            val upper = tag.uppercase().trim()
+            return entries.firstOrNull { it.keyword == upper }
+        }
+    }
+}
+
 object Markdown {
 
     /**
@@ -115,7 +138,7 @@ object Markdown {
         val para = mutableListOf<MdNode>()
         var listOrdered = false
         val listItems = mutableListOf<List<MdNode>>()
-        var quoteBuf = mutableListOf<MdNode>()
+        val quoteRawLines = mutableListOf<String>()
 
         fun flushPara() {
             if (para.isNotEmpty()) {
@@ -132,9 +155,32 @@ object Markdown {
         }
 
         fun flushQuote() {
-            if (quoteBuf.isNotEmpty()) {
-                out += MdNode.Quote(quoteBuf.toList())
-                quoteBuf.clear()
+            if (quoteRawLines.isNotEmpty()) {
+                val first = quoteRawLines.first().trim()
+                val calloutMatch = Regex("""^\[!(NOTE|TIP|IMPORTANT|WARNING|CAUTION)\](?:\s+(.*))?$""", RegexOption.IGNORE_CASE).find(first)
+                if (calloutMatch != null) {
+                    val type = CalloutType.from(calloutMatch.groupValues[1]) ?: CalloutType.Note
+                    val titleSuffix = calloutMatch.groupValues[2].trim().takeIf { it.isNotBlank() }
+                    val bodyLines = quoteRawLines.drop(1)
+                    val bodyNodes = mutableListOf<MdNode>()
+                    if (bodyLines.isEmpty() && titleSuffix != null) {
+                        bodyNodes += inline(titleSuffix)
+                    } else {
+                        bodyLines.forEachIndexed { idx, bl ->
+                            if (idx > 0) bodyNodes += MdNode.Text("\n")
+                            bodyNodes += inline(bl)
+                        }
+                    }
+                    out += MdNode.Callout(type, titleSuffix, bodyNodes)
+                } else {
+                    val nodes = mutableListOf<MdNode>()
+                    quoteRawLines.forEachIndexed { idx, ql ->
+                        if (idx > 0) nodes += MdNode.Text("\n")
+                        nodes += inline(ql)
+                    }
+                    out += MdNode.Quote(nodes)
+                }
+                quoteRawLines.clear()
             }
         }
 
@@ -227,7 +273,7 @@ object Markdown {
             val quote = Regex("^\\s*>\\s?(.*)$").find(line)
             if (quote != null) {
                 flushPara(); flushList()
-                quoteBuf += inline(quote.groupValues[1])
+                quoteRawLines += quote.groupValues[1]
                 i++
                 continue
             }

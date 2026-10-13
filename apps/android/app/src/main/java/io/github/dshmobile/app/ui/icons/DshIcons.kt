@@ -479,4 +479,73 @@ object DshIcons {
             }
         }
     }
+
+    /** 信息圆圈 (Info) */
+    val Info: ImageVector by lazy {
+        icon("Info") {
+            path(fill = null, stroke = SolidColor(Color.Black), strokeLineWidth = STROKE) {
+                moveTo(12f, 21f)
+                curveTo(16.97f, 21f, 21f, 16.97f, 21f, 12f)
+                curveTo(21f, 7.03f, 16.97f, 3f, 12f, 3f)
+                curveTo(7.03f, 3f, 3f, 7.03f, 3f, 12f)
+                curveTo(3f, 16.97f, 7.03f, 21f, 12f, 21f)
+                close()
+                moveTo(12f, 16f); lineTo(12f, 11f)
+                moveTo(12f, 8f); lineTo(12.01f, 8f)
+            }
+        }
+    }
+
+    /** 灯泡 (Tip / 提示) */
+    val Lightbulb: ImageVector by lazy {
+        icon("Lightbulb") {
+            path(fill = null, stroke = SolidColor(Color.Black), strokeLineWidth = STROKE) {
+                moveTo(9f, 18f); lineTo(15f, 18f)
+                moveTo(10f, 21f); lineTo(14f, 21f)
+                moveTo(9f, 18f)
+                curveTo(7.5f, 17f, 6f, 14.5f, 6f, 11f)
+                curveTo(6f, 7.69f, 8.69f, 5f, 12f, 5f)
+                curveTo(15.31f, 5f, 18f, 7.69f, 18f, 11f)
+                curveTo(18f, 14.5f, 16.5f, 17f, 15f, 18f)
+            }
+        }
+    }
+
+    /** 书签 (Important / 重要) */
+    val Bookmark: ImageVector by lazy {
+        icon("Bookmark") {
+            path(fill = null, stroke = SolidColor(Color.Black), strokeLineWidth = STROKE) {
+                moveTo(19f, 21f); lineTo(12f, 16f); lineTo(5f, 21f); lineTo(5f, 5f)
+                curveTo(5f, 3.9f, 5.9f, 3f, 7f, 3f); lineTo(17f, 3f)
+                curveTo(18.1f, 3f, 19f, 3.9f, 19f, 5f); close()
+            }
+        }
+    }
+
+    /** 警告三角 (Warning / 注意) */
+    val AlertTriangle: ImageVector by lazy {
+        icon("AlertTriangle") {
+            path(fill = null, stroke = SolidColor(Color.Black), strokeLineWidth = STROKE) {
+                moveTo(10.29f, 3.86f); lineTo(1.82f, 18f)
+                curveTo(1.44f, 18.66f, 1.92f, 19.5f, 2.68f, 19.5f); lineTo(21.32f, 19.5f)
+                curveTo(22.08f, 19.5f, 22.56f, 18.66f, 22.18f, 18f); lineTo(13.71f, 3.86f)
+                curveTo(13.33f, 3.2f, 12.37f, 3.2f, 11.99f, 3.86f); close()
+                moveTo(12f, 9f); lineTo(12f, 13f)
+                moveTo(12f, 17f); lineTo(12.01f, 17f)
+            }
+        }
+    }
+
+    /** 盾牌警示 (Caution / 危险) */
+    val ShieldAlert: ImageVector by lazy {
+        icon("ShieldAlert") {
+            path(fill = null, stroke = SolidColor(Color.Black), strokeLineWidth = STROKE) {
+                moveTo(12f, 2f); lineTo(20f, 5.5f); lineTo(20f, 11.5f)
+                curveTo(20f, 16.5f, 16.5f, 20.5f, 12f, 22f)
+                curveTo(7.5f, 20.5f, 4f, 16.5f, 4f, 11.5f); lineTo(4f, 5.5f); close()
+                moveTo(12f, 8f); lineTo(12f, 12f)
+                moveTo(12f, 16f); lineTo(12.01f, 16f)
+            }
+        }
+    }
 }

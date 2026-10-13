@@ -74,6 +74,7 @@ fun MarkdownText(
                 is MdNode.CodeBlock -> CodeBlockView(block)
                 is MdNode.ListBlock -> ListBlockView(block, color, onLinkClick)
                 is MdNode.Quote -> QuoteView(block, color, onLinkClick)
+                is MdNode.Callout -> CalloutView(block, color, onLinkClick)
                 is MdNode.Divider -> DividerView()
                 is MdNode.Table -> TableView(block, color)
                 is MdNode.TaskItem -> TaskItemView(block, color, onLinkClick)
@@ -197,9 +198,11 @@ private fun ImagePlaceholder(block: MdNode.Image) {
 @Composable
 private fun TableView(block: MdNode.Table, color: Color) {
     val isDark = isSystemInDarkTheme()
-    val borderColor = if (isDark) Color(0xFF2E303E) else MaterialTheme.colorScheme.outlineVariant
-    val headerBg = if (isDark) Color(0xFF1E202E) else MaterialTheme.colorScheme.surfaceContainerHigh
-    val rowBg = if (isDark) Color(0xFF161622) else MaterialTheme.colorScheme.surface
+    val borderColor = if (isDark) Color(0xFF2E303E) else Color(0xFFE2E8F0)
+    val headerBg = if (isDark) Color(0xFF1E202E) else Color(0xFFF8FAFC)
+    val rowBg = if (isDark) Color(0xFF161622) else Color(0xFFFFFFFF)
+    val altRowBg = if (isDark) Color(0xFF1A1C28) else Color(0xFFF9FAFB)
+    val dividerColor = if (isDark) Color(0xFF262837) else Color(0xFFEDF2F7)
 
     val cols = block.header.size
     val colWidths = remember(block) {
@@ -209,8 +212,8 @@ private fun TableView(block: MdNode.Table, color: Color) {
                 plainOf(row.getOrElse(col) { emptyList() }).length
             } ?: 0
             val maxLen = maxOf(headerLen, maxRowLen)
-            // 动态计算列宽：最少 96.dp，按字符数加宽，最大 260.dp
-            (96 + (maxLen * 9)).coerceIn(96, 260).dp
+            // 动态计算列宽：最少 90.dp，按字符数加宽，最大 260.dp
+            (90 + (maxLen * 8.5)).toInt().coerceIn(90, 260).dp
         }
     }
 
@@ -218,8 +221,8 @@ private fun TableView(block: MdNode.Table, color: Color) {
         Modifier
             .fillMaxWidth()
             .padding(vertical = DshTheme.m.xs)
-            .border(1.dp, borderColor, RoundedCornerShape(10.dp))
-            .clip(RoundedCornerShape(10.dp)),
+            .border(1.dp, borderColor, RoundedCornerShape(12.dp))
+            .clip(RoundedCornerShape(12.dp)),
     ) {
         val scrollState = rememberScrollState()
         Column(
@@ -231,13 +234,17 @@ private fun TableView(block: MdNode.Table, color: Color) {
             Row(
                 Modifier
                     .background(headerBg)
-                    .padding(vertical = DshTheme.m.sm),
+                    .padding(vertical = 10.dp),
+                verticalAlignment = Alignment.CenterVertically,
             ) {
                 block.header.forEachIndexed { i, cell ->
-                    val w = colWidths.getOrElse(i) { 96.dp }
+                    if (i > 0) {
+                        Box(Modifier.width(1.dp).height(18.dp).background(borderColor.copy(alpha = 0.7f)))
+                    }
+                    val w = colWidths.getOrElse(i) { 90.dp }
                     CellText(
                         cell = cell,
-                        color = color,
+                        color = if (isDark) Color(0xFFE2E8F0) else Color(0xFF1E293B),
                         align = block.aligns.getOrElse(i) { Align.Left },
                         header = true,
                         width = w,
@@ -250,16 +257,20 @@ private fun TableView(block: MdNode.Table, color: Color) {
             // 数据行
             block.rows.forEachIndexed { rowIdx, rowCells ->
                 if (rowIdx > 0) {
-                    Box(Modifier.fillMaxWidth().height(1.dp).background(borderColor.copy(alpha = 0.5f)))
+                    Box(Modifier.fillMaxWidth().height(1.dp).background(dividerColor))
                 }
                 Row(
                     Modifier
-                        .background(if (rowIdx % 2 == 1 && !isDark) Color(0xFFF9FAFB) else rowBg)
-                        .padding(vertical = 7.dp),
+                        .background(if (rowIdx % 2 == 1) altRowBg else rowBg)
+                        .padding(vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
                 ) {
                     (0 until cols).forEach { col ->
+                        if (col > 0) {
+                            Box(Modifier.width(1.dp).height(16.dp).background(dividerColor))
+                        }
                         val cell = rowCells.getOrElse(col) { emptyList() }
-                        val w = colWidths.getOrElse(col) { 96.dp }
+                        val w = colWidths.getOrElse(col) { 90.dp }
                         CellText(
                             cell = cell,
                             color = color,
@@ -315,6 +326,7 @@ private fun plainOf(nodes: List<MdNode>): String = buildString {
                 is MdNode.Paragraph -> walk(n.children)
                 is MdNode.Heading -> walk(n.children)
                 is MdNode.Quote -> walk(n.children)
+                is MdNode.Callout -> walk(n.children)
                 is MdNode.CodeBlock -> append(n.code)
                 is MdNode.Image -> append(n.alt)
                 else -> Unit
@@ -340,20 +352,30 @@ private fun ParagraphText(
 
 @Composable
 private fun HeadingText(block: MdNode.Heading, color: Color) {
+    val isDark = isSystemInDarkTheme()
     val (size, weight, topSpace) = when (block.level) {
-        1 -> Triple(19.5.sp, FontWeight.Bold, DshTheme.m.md)
-        2 -> Triple(17.sp, FontWeight.SemiBold, DshTheme.m.sm)
-        else -> Triple(15.5.sp, FontWeight.SemiBold, DshTheme.m.xs)
+        1 -> Triple(20.sp, FontWeight.Bold, 16.dp)
+        2 -> Triple(17.sp, FontWeight.SemiBold, 12.dp)
+        else -> Triple(15.sp, FontWeight.SemiBold, 8.dp)
     }
     Spacer(Modifier.height(topSpace))
     InlineText(
         nodes = block.children,
-        baseColor = color,
+        baseColor = if (isDark) Color(0xFFF1F5F9) else Color(0xFF0F172A),
         baseSize = size,
         baseWeight = weight,
         onLinkClick = null,
     )
-    Spacer(Modifier.height(DshTheme.m.xs))
+    if (block.level == 1) {
+        Spacer(Modifier.height(4.dp))
+        Box(
+            Modifier
+                .fillMaxWidth()
+                .height(1.dp)
+                .background(if (isDark) Color(0xFF27272A) else Color(0xFFE2E8F0)),
+        )
+    }
+    Spacer(Modifier.height(6.dp))
 }
 
 // ── 代码块（使用生产级 CodeCard）────────────────────────────────────────────
@@ -430,6 +452,73 @@ private fun QuoteView(
         }
     }
     Spacer(Modifier.height(DshTheme.m.sm))
+}
+
+// ── Callout 警告块（GitHub / 现代富文本规范）───────────────────────────────
+
+@Composable
+private fun CalloutView(
+    block: MdNode.Callout,
+    color: Color,
+    onLinkClick: ((String) -> Unit)?,
+) {
+    val isDark = isSystemInDarkTheme()
+    val (themeColor, icon, defaultTitle) = when (block.type) {
+        CalloutType.Note -> Triple(Color(0xFF2563EB), DshIcons.Info, "说明")
+        CalloutType.Tip -> Triple(Color(0xFF059669), DshIcons.Lightbulb, "提示")
+        CalloutType.Important -> Triple(Color(0xFF7C3AED), DshIcons.Bookmark, "重要")
+        CalloutType.Warning -> Triple(Color(0xFFD97706), DshIcons.AlertTriangle, "注意")
+        CalloutType.Caution -> Triple(Color(0xFFDC2626), DshIcons.ShieldAlert, "危险")
+    }
+
+    val cardBg = if (isDark) themeColor.copy(alpha = 0.12f) else themeColor.copy(alpha = 0.06f)
+    val cardBorder = themeColor.copy(alpha = if (isDark) 0.35f else 0.22f)
+    val title = block.customTitle?.takeIf { it.isNotBlank() } ?: defaultTitle
+
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = DshTheme.m.xs)
+            .clip(RoundedCornerShape(10.dp))
+            .background(cardBg)
+            .border(1.dp, cardBorder, RoundedCornerShape(10.dp))
+            .drawBehind {
+                drawRect(
+                    color = themeColor,
+                    size = androidx.compose.ui.geometry.Size(4.dp.toPx(), size.height),
+                )
+            }
+            .padding(start = 14.dp, top = 10.dp, end = 12.dp, bottom = 10.dp),
+    ) {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            modifier = Modifier.padding(bottom = 6.dp),
+        ) {
+            DshIcon(
+                icon,
+                contentDescription = null,
+                tint = themeColor,
+                size = 15.dp,
+            )
+            Spacer(Modifier.width(7.dp))
+            Text(
+                text = title,
+                style = MaterialTheme.typography.labelMedium,
+                fontWeight = FontWeight.Bold,
+                color = themeColor,
+                letterSpacing = 0.3.sp,
+            )
+        }
+        Column {
+            block.children.forEach { child ->
+                when (child) {
+                    is MdNode.Paragraph -> InlineText(child.children, color.copy(alpha = 0.9f), onLinkClick)
+                    else -> InlineText(listOf(child), color.copy(alpha = 0.9f), onLinkClick)
+                }
+            }
+        }
+    }
+    Spacer(Modifier.height(DshTheme.m.xs))
 }
 
 // ── 行内 ────────────────────────────────────────────────────────────────────

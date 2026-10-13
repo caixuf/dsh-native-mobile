@@ -91,6 +91,9 @@ fun CodeCard(
             .background(Color(0xFF16161E))
             .border(1.dp, Color(0xFF2E303E), RoundedCornerShape(12.dp)),
     ) {
+        val codeLines = remember(code) { code.split('\n') }
+        val showLineNumbers = codeLines.size > 1
+
         // ── 头部栏 ──
         Row(
             modifier = Modifier
@@ -100,21 +103,32 @@ fun CodeCard(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.SpaceBetween,
         ) {
-            // 语言标签
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                modifier = Modifier
-                    .background(Color(0xFF24283B), RoundedCornerShape(5.dp))
-                    .padding(horizontal = 7.dp, vertical = 2.5.dp),
-            ) {
-                Text(
-                    text = displayLang,
-                    fontFamily = FontFamily.Monospace,
-                    fontWeight = FontWeight.SemiBold,
-                    fontSize = 11.sp,
-                    color = Color(0xFF7AA2F7),
-                    letterSpacing = 0.5.sp,
-                )
+            // 语言标签与行数
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier
+                        .background(Color(0xFF24283B), RoundedCornerShape(5.dp))
+                        .padding(horizontal = 7.dp, vertical = 2.5.dp),
+                ) {
+                    Text(
+                        text = displayLang,
+                        fontFamily = FontFamily.Monospace,
+                        fontWeight = FontWeight.SemiBold,
+                        fontSize = 11.sp,
+                        color = Color(0xFF7AA2F7),
+                        letterSpacing = 0.5.sp,
+                    )
+                }
+                if (showLineNumbers) {
+                    Spacer(Modifier.width(8.dp))
+                    Text(
+                        text = "${codeLines.size} 行",
+                        fontFamily = FontFamily.Monospace,
+                        fontSize = 11.sp,
+                        color = Color(0xFF565F89),
+                    )
+                }
             }
 
             // 复制代码按钮（带即时反馈）
@@ -158,13 +172,41 @@ fun CodeCard(
                 .background(Color(0xFF232534)),
         )
 
-        // ── 代码正文（横向滚动）──
+        // ── 代码正文（带微行号与横向滚动）──
         Row(
             modifier = Modifier
                 .fillMaxWidth()
                 .horizontalScroll(rememberScrollState())
-                .padding(horizontal = 14.dp, vertical = 12.dp),
+                .padding(vertical = 12.dp),
         ) {
+            if (showLineNumbers) {
+                // 行号列
+                Column(
+                    modifier = Modifier.padding(start = 12.dp, end = 12.dp),
+                    horizontalAlignment = Alignment.End,
+                ) {
+                    for (i in 1..codeLines.size) {
+                        Text(
+                            text = "$i",
+                            fontFamily = FontFamily.Monospace,
+                            fontSize = 12.5.sp,
+                            lineHeight = 20.sp,
+                            color = Color(0xFF4B526D),
+                        )
+                    }
+                }
+                // 垂直极细分隔线
+                Box(
+                    modifier = Modifier
+                        .height((codeLines.size * 20).dp)
+                        .width(1.dp)
+                        .background(Color(0xFF232534)),
+                )
+                Spacer(Modifier.width(12.dp))
+            } else {
+                Spacer(Modifier.width(14.dp))
+            }
+
             Text(
                 text = highlightedText,
                 style = DshTheme.codeTextStyle.copy(
@@ -176,6 +218,7 @@ fun CodeCard(
                 maxLines = maxHeightLines,
                 overflow = TextOverflow.Visible,
             )
+            Spacer(Modifier.width(14.dp))
         }
     }
 }

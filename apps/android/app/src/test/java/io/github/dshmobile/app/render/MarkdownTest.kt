@@ -3,6 +3,7 @@ package io.github.dshmobile.app.render
 import kotlinx.serialization.json.putJsonObject
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -275,6 +276,41 @@ class MarkdownTest {
         assertEquals("https://example.com/a.png", img.url)
     }
 
+    @Test
+    fun `github callouts are parsed as Callout node`() {
+        val md = """> [!NOTE]
+> 这是提示内容，支持**加粗**"""
+        val nodes = Markdown.parse(md)
+        val callout = nodes.filterIsInstance<MdNode.Callout>().firstOrNull()
+        assertNotNull("应识别出 Callout 节点", callout)
+        assertEquals(CalloutType.Note, callout?.type)
+        assertTrue("应包含加粗片段", callout?.children?.any { it is MdNode.Text && it.style.bold } == true)
+        assertEquals("这是提示内容，支持加粗", plainText(listOf(callout!!)))
+    }
+
+    @Test
+    fun `different callout types are recognized`() {
+        listOf(
+            "TIP" to CalloutType.Tip,
+            "IMPORTANT" to CalloutType.Important,
+            "WARNING" to CalloutType.Warning,
+            "CAUTION" to CalloutType.Caution
+        ).forEach { (tag, expectedType) ->
+            val nodes = Markdown.parse("> [!$tag]\n> 内容")
+            val callout = nodes.filterIsInstance<MdNode.Callout>().firstOrNull()
+            assertNotNull("应识别出 $tag Callout", callout)
+            assertEquals(expectedType, callout?.type)
+        }
+    }
+
+    @Test
+    fun `regular blockquote is preserved as Quote node`() {
+        val nodes = Markdown.parse("> 普通引用段落\n> 第二行")
+        val quote = nodes.filterIsInstance<MdNode.Quote>().firstOrNull()
+        assertNotNull("应保留为普通 Quote 节点", quote)
+        assertTrue("非 callout 不应生成 Callout 节点", nodes.none { it is MdNode.Callout })
+    }
+
     // ── 辅助 ────────────────────────────────────────────────────────────────
 
     /** 递归收集所有节点（测试辅助）。 */
@@ -284,6 +320,7 @@ class MarkdownTest {
             is MdNode.Paragraph -> children.forEach { addAll(it.flatten()) }
             is MdNode.Heading -> children.forEach { addAll(it.flatten()) }
             is MdNode.Quote -> children.forEach { addAll(it.flatten()) }
+            is MdNode.Callout -> children.forEach { addAll(it.flatten()) }
             is MdNode.ListBlock -> items.forEach { list -> list.forEach { addAll(it.flatten()) } }
             is MdNode.TaskItem -> children.forEach { addAll(it.flatten()) }
             is MdNode.Table -> {
@@ -311,6 +348,7 @@ class MarkdownTest {
                     is MdNode.Paragraph -> walk(n.children)
                     is MdNode.Heading -> walk(n.children)
                     is MdNode.Quote -> walk(n.children)
+                    is MdNode.Callout -> walk(n.children)
                     is MdNode.ListBlock -> n.items.forEach { walk(it) }
                     is MdNode.CodeBlock -> Unit
                     // else 兜底：新增 MdNode 类型时测试辅助函数不必跟着改
@@ -331,6 +369,7 @@ class MarkdownTest {
                         is MdNode.Paragraph -> { append('\n'); walk(n.children); append('\n') }
                         is MdNode.Heading -> walk(n.children)
                         is MdNode.Quote -> walk(n.children)
+                        is MdNode.Callout -> walk(n.children)
                         is MdNode.ListBlock -> n.items.forEach { walk(it) }
                         is MdNode.CodeBlock -> append(n.code)
                         else -> Unit
