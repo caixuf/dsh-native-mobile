@@ -16,3 +16,5 @@ apps/android/app/build/
 .vscode/
 # 提交信息临时文件
 .git-commit-msg.txt
+
+.git-msg.txt
