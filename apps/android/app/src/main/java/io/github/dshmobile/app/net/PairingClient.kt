@@ -21,10 +21,13 @@ data class PairedHost(
 )
 
 /**
- * 配对客户端：拿一次性配对码换长期设备令牌。
+ * 配对客户端：两条入口，**账号密码为主**。
  *
- * 扫描二维码得到的地址形如 `<base>/mobile-gateway/pair#<配对码>`，
- * 因此扫码入口可以同时填好地址和码。
+ * 用户反馈「配对码太麻烦」（要复制 22 位、区分大小写），因此：
+ *   - `login()` —— 账号 + 密码，跟平常登录一样，是首选入口
+ *   - `pair()`  —— 一次性配对码，保留作备选（也支持扫码自动填）
+ *
+ * 两条入口签发的设备令牌完全同构，后续鉴权无差别。
  */
 object PairingClient {
     private val JSON = "application/json; charset=utf-8".toMediaType()
@@ -45,6 +48,42 @@ object PairingClient {
         val base = urlPart.substringBefore("/mobile-gateway/").trimEnd('/')
         if (!base.startsWith("http://") && !base.startsWith("https://")) return null
         return PairingTarget(baseUrl = base, code = code)
+    }
+
+    /** 账号密码登录：换取长期设备令牌。 */
+    fun login(baseUrl: String, username: String, password: String, deviceName: String): Result<PairedHost> = runCatching {
+        val request = Request.Builder()
+            .url(baseUrl.trimEnd('/') + DshConnection.LOGIN_PATH)
+            .header("Content-Type", "application/json")
+            .post(
+                buildJsonObject {
+                    put("username", username.trim())
+                    put("password", password)
+                    put("deviceName", deviceName)
+                    put("platform", "android")
+                }.toString().toRequestBody(JSON),
+            )
+            .build()
+
+        client.newCall(request).execute().use { response ->
+            val text = response.body?.string().orEmpty()
+            val body = Envelopes.json.parseToJsonElement(text).jsonObject
+            if (!response.isSuccessful) {
+                val err = body.obj("error")
+                throw DshCallException(
+                    err?.str("code") ?: "login_failed",
+                    err?.str("message") ?: "登录失败（HTTP ${response.code}）",
+                )
+            }
+            PairedHost(
+                label = body.obj("instance")?.get("name")?.jsonPrimitive?.content ?: baseUrl,
+                baseUrl = baseUrl.trimEnd('/'),
+                token = body.get("token")?.jsonPrimitive?.content
+                    ?: throw DshCallException("malformed", "网关未返回设备令牌"),
+                deviceId = body.obj("device")?.get("id")?.jsonPrimitive?.content ?: "unknown",
+                instanceName = body.obj("instance")?.get("name")?.jsonPrimitive?.content ?: "",
+            )
+        }
     }
 
     /** 探测网关是否在线（公开的健康检查）。 */

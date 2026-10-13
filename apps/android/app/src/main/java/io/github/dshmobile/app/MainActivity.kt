@@ -64,6 +64,10 @@ private fun AppRoot(app: DshMobileApp) {
 
         Route.Pair -> PairScreen(
             busy = state.busy,
+            onLogin = { base, user, pass, name ->
+                appVm.login(base, user, pass, name)
+                route = Route.Sessions
+            },
             onPair = { base, code, name ->
                 appVm.pair(base, code, name) { route = Route.Sessions }
             },

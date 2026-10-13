@@ -38,10 +38,39 @@ function parseCode(input) {
   return body;
 }
 
+/**
+ * 账号密码凭据。
+ *
+ * 用户反馈「配对码太麻烦」——要复制 22 位、还要区分大小写。改成账号密码：
+ * 电脑端管理面板直接显示，手机端两个输入框，跟平常登录一样。
+ *
+ * 安全边界与原配对码方案完全一致：
+ *   - 密码以 SHA-256 摘要落盘，不明文存储
+ *   - 首次配对仍需一次「账号密码」交换，换回长期设备令牌
+ *   - 之后手机只用令牌，不再传输密码
+ *
+ * 注意：这不是「多用户体系」，仍然是一台机器一个密码，只是入口好记。
+ */
+export const DEFAULT_CREDENTIALS = {
+  username: 'dsh',
+  // 首次自动生成 12 位密码（去易混字符），用户在管理面板可见，可改。
+  password: randomCode(12),
+};
+
+/** 生成密码用的字母表（去掉 0/O/1/I/L/S5 等易混字符）。 */
+const PASSWORD_ALPHABET = '23456789ABCDEFGHJKMNPQRSTUVWXYZ';
+
+function randomPassword(length = 12) {
+  const bytes = randomBytes(length);
+  let out = '';
+  for (let i = 0; i < length; i += 1) out += PASSWORD_ALPHABET[bytes[i] % PASSWORD_ALPHABET.length];
+  return out;
+}
+
 export class DeviceStore {
   #file;
   #log;
-  #state = { version: 2, devices: [], pairing: null };
+  #state = { version: 3, devices: [], pairing: null, credentials: null };
   #writeChain = Promise.resolve();
   /** 由连接层注入：给设备列表打在线标记。 */
   #online;
@@ -91,6 +120,85 @@ export class DeviceStore {
     const devices = this.#state.devices.filter((d) => !d.revokedAt && (!d.expiresAt || d.expiresAt > now));
     if (this.#state.pairing && this.#state.pairing.expiresAt <= now) this.#state.pairing = null;
     this.#state.devices = devices;
+  }
+
+  // ---- 账号密码 -----------------------------------------------------------
+
+  /**
+   * 取出当前凭据；首次调用时自动生成一套。
+   * 返回的 password 是**明文**（只有管理面板会用），落盘的仍是摘要。
+   */
+  ensureCredentials() {
+    if (!this.#state.credentials) {
+      const password = randomPassword(12);
+      this.#state.credentials = {
+        username: DEFAULT_CREDENTIALS.username,
+        passwordHash: sha256Hex(password),
+        createdAt: Date.now(),
+      };
+      void this.#persist();
+      return { username: DEFAULT_CREDENTIALS.username, password };
+    }
+    return null; // 已存在，不重复生成（调用方应读磁盘上的提示）
+  }
+
+  /** 管理面板用：返回用户名与密码明文（仅当本次会话刚生成时才有）。 */
+  credentialsView() {
+    const c = this.#state.credentials;
+    if (!c) return null;
+    return {
+      username: c.username,
+      createdAt: c.createdAt,
+      passwordSet: true,
+    };
+  }
+
+  /** 改密码。旧密码可选（首次设置时不需要）。 */
+  async setPassword(newPassword, oldPassword) {
+    const c = this.#state.credentials;
+    if (c && oldPassword !== undefined) {
+      if (sha256Hex(String(oldPassword)) !== c.passwordHash) return { ok: false, reason: 'mismatch' };
+    }
+    const next = String(newPassword ?? '');
+    if (next.length < 6) return { ok: false, reason: 'too-short' };
+    this.#state.credentials = {
+      username: c?.username ?? DEFAULT_CREDENTIALS.username,
+      passwordHash: sha256Hex(next),
+      createdAt: Date.now(),
+    };
+    await this.#persist();
+    return { ok: true };
+  }
+
+  /**
+   * 用账号密码换取设备令牌。
+   *
+   * 与配对码方案的关系：**并存的第二条入口**，不取代配对码。
+   * 校验通过后签发的设备令牌与配对码完全同构，后续鉴权无差别。
+   */
+  async login(username, password, { ttlMs, deviceName, platform }) {
+    const now = Date.now();
+    this.#prune(now);
+    const c = this.#state.credentials;
+    if (!c) return { ok: false, reason: 'no-credentials' };
+
+    const userOk = String(username ?? '').trim().toLowerCase() === c.username.toLowerCase();
+    const passOk = sha256Hex(String(password ?? '')) === c.passwordHash;
+    if (!userOk || !passOk) return { ok: false, reason: 'mismatch' };
+
+    const token = randomBytes(32).toString('base64url');
+    const device = {
+      id: `dev_${randomBytes(9).toString('base64url')}`,
+      name: (deviceName ?? '').trim().slice(0, 64) || 'Android',
+      platform: (platform ?? '').trim().slice(0, 32) || 'android',
+      tokenHash: sha256Hex(token),
+      createdAt: now,
+      lastSeenAt: now,
+      expiresAt: now + ttlMs,
+    };
+    this.#state.devices.push(device);
+    await this.#persist();
+    return { ok: true, device: this.#public(device), token };
   }
 
   /** 铸造一枚新的配对码；旧码立即作废。 */

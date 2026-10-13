@@ -135,6 +135,39 @@ class AppViewModel(private val store: HostStore) : ViewModel() {
         }
     }
 
+    /** 账号密码登录（首选入口，比配对码好记）。 */
+    fun login(baseUrl: String, username: String, password: String, deviceName: String) {
+        if (_state.value.busy) return
+        _state.update { it.copy(busy = true, error = null, notice = null) }
+        viewModelScope.launch {
+            PairingClient.login(baseUrl, username, password, deviceName)
+                .onSuccess { paired ->
+                    val record = HostRecord(
+                        label = paired.label,
+                        baseUrl = paired.baseUrl,
+                        token = paired.token,
+                        deviceId = paired.deviceId,
+                        instanceName = paired.instanceName,
+                    )
+                    store.upsert(record)
+                    _state.update { it.copy(busy = false, notice = "已登录 ${paired.label}") }
+                    refresh()
+                    select(record.id)
+                }
+                .onFailure { error ->
+                    _state.update {
+                        it.copy(
+                            busy = false,
+                            error = when (error) {
+                                is DshCallException -> error.message
+                                else -> error.message ?: "登录失败"
+                            },
+                        )
+                    }
+                }
+        }
+    }
+
     fun probe(baseUrl: String, onResult: (String?) -> Unit) {
         viewModelScope.launch { onResult(PairingClient.probe(baseUrl)) }
     }

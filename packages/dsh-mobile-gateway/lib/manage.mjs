@@ -57,7 +57,16 @@ const PAGE = /* html */ `<!doctype html>
   <p class="sub" id="subtitle">加载中…</p>
 
   <section>
-    <h2>设备配对</h2>
+    <h2>账号密码登录（推荐）</h2>
+    <div id="credArea"></div>
+    <p style="margin:16px 0 0">
+      <button class="primary" id="genCred">生成 / 重置密码</button>
+      <span class="meta" style="margin-left:8px">手机上填这两个就能登录，不用配对码</span>
+    </p>
+  </section>
+
+  <section>
+    <h2>设备配对（备选）</h2>
     <div class="pair">
       <div class="qr" id="qr"></div>
       <div>
@@ -66,7 +75,7 @@ const PAGE = /* html */ `<!doctype html>
       </div>
     </div>
     <p style="margin:16px 0 0">
-      <button class="primary" id="mint">刷新配对码</button>
+      <button id="mint">刷新配对码</button>
       <span class="meta" style="margin-left:8px">刷新后旧码立即作废</span>
     </p>
   </section>
@@ -119,6 +128,25 @@ async function refresh() {
     $('pairMeta').textContent = '点击「刷新配对码」生成一枚新的';
   }
 
+  // 账号密码卡片。密码明文只在「刚生成」时显示一次（freshPassword），
+  // 之后刷新页面就看不到 —— 落盘的是摘要，取不回来。
+  const cred = data.credentials;
+  if (!cred) {
+    $('credArea').innerHTML = '<div class="empty">还没设置。点下面的按钮生成。</div>';
+  } else {
+    const shown = freshPassword
+      ? '<div style="margin:8px 0"><span class="meta">密码（只显示这一次，请记下）</span><br>' +
+        '<code class="code" id="credPw">' + freshPassword + '</code> ' +
+        '<button data-act="copy-pw">复制</button></div>'
+      : '<div class="meta" style="margin:8px 0">密码已设置。忘记就点「生成 / 重置密码」换一个新的。</div>';
+    $('credArea').innerHTML =
+      '<div class="pair"><div style="flex:1">' +
+      '<div><span class="meta">账号</span><br><code class="code">' + cred.username + '</code></div>' +
+      shown +
+      '<div class="meta">创建于 ' + fmtTime(cred.createdAt) + '</div>' +
+      '</div></div>';
+  }
+
   const devices = data.devices || [];
   if (!devices.length) {
     $('devices').innerHTML = '<div class="empty">还没有配对任何设备。</div>';
@@ -139,6 +167,9 @@ async function refresh() {
   }
 }
 
+/** 刚生成的密码明文 —— 只在本次生成后显示，刷新即消失（摘要取不回来）。 */
+let freshPassword = null;
+
 document.addEventListener('click', async (ev) => {
   const btn = ev.target.closest('button');
   if (!btn) return;
@@ -147,6 +178,33 @@ document.addEventListener('click', async (ev) => {
     await api('/mobile-gateway/manage/api/mint', {});
     btn.disabled = false;
     await refresh();
+    return;
+  }
+  // 生成 / 重置密码：返回的明文只展示一次
+  if (btn.id === 'genCred') {
+    if (!confirm('重置后旧密码立即失效，手机上需要重新登录。确定？')) return;
+    btn.disabled = true;
+    const r = await api('/mobile-gateway/manage/api/credentials', { action: 'regenerate' });
+    btn.disabled = false;
+    if (r.data?.password) {
+      freshPassword = r.data.password;
+    }
+    await refresh();
+    return;
+  }
+  // 复制密码到剪贴板
+  if (btn.dataset.act === 'copy-pw') {
+    const el = $('credPw');
+    if (el) {
+      try {
+        await navigator.clipboard.writeText(el.textContent);
+        btn.textContent = '已复制';
+        setTimeout(() => { btn.textContent = '复制'; }, 1500);
+      } catch {
+        btn.textContent = '复制失败';
+        setTimeout(() => { btn.textContent = '复制'; }, 1500);
+      }
+    }
     return;
   }
   const act = btn.dataset.act;
@@ -191,11 +249,15 @@ export function createManageApi({ store, log, config, instance, gatewayVersion, 
   async function statePayload() {
     const pairing = store.currentPairing();
     const pairUrl = pairPayload();
+    // 凭据视图（仅回环可达）。密码明文**不**由此返回 —— 只在刚生成时
+    // 由 ensureCredentials() 交回调用方展示一次，落盘的始终是摘要。
+    const credentials = store.credentialsView();
     return {
       gatewayVersion,
       instance,
       devices: store.list(),
       channel: describeChannel?.() ?? null,
+      credentials,
       pairing: pairing
         ? {
             ...pairing,
@@ -246,6 +308,32 @@ export function createManageApi({ store, log, config, instance, gatewayVersion, 
       }
       log.info('device token rotated', { deviceId: result.device.id });
       sendJson(res, 200, { ok: true, device: result.device });
+      return true;
+    }
+
+    // 生成 / 重置密码。明文只在**这一次响应**里返回，之后刷新页面即看不到
+    // （落盘的是 SHA-256 摘要，取不回来）—— 用户需要记下或复制。
+    if (req.method === 'POST' && pathname === '/mobile-gateway/manage/api/credentials') {
+      const body = await readJsonBody(req);
+      const action = String(body.action ?? 'regenerate');
+      if (action !== 'regenerate') {
+        sendError(res, 400, 'bad_action', `未知动作 ${action}`);
+        return true;
+      }
+      // 生成一套新的（覆盖旧的）。旧密码无需提供 —— 操作者已在回环上。
+      const { randomBytes } = await import('node:crypto');
+      const { sha256Hex } = await import('./store.mjs');
+      const ALPHABET = '23456789ABCDEFGHJKMNPQRSTUVWXYZ';
+      const bytes = randomBytes(12);
+      let password = '';
+      for (let i = 0; i < 12; i += 1) password += ALPHABET[bytes[i] % ALPHABET.length];
+      const result = await store.setPassword(password);
+      if (!result.ok) {
+        sendError(res, 400, result.reason, '重置失败');
+        return true;
+      }
+      log.warn('credentials regenerated — 旧密码已失效');
+      sendJson(res, 200, { ok: true, username: store.credentialsView()?.username, password });
       return true;
     }
 

@@ -26,8 +26,10 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -41,8 +43,12 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.ui.text.input.ImeAction
 import androidx.core.content.ContextCompat
 import com.google.zxing.BinaryBitmap
 import com.google.zxing.DecodeHintType
@@ -52,17 +58,23 @@ import com.google.zxing.common.HybridBinarizer
 import java.util.concurrent.Executors
 
 /**
- * 配对页：手输地址+配对码，或扫码。
+ * 配对 / 登录页。
  *
- * 二维码内容是 `<base>/mobile-gateway/pair#<配对码>`，扫一次地址和码就都填好了。
+ * **主流程是账号密码**（用户反馈配对码要复制 22 位太麻烦）：
+ * 电脑端管理面板显示账号与密码，手机上三个输入框填完点登录。
+ *
+ * 配对码与扫码收在「备选」折叠区，保留给不方便看密码的场景。
  */
 @Composable
 fun PairScreen(
     busy: Boolean,
+    onLogin: (baseUrl: String, username: String, password: String, deviceName: String) -> Unit,
     onPair: (baseUrl: String, code: String, deviceName: String) -> Unit,
     deviceName: String,
 ) {
     var baseUrl by remember { mutableStateOf("") }
+    var username by remember { mutableStateOf("dsh") }
+    var password by remember { mutableStateOf("") }
     var code by remember { mutableStateOf("") }
     var scanning by remember { mutableStateOf(false) }
     var probe by remember { mutableStateOf<String?>(null) }
@@ -80,28 +92,57 @@ fun PairScreen(
     ) {
         Text("配对电脑", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.SemiBold)
         Text(
-            "在电脑上打开 DSH 的「移动网关」面板（http://127.0.0.1:端口/mobile-gateway/manage），点「刷新配对码」。",
+            "在电脑上打开 DSH 的「移动网关」面板，把上面的账号密码填进来就行。",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
 
         Spacer(Modifier.height(4.dp))
 
+        // 🔴 onValueChange 里**不要**对值做 trim()/uppercase() 变换。
+        // 早前写成了 `code = it.uppercase()` / `baseUrl = it.trim()`，
+        // 每次输入都重建字符串，导致部分输入法下粘贴失效、光标跳动。
+        // 正确做法：值原样保存，提交时才规范化。
         OutlinedTextField(
             value = baseUrl,
-            onValueChange = { baseUrl = it.trim(); probe = null },
+            onValueChange = { baseUrl = it; probe = null },
             label = { Text("电脑地址") },
-            placeholder = { Text("http://192.168.1.10:19387") },
+            placeholder = { Text("https://203.0.113.10:2444") },
             singleLine = true,
+            keyboardOptions = KeyboardOptions(
+                keyboardType = KeyboardType.Uri,
+                imeAction = ImeAction.Next,
+                autoCorrectEnabled = false,
+            ),
             modifier = Modifier.fillMaxWidth(),
         )
 
         OutlinedTextField(
-            value = code,
-            onValueChange = { code = it.uppercase() },
-            label = { Text("配对码") },
-            placeholder = { Text("dshm1.XXXX-XXXX-XXXX-XXXX") },
+            value = username,
+            onValueChange = { username = it },
+            label = { Text("账号") },
+            placeholder = { Text("dsh") },
             singleLine = true,
+            keyboardOptions = KeyboardOptions(
+                keyboardType = KeyboardType.Text,
+                imeAction = ImeAction.Next,
+                autoCorrectEnabled = false,
+            ),
+            modifier = Modifier.fillMaxWidth(),
+        )
+
+        OutlinedTextField(
+            value = password,
+            onValueChange = { password = it },
+            label = { Text("密码") },
+            placeholder = { Text("管理面板上显示的 12 位密码") },
+            singleLine = true,
+            visualTransformation = PasswordVisualTransformation(),
+            keyboardOptions = KeyboardOptions(
+                keyboardType = KeyboardType.Password,
+                imeAction = ImeAction.Done,
+                autoCorrectEnabled = false,
+            ),
             modifier = Modifier.fillMaxWidth(),
         )
 
@@ -113,19 +154,52 @@ fun PairScreen(
             )
         }
 
-        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-            Button(
-                onClick = { scanning = true },
-                enabled = !busy,
-                modifier = Modifier.weight(1f),
-            ) { Text("扫码") }
-            Button(
-                onClick = { onPair(baseUrl, code, deviceName) },
-                enabled = !busy && baseUrl.isNotBlank() && code.length >= 16,
-                modifier = Modifier.weight(1f),
-            ) {
-                if (busy) CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
-                else Text("配对")
+        Button(
+            onClick = {
+                onLogin(
+                    baseUrl.trim(),
+                    username.trim(),
+                    password,
+                    deviceName,
+                )
+            },
+            enabled = !busy &&
+                baseUrl.isNotBlank() &&
+                username.isNotBlank() &&
+                password.isNotBlank(),
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            if (busy) CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
+            else Text("登录")
+        }
+
+        // 备选入口：配对码 / 扫码，收在折叠区里，不占主流程
+        var showAdvanced by remember { mutableStateOf(false) }
+        TextButton(onClick = { showAdvanced = !showAdvanced }) {
+            Text(if (showAdvanced) "收起备选方式" else "用配对码 / 扫码（备选）")
+        }
+
+        if (showAdvanced) {
+            OutlinedTextField(
+                value = code,
+                onValueChange = { code = it },
+                label = { Text("配对码") },
+                placeholder = { Text("dshm1.XXXX-XXXX-XXXX-XXXX") },
+                singleLine = true,
+                keyboardOptions = KeyboardOptions(autoCorrectEnabled = false),
+                modifier = Modifier.fillMaxWidth(),
+            )
+            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                OutlinedButton(
+                    onClick = { scanning = true },
+                    enabled = !busy,
+                    modifier = Modifier.weight(1f),
+                ) { Text("扫码") }
+                Button(
+                    onClick = { onPair(baseUrl.trim(), code.trim(), deviceName) },
+                    enabled = !busy && baseUrl.isNotBlank() && code.length >= 16,
+                    modifier = Modifier.weight(1f),
+                ) { Text("配对") }
             }
         }
 

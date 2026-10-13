@@ -270,6 +270,8 @@ class DshConnection(
         const val WS_MUX = "/mobile-gateway/events.mux"
         const val WS_HOST = "/mobile-gateway/events.host"
         const val PAIR_PATH = "/mobile-gateway/pair"
+        /** 账号密码登录入口（首选，比配对码好记）。 */
+        const val LOGIN_PATH = "/mobile-gateway/login"
         const val HEALTH_PATH = "/mobile-gateway/health"
 
         private val JSON_MEDIA = "application/json; charset=utf-8".toMediaType()

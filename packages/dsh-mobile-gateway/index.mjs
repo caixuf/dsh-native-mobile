@@ -168,6 +168,31 @@ async function start(ctx, config, log, dataDir) {
               return;
             }
 
+            // 账号密码登录：比配对码好记。两条入口并存，签发的令牌同构。
+            if (pathname === '/mobile-gateway/login') {
+              if (req.method !== 'POST') return sendError(res, 405, 'method_not_allowed', '请用 POST 登录');
+              const body = await readJsonBody(req);
+              const result = await store.login(body.username, body.password, {
+                ttlMs: config.tokenTtlMs,
+                deviceName: body.deviceName,
+                platform: body.platform,
+              });
+              if (!result.ok) {
+                sendError(res, 401, result.reason, loginErrorText(result.reason));
+                log.warn('login rejected', { reason: result.reason, remote: req.socket?.remoteAddress });
+                return;
+              }
+              log.info('device logged in', { deviceId: result.device.id, name: result.device.name });
+              sendJson(res, 200, {
+                device: result.device,
+                token: result.token,
+                instance,
+                apiPrefix: API_PREFIX,
+                events: { mux: '/mobile-gateway/events.mux', host: '/mobile-gateway/events.host' },
+              });
+              return;
+            }
+
             if (pathname === '/mobile-gateway/pair') {
               if (req.method !== 'POST') return sendError(res, 405, 'method_not_allowed', '请用 POST 配对');
               const body = await readJsonBody(req);
@@ -257,6 +282,17 @@ function pairErrorText(reason) {
       return '当前没有有效配对码，请在电脑上重新生成';
     default:
       return '配对码不匹配';
+  }
+}
+
+function loginErrorText(reason) {
+  switch (reason) {
+    case 'no-credentials':
+      return '电脑端还没设置密码，请先在管理面板生成';
+    case 'too-short':
+      return '密码太短（至少 6 位）';
+    default:
+      return '账号或密码不对';
   }
 }
 
