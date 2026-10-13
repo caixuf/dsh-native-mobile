@@ -215,20 +215,70 @@ export function createBridge({ ctx, store, log, config }) {
     }
 
     const body = req.method === 'POST' ? await readBody(req) : undefined;
+
+    // ---- 移动端瘦身（实测 432 KB → ~30 KB）--------------------------------
+    // `session/list` 的每条 item 都带全量 projections，其中 tokenUsage/contextBreakdown
+    // 含几百个 UUID 的统计，而列表页只需要 title/running/updatedAt。
+    // 手机带宽有限（公网走 FRP 隧道），把用不到的字段剥掉，列表秒开。
+    let upstreamBody = body;
+    const isSessionList = method === 'session/list' || method === 'session.list';
+    if (isSessionList && body && body.length) {
+      try {
+        const parsed = JSON.parse(body.toString('utf8'));
+        if (parsed?.payload?.args) {
+          // args 形状保持不变（服务器只认 `_request`），瘦身发生在**响应侧**。
+          upstreamBody = body; // 请求原样转发；真正的瘦身在下面响应处理里
+        }
+      } catch {
+        /* 非 JSON 就原样转发 */
+      }
+    }
+
     const upstream = new Request(`http://127.0.0.1/api/${method}`, {
       method: req.method,
       headers: { 'content-type': header(req, 'content-type') ?? 'application/json' },
-      body: body && body.length ? body : undefined,
+      body: upstreamBody && upstreamBody.length ? upstreamBody : undefined,
     });
 
     const response = await apiFetch.fetch(upstream);
     const buffer = Buffer.from(await response.arrayBuffer());
+
+    // ---- 响应侧瘦身：session/list 剥掉重字段 ------------------------------
+    let outBuffer = buffer;
+    if (isSessionList && response.status === 200) {
+      try {
+        const json = JSON.parse(buffer.toString('utf8'));
+        const items = json?.result?.value?.items;
+        if (Array.isArray(items)) {
+          for (const item of items) {
+            const vals = item?.projections?.values;
+            if (vals && typeof vals === 'object') {
+              // 只保留列表页真正用到的
+              item.projections.values = {
+                title: vals.title,
+                sessionListMetadata: vals.sessionListMetadata,
+              };
+              item.projections.asOfSeq = undefined;
+            }
+          }
+          const slim = JSON.stringify(json);
+          log.debug('session/list slimmed', {
+            before: `${(buffer.length / 1024).toFixed(0)} KB`,
+            after: `${(slim.length / 1024).toFixed(0)} KB`,
+          });
+          outBuffer = Buffer.from(slim, 'utf8');
+        }
+      } catch {
+        /* 解析失败就原样返回，瘦身是优化不是正确性依赖 */
+      }
+    }
+
     const headers = {};
     response.headers.forEach((value, key) => {
       if (key.toLowerCase() !== 'content-length') headers[key] = value;
     });
-    res.writeHead(response.status, { ...headers, 'Content-Length': buffer.length });
-    res.end(buffer);
+    res.writeHead(response.status, { ...headers, 'Content-Length': outBuffer.length });
+    res.end(outBuffer);
   }
 
   // ---- WebSocket: 两条下行事件流 -----------------------------------------

@@ -157,7 +157,9 @@ class ChatViewModel(private val conn: DshConnection?) : ViewModel() {
             fetchPage(c, sid, 80).onSuccess { value ->
                 val obj = value.jsonObject
                 val lines = recordsOf(obj).mapIndexedNotNull { i, e -> toLine(e, i) }
-                lastSeq = lines.size.toLong()
+                // 记录最后一条的 seq，轮询时从它之后增量拉。
+                lastSeq = recordsOf(obj).lastOrNull()?.get("seq")
+                    ?.jsonPrimitive?.content?.toLongOrNull() ?: lastSeq
                 _state.update { it.copy(lines = lines, loading = false, error = null) }
             }.onFailure { error ->
                 _state.update { it.copy(loading = false, error = error.message) }
@@ -172,17 +174,52 @@ class ChatViewModel(private val conn: DshConnection?) : ViewModel() {
      * 主机再以 `server-request` 帧回推、客户端逐帧回 `client-response`。那条链路的帧形状
      * 在已公开的官方包里没有可验证的定义。与其猜一个可能错的形式，不如先用必然可用的
      * `session.page` 轮询把体验跑通；确认了流协议再切换（见 docs/api-contract.md 的 Gaps）。
+     *
+     * ## 性能（实测数据，别删）
+     *
+     * `session/page` 的 `maxMessages` **不限制 records 条数**——它限的是消息窗口，
+     * 一轮里的 step/tool 事件全都会回来。实测 30 条请求实际返回 149 条 / 268 KB，
+     * 公网链路（FRP 隧道）每 1.6s 全量拉一次 = 手机每秒下载 170 KB，这就是卡顿来源。
+     *
+     * 三个对策：
+     *  1. **增量拉取**：轮询用 `lastSeq` 作为 `throughSeq`，只拉新增部分（几 KB）
+     *  2. **降频**：1.6s → 3s（增量后单次只有几 KB，3s 足够跟手）
+     *  3. **maxMessages 只是兜底**：增量模式下通常一次只回几条
      */
     private fun startPolling() {
         pollJob?.cancel()
         pollJob = viewModelScope.launch {
             while (isActive) {
-                delay(1_600)
+                delay(3_000)
                 val c = conn ?: continue
                 val sid = _state.value.sessionId
                 if (sid.isEmpty() || _state.value.pending != null) continue
-                // 走 fetchPage 以复用 cursor 自适应逻辑。
-                fetchPage(c, sid, 30).onSuccess { value ->
+                // 增量：从 lastSeq 之后拉。lastSeq<0 说明还没初始化，先全量。
+                val throughSeq = if (lastSeq > 0) lastSeq else DshConnection.DEFAULT_THROUGHPUT_SEQ
+                val r = c.call(
+                    "session.page",
+                    buildJsonObject {
+                        put("request", buildJsonObject {
+                            put("address", buildJsonObject {
+                                put("kind", "session")
+                                put("sessionId", sid)
+                            })
+                            put("throughSeq", throughSeq)
+                            put("maxMessages", 30)
+                        })
+                    },
+                    timeoutMs = 8_000,
+                )
+                // "past cursor N" 说明我们的 lastSeq 落后于主机裁剪点（会话被压缩过），
+                // 丢掉本地全量重新同步一次。
+                val err = r.exceptionOrNull()?.message
+                val learned = learnCursor(err)
+                if (learned != null) {
+                    cursor = learned
+                    reload()
+                    continue
+                }
+                r.onSuccess { value ->
                     val obj = value.jsonObject
                     val records = recordsOf(obj)
                     val fresh = records.mapIndexedNotNull { i, entry ->
@@ -192,6 +229,9 @@ class ChatViewModel(private val conn: DshConnection?) : ViewModel() {
                     if (fresh.isNotEmpty()) {
                         _state.update { it.copy(lines = it.lines + fresh) }
                     }
+                    // 推进 lastSeq 到本页最大 seq，下轮从这里增量
+                    records.lastOrNull()?.get("seq")?.jsonPrimitive?.content?.toLongOrNull()
+                        ?.takeIf { it > lastSeq }?.let { lastSeq = it }
                     _state.update { it.copy(running = detectRunning(obj)) }
                 }
             }
