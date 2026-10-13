@@ -117,6 +117,17 @@ async function fakeApiFetch(request) {
       result: { ok: false, error: { code: 'bad_thing', message: '炸了', details: {} } },
     });
   }
+  if (method === 'respond') {
+    // 官方回执形状（docs/api-contract.md §1.4）：
+    //   { accepted: true } | { accepted: false, reason: "not-pending" | "bad-response" }
+    // 这里按契约校验信封 —— 若客户端把裸业务对象当 result 传（App 曾经如此），
+    // 真实主机会回 bad-response，所以桩也必须能识别出这种错误。
+    const result = body?.result;
+    const wellFormed = result && typeof result === 'object' && 'ok' in result && 'value' in result;
+    return Response.json(
+      wellFormed ? { accepted: true } : { accepted: false, reason: 'bad-response' },
+    );
+  }
   return Response.json({
     type: 'server-response',
     result: { ok: true, value: { echoed: method } },
@@ -552,11 +563,62 @@ if (lanBase) {
   console.log('  （无可用非回环网卡，跳过非回环验证）');
 }
 
-// ---- 9. 路由命中回归：防「宿主兜底 404」这种静默故障 -------------------
+console.log('\n[9] /api/respond（审批/提问的应答通道）');
+// 官方契约：服务端主动请求的应答**不走 WS**，而是 POST /api/respond，
+// 且 result 必须是 { ok, value } 信封（见 docs/api-contract.md §1.4）。
+// 这条路径此前零覆盖 —— 而它是 App 审批交互的唯一出口。
+//
+// ⚠️ 必须重新配对：上面的 [7] 已经把先前那台设备吊销了，用旧 token 打过来
+// 只会得到 401（本组第一次写成这样，误判为「网关没转发 respond」）。
+{
+  const freshCode = await mint();
+  const freshPair = await pair(freshCode);
+  const respondToken = freshPair.json?.token;
+  check('respond 组重新配对成功', !!respondToken, `status=${freshPair.status}`);
+
+  const rpcId = 'host-pending-1';
+  const body = {
+    type: 'client-response',
+    rpcId,
+    result: { ok: true, value: { kind: 'allow', approved: true } },
+  };
+  const res = await fetch(`${base}/mobile-gateway/api/respond`, {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+      authorization: `Bearer ${respondToken}`,
+    },
+    body: JSON.stringify(body),
+  });
+  const text = await res.text();
+  check('respond 经网关可达（非 404/403）', res.status !== 404 && res.status !== 403, `status=${res.status}`);
+  check('respond 由插件应答（非宿主兜底）', text.length > 0, `bodyLen=${text.length}`);
+
+  // 关键：网关必须把 body **原样**交给上游，不能改写信封。
+  // 注意 calls 是全局累积的，这里按「本次 respond 的那条」筛选，别用 at(-1)。
+  const forwarded = [...calls].reverse().find((c) => c.method === 'respond');
+  check('respond 被转发到上游 /api/respond', !!forwarded, `未找到 respond 转发记录`);
+  check(
+    'respond 的 { ok, value } 信封被原样透传',
+    forwarded?.body?.result?.ok === true && forwarded.body.result.value?.kind === 'allow',
+    JSON.stringify(forwarded?.body).slice(0, 160),
+  );
+  check('respond 的 rpcId 未被改写', forwarded?.body?.rpcId === rpcId, `rpcId=${forwarded?.body?.rpcId}`);
+
+  // 无令牌必须被拦。
+  const noAuth = await fetch(`${base}/mobile-gateway/api/respond`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  check('respond 无令牌被拒 401', noAuth.status === 401, `status=${noAuth.status}`);
+}
+
+// ---- 10. 路由命中回归：防「宿主兜底 404」这种静默故障 -------------------
 // 本次事故的形态：路由注册语句写错（prefix path 带尾斜杠），所有子路径都落到
 // 宿主兜底 404。它的特征是**响应体为空**，与插件自己的 404（带 JSON error）不同。
 // 这一组断言把「插件确实应答了」和「宿主替它应答了」区分开。
-console.log('\n[9] 路由命中回归（区分宿主兜底与插件应答）');
+console.log('\n[10] 路由命中回归（区分宿主兜底与插件应答）');
 for (const [label, path, method] of [
   ['health', '/mobile-gateway/health', 'GET'],
   ['pair（无码应被插件拒绝，不是兜底）', '/mobile-gateway/pair', 'POST'],

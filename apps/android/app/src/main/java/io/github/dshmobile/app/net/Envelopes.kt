@@ -42,10 +42,26 @@ object Envelopes {
         put("payload", payload)
     }
 
-    fun clientResponse(rpcId: String, result: JsonObject): JsonObject = buildJsonObject {
+    /**
+     * 应答一条主机下发的 server-request（审批 / 提问）。
+     *
+     * ⚠️ 官方契约里 `result` 的形状是 `{ ok: boolean, value: unknown }`，**不是**裸的业务对象。
+     * 见 `docs/api-contract.md` §1.4：
+     *
+     *     POST /api/respond
+     *     { "type":"client-response", "rpcId":"…", "result": { "ok": true, "value": {…} } }
+     *
+     * 早前的实现直接把 `{kind:"allow"}` 当作 result 传出去，主机会回
+     * `{"accepted":false,"reason":"bad-response"}` —— 表现为「点了允许但没反应」。
+     * 这里统一由本函数补信封，调用方只提供业务 value。
+     */
+    fun clientResponse(rpcId: String, value: JsonObject): JsonObject = buildJsonObject {
         put("type", TYPE_CLIENT_RESPONSE)
         put("rpcId", rpcId)
-        put("result", result)
+        put("result", buildJsonObject {
+            put("ok", true)
+            put("value", value)
+        })
     }
 }
 
