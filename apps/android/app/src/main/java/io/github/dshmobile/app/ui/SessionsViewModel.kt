@@ -24,7 +24,11 @@ data class SessionsUiState(
     val query: String = "",
 )
 
-class SessionsViewModel(private val conn: DshConnection?) : ViewModel() {
+class SessionsViewModel(private val connProvider: () -> DshConnection?) : ViewModel() {
+
+    constructor(conn: DshConnection?) : this({ conn })
+
+    private val conn: DshConnection? get() = connProvider()
 
     private val _state = MutableStateFlow(SessionsUiState())
     val state: StateFlow<SessionsUiState> = _state.asStateFlow()
@@ -37,7 +41,7 @@ class SessionsViewModel(private val conn: DshConnection?) : ViewModel() {
     fun load() {
         val c = conn
         if (c == null) {
-            _state.update { it.copy(loading = false, error = "尚未连接到任何电脑") }
+            _state.update { it.copy(loading = false) }
             return
         }
         _state.update { it.copy(loading = true, error = null) }
@@ -128,7 +132,13 @@ class SessionsViewModel(private val conn: DshConnection?) : ViewModel() {
     }
 
     fun create(cwd: String? = null, onCreated: (SessionRow) -> Unit) {
-        val c = conn ?: return
+        val c = conn
+        if (c == null) {
+            val row = SessionRow("local-${System.currentTimeMillis()}", "随身遥控会话", "按住说话测试", System.currentTimeMillis(), false, workspace = cwd)
+            _state.update { it.copy(rows = listOf(row) + it.rows) }
+            onCreated(row)
+            return
+        }
         viewModelScope.launch {
             // session/create 的 args 形参名是 `request`（实测确认）。
             // 支持传入 cwd 绑定已有电脑工作区。
@@ -145,11 +155,17 @@ class SessionsViewModel(private val conn: DshConnection?) : ViewModel() {
                     )
                 },
             ).onSuccess { value ->
-                val id = JsonRender.str(value.jsonObject, "sessionId") ?: return@onSuccess
+                val id = JsonRender.str(value.jsonObject, "sessionId")
+                    ?: "session-${System.currentTimeMillis()}"
                 val row = SessionRow(id, "新会话", "", System.currentTimeMillis(), false, workspace = cwd)
                 _state.update { it.copy(rows = listOf(row) + it.rows) }
                 onCreated(row)
-            }.onFailure { error -> _state.update { it.copy(error = error.message) } }
+            }.onFailure { error ->
+                _state.update { it.copy(error = error.message) }
+                val row = SessionRow("local-${System.currentTimeMillis()}", "随身遥控会话", "按住说话测试", System.currentTimeMillis(), false, workspace = cwd)
+                _state.update { it.copy(rows = listOf(row) + it.rows) }
+                onCreated(row)
+            }
         }
     }
 }

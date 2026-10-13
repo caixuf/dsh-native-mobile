@@ -68,6 +68,19 @@ import io.github.dshmobile.app.ui.components.DshIcon
 import io.github.dshmobile.app.ui.components.EmptyState
 import io.github.dshmobile.app.ui.icons.DshIcons
 import io.github.dshmobile.app.render.MarkdownText
+import android.Manifest
+import android.content.pm.PackageManager
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.core.content.ContextCompat
+import io.github.dshmobile.app.ui.components.VoiceRecordingOverlay
+import io.github.dshmobile.app.ui.components.rememberVoiceInputState
 
 /**
  * 对话页 —— **对齐 DSH Web 客户端的真实设计**，不是另起一套。
@@ -701,6 +714,24 @@ private fun Composer(
     enabled: Boolean,
     onSend: () -> Unit,
 ) {
+    val context = LocalContext.current
+    val haptics = LocalHapticFeedback.current
+
+    val voiceState = rememberVoiceInputState { text ->
+        if (text.isNotBlank()) {
+            val combined = if (value.isBlank()) text else "$value $text"
+            onValueChange(combined)
+        }
+    }
+
+    val permissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission(),
+    ) { isGranted ->
+        if (isGranted) {
+            voiceState.start()
+        }
+    }
+
     val canSend = value.isNotBlank() && !sending && enabled
 
     Box {
@@ -726,6 +757,14 @@ private fun Composer(
                     bottom = DshTheme.m.sm,
                 ),
         ) {
+            // 语音录音转写动态波纹浮层
+            VoiceRecordingOverlay(
+                isListening = voiceState.isListening,
+                isCancelling = voiceState.isCancelling,
+                liveTranscript = voiceState.liveTranscript,
+                rmsLevel = voiceState.rmsLevel,
+            )
+
             Row(
                 Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.Bottom,
@@ -736,7 +775,7 @@ private fun Composer(
                     onValueChange = onValueChange,
                     placeholder = {
                         Text(
-                            if (enabled) "发消息…" else "正在运行中…",
+                            if (enabled) "发消息，或按住右侧说话…" else "正在运行中…",
                             style = MaterialTheme.typography.bodyMedium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
@@ -785,22 +824,67 @@ private fun Composer(
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                     }
-                } else {
+                } else if (canSend) {
+                    // 有文字时显示常规发送按钮
                     Box(
                         Modifier
                             .size(48.dp)
                             .background(
-                                if (canSend) MaterialTheme.colorScheme.primary
-                                else MaterialTheme.colorScheme.surfaceContainerHighest,
+                                MaterialTheme.colorScheme.primary,
                                 CircleShape,
                             )
-                            .clickable(enabled = canSend, onClick = onSend),
+                            .clickable(onClick = onSend),
                         contentAlignment = Alignment.Center,
                     ) {
                         DshIcon(
                             DshIcons.Send,
                             contentDescription = "发送",
-                            tint = if (canSend) MaterialTheme.colorScheme.onPrimary
+                            tint = MaterialTheme.colorScheme.onPrimary,
+                            size = 20.dp,
+                        )
+                    }
+                } else {
+                    // 输入框为空时显示 MiniMax 风格的按住说话麦克风按钮
+                    Box(
+                        Modifier
+                            .size(48.dp)
+                            .background(
+                                if (voiceState.isListening) MaterialTheme.colorScheme.primaryContainer
+                                else MaterialTheme.colorScheme.surfaceContainerHighest,
+                                CircleShape,
+                            )
+                            .pointerInput(enabled) {
+                                awaitEachGesture {
+                                    awaitFirstDown(requireUnconsumed = false)
+                                    val hasPerm = ContextCompat.checkSelfPermission(
+                                        context,
+                                        Manifest.permission.RECORD_AUDIO,
+                                    ) == PackageManager.PERMISSION_GRANTED
+                                    if (!hasPerm) {
+                                        permissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+                                        return@awaitEachGesture
+                                    }
+                                    haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+                                    voiceState.start()
+
+                                    var totalDragY = 0f
+                                    do {
+                                        val event = awaitPointerEvent()
+                                        val change = event.changes.firstOrNull() ?: break
+                                        totalDragY += change.position.y - change.previousPosition.y
+                                        voiceState.isCancelling = (totalDragY < -130f)
+                                    } while (event.changes.any { it.pressed })
+
+                                    haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                                    voiceState.stop(cancel = voiceState.isCancelling)
+                                }
+                            },
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        DshIcon(
+                            DshIcons.Mic,
+                            contentDescription = "按住说话",
+                            tint = if (voiceState.isListening) MaterialTheme.colorScheme.primary
                             else MaterialTheme.colorScheme.onSurfaceVariant,
                             size = 20.dp,
                         )

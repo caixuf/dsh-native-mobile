@@ -66,7 +66,7 @@ private fun AppRoot(app: DshMobileApp) {
         factory = object : ViewModelProvider.Factory {
             @Suppress("UNCHECKED_CAST")
             override fun <T : ViewModel> create(modelClass: Class<T>): T =
-                SessionsViewModel(appVm.connection) as T
+                SessionsViewModel { appVm.connection } as T
         },
     )
     val sessionsState by sessionsVm.state.collectAsStateWithLifecycle()
@@ -154,7 +154,7 @@ private fun AppRoot(app: DshMobileApp) {
                     factory = object : ViewModelProvider.Factory {
                         @Suppress("UNCHECKED_CAST")
                         override fun <T : ViewModel> create(modelClass: Class<T>): T =
-                            ChatViewModel(appVm.connection) as T
+                            ChatViewModel { appVm.connection } as T
                     },
                 )
                 LaunchedEffect(current?.sessionId) {

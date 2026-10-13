@@ -457,4 +457,26 @@ object DshIcons {
             }
         }
     }
+
+    /** 麦克风 / 语音输入图标 */
+    val Mic: ImageVector by lazy {
+        icon("Mic") {
+            path(fill = null, stroke = SolidColor(Color.Black), strokeLineWidth = STROKE) {
+                moveTo(9f, 6.5f)
+                curveTo(9f, 4.57f, 10.34f, 3f, 12f, 3f)
+                curveTo(13.66f, 3f, 15f, 4.57f, 15f, 6.5f)
+                lineTo(15f, 11.5f)
+                curveTo(15f, 13.43f, 13.66f, 15f, 12f, 15f)
+                curveTo(10.34f, 15f, 9f, 13.43f, 9f, 11.5f)
+                close()
+            }
+            path(fill = null, stroke = SolidColor(Color.Black), strokeLineWidth = STROKE) {
+                moveTo(5f, 10.5f)
+                curveTo(5f, 14.37f, 8.13f, 17.5f, 12f, 17.5f)
+                curveTo(15.87f, 17.5f, 19f, 14.37f, 19f, 10.5f)
+                moveTo(12f, 17.5f); lineTo(12f, 21f)
+                moveTo(8.5f, 21f); lineTo(15.5f, 21f)
+            }
+        }
+    }
 }

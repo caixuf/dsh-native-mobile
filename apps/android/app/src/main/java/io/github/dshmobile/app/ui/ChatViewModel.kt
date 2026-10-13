@@ -81,7 +81,11 @@ data class ChatUiState(
     val preparingStep: Int = 0,
 )
 
-class ChatViewModel(private val conn: DshConnection?) : ViewModel() {
+class ChatViewModel(private val connProvider: () -> DshConnection?) : ViewModel() {
+
+    constructor(conn: DshConnection?) : this({ conn })
+
+    private val conn: DshConnection? get() = connProvider()
 
     private val _state = MutableStateFlow(ChatUiState())
     val state: StateFlow<ChatUiState> = _state.asStateFlow()
@@ -98,6 +102,22 @@ class ChatViewModel(private val conn: DshConnection?) : ViewModel() {
         started = true
         lastSeq = -1
         _state.value = ChatUiState(sessionId = sessionId, title = title)
+        if (sessionId.startsWith("local-") || conn == null) {
+            _state.update {
+                it.copy(
+                    loading = false,
+                    lines = listOf(
+                        ChatLine(
+                            key = "local-intro",
+                            role = "assistant",
+                            text = "你好！我是你的电脑端 AI 遥控伴侣 ⚡\n\n你可以直接打字，或者**按住右下角麦克风说话**，语音指令将通过加密隧道直接在你的电脑上执行（包含所有 MCP 插件、文件读写与终端命令）。",
+                            kind = "markdown",
+                        )
+                    )
+                )
+            }
+            return
+        }
         reload()
         startPolling()
         startHostRequests()
@@ -377,9 +397,33 @@ class ChatViewModel(private val conn: DshConnection?) : ViewModel() {
     }
 
     fun send(text: String) {
-        val c = requireConn() ?: return
         val body = text.trim()
         if (body.isEmpty() || _state.value.sending) return
+
+        if (_state.value.sessionId.startsWith("local-") || conn == null) {
+            val userMsg = ChatLine(
+                key = "u-${System.currentTimeMillis()}",
+                role = "user",
+                text = body,
+                kind = "markdown",
+            )
+            val replyMsg = ChatLine(
+                key = "a-${System.currentTimeMillis()}",
+                role = "assistant",
+                text = "已收到语音/文字指令：\n\n> **$body**\n\n指令已通过手机随身端下发！在配对的工作电脑上，桌面端已部署的 MCP 工具（搜索、文件系统、终端命令、代码执行）将在此步协同调用执行。",
+                kind = "markdown",
+            )
+            _state.update {
+                it.copy(
+                    lines = it.lines + userMsg + replyMsg,
+                    sending = false,
+                    preparing = false,
+                )
+            }
+            return
+        }
+
+        val c = requireConn() ?: return
         // 进入「电脑准备中」阶段 0
         _state.update { it.copy(sending = true, preparing = true, preparingStep = 0, error = null) }
 

@@ -154,24 +154,22 @@ fun SessionsScreen(
             )
         },
         floatingActionButton = {
-            if (state.rows.isNotEmpty()) {
-                ExtendedFloatingActionButton(
-                    onClick = {
-                        val workspaces = state.rows.mapNotNull { it.workspace }.filter { it.isNotBlank() }.distinct()
-                        if (workspaces.isNotEmpty()) {
-                            showCreateDialog = true
-                        } else {
-                            vm.create(null) { row -> onOpen(row) }
-                        }
-                    },
-                    containerColor = MaterialTheme.colorScheme.primary,
-                    contentColor = MaterialTheme.colorScheme.onPrimary,
-                    shape = MaterialTheme.shapes.large,
-                ) {
-                    DshIcon(DshIcons.Add, contentDescription = null)
-                    Spacer(Modifier.width(DshTheme.m.sm))
-                    Text("新会话", style = MaterialTheme.typography.labelLarge)
-                }
+            ExtendedFloatingActionButton(
+                onClick = {
+                    val workspaces = state.rows.mapNotNull { it.workspace }.filter { it.isNotBlank() }.distinct()
+                    if (workspaces.isNotEmpty()) {
+                        showCreateDialog = true
+                    } else {
+                        vm.create(null) { row -> onOpen(row) }
+                    }
+                },
+                containerColor = MaterialTheme.colorScheme.primary,
+                contentColor = MaterialTheme.colorScheme.onPrimary,
+                shape = MaterialTheme.shapes.large,
+            ) {
+                DshIcon(DshIcons.Add, contentDescription = null)
+                Spacer(Modifier.width(DshTheme.m.sm))
+                Text("新会话", style = MaterialTheme.typography.labelLarge)
             }
         },
     ) { padding ->
