@@ -61,6 +61,19 @@ data class ChatUiState(
     val loading: Boolean = true,
     val error: String? = null,
     val rawTail: String? = null,
+    /**
+     * 电脑是否正在「准备中」。
+     *
+     * 🔴 我们的产品是「手机发起、电脑执行」。从点发送到电脑上真的有响应，
+     * 中间有一段不可见的等待（唤醒守护进程、加载技能、准备工作区）。
+     * 不给反馈的话，用户会以为 App 卡了并重复点击。
+     *
+     * 阶段划分对齐逆向 MiniMax 移动端的 `claw_pod_start_process_0..3`
+     * （唤醒 → 加载知识和技能 → 准备工作空间 → 即将完成）。
+     */
+    val preparing: Boolean = false,
+    /** 0..3，当前进行到第几阶段；>= preparing 为 false 时忽略。 */
+    val preparingStep: Int = 0,
 )
 
 class ChatViewModel(private val conn: DshConnection?) : ViewModel() {
@@ -70,6 +83,8 @@ class ChatViewModel(private val conn: DshConnection?) : ViewModel() {
 
     private var pollJob: Job? = null
     private var hostJob: Job? = null
+    /** 「电脑准备中」阶段推进的定时任务。 */
+    private var advanceJob: Job? = null
     private var lastSeq: Long = -1
     private var started = false
 
@@ -360,7 +375,22 @@ class ChatViewModel(private val conn: DshConnection?) : ViewModel() {
         val c = requireConn() ?: return
         val body = text.trim()
         if (body.isEmpty() || _state.value.sending) return
-        _state.update { it.copy(sending = true, error = null) }
+        // 进入「电脑准备中」阶段 0
+        _state.update { it.copy(sending = true, preparing = true, preparingStep = 0, error = null) }
+
+        // 阶段推进：主机没给"准备完成"的信号（我们目前也没接事件流的 turn/start），
+        // 所以按**时间**推进 —— 这是诚实的近似：告诉用户在等，而不是假装知道确切进度。
+        // 每一步的时长按「远程唤醒 + 加载技能 + 准备工作区」的真实耗时估计。
+        advanceJob?.cancel()
+        advanceJob = viewModelScope.launch {
+            val schedule = listOf(600L, 1600L, 3000L) // 到 step1/2/3 的延迟
+            for ((i, delay) in schedule.withIndex()) {
+                kotlinx.coroutines.delay(delay)
+                if (!_state.value.preparing) return@launch
+                _state.update { it.copy(preparingStep = i + 1) }
+            }
+        }
+
         viewModelScope.launch {
             // args 的键名必须是服务端声明的形参名 `request`（实测确认）。
             // 内部的字段名则来自 SessionPromptRequest 的业务定义。
@@ -375,10 +405,20 @@ class ChatViewModel(private val conn: DshConnection?) : ViewModel() {
                     })
                 })
             }).onSuccess {
-                _state.update { it.copy(sending = false, running = true) }
+                // 主机已接收：进入最后阶段，然后交给 running 接管
+                _state.update {
+                    it.copy(
+                        sending = false,
+                        running = true,
+                        preparing = false,
+                        preparingStep = 3,
+                    )
+                }
                 reload()
             }.onFailure { error ->
-                _state.update { it.copy(sending = false, error = error.message) }
+                _state.update {
+                    it.copy(sending = false, preparing = false, error = error.message)
+                }
             }
         }
     }

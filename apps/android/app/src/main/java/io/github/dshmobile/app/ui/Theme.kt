@@ -291,6 +291,44 @@ object DshTheme {
 
     val offline: Color
         @Composable @ReadOnlyComposable get() = MaterialTheme.colorScheme.onSurfaceVariant
+
+    // ── Markdown 专用 token ────────────────────────────────────────────────
+    // 正文尺寸沿用 DSH Web 的 `--dsh-content-font-size:14px` / `line-height:22px`，
+    // 这组比例在中文下可读性最好。
+    val markdownSize
+        @Composable @ReadOnlyComposable get() = 14.5.sp
+    val markdownLineHeight
+        @Composable @ReadOnlyComposable get() = 22.sp
+
+    /** Markdown 正文色：比 `onSurface` 略降一档，长文不刺眼。 */
+    val markdownBody: Color
+        @Composable @ReadOnlyComposable get() = MaterialTheme.colorScheme.onSurface
+
+    /** 代码块底色。用 `surfaceContainerHigh`，与整体底色拉开但不突兀。 */
+    val codeBg: Color
+        @Composable @ReadOnlyComposable get() = MaterialTheme.colorScheme.surfaceContainerHigh
+
+    /** 代码文字色。 */
+    val codeText: Color
+        @Composable @ReadOnlyComposable get() = MaterialTheme.colorScheme.onSurface
+
+    /**
+     * 代码块文字样式：等宽 + 略小字号。
+     *
+     * 单独做成 token 是因为代码块与正文是**两套排版**（Web 端同样如此）：
+     * 正文 14/22，代码 13/20 且等宽 —— 等宽字体天然显得更大，不缩一点会挤。
+     */
+    val codeTextStyle: TextStyle
+        @Composable @ReadOnlyComposable get() = TextStyle(
+            fontFamily = FontFamily.Monospace,
+            fontSize = 13.sp,
+            lineHeight = 20.sp,
+        )
+
+    /** 链接色：跟随主色，但略深一点以满足对比度。 */
+    val markdownLink: Color
+        @Composable @ReadOnlyComposable get() =
+            if (isSystemInDarkTheme()) Blue200 else Blue600
 }
 
 @Composable

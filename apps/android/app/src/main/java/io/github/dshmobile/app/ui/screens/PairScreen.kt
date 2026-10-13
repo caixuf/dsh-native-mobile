@@ -1,5 +1,28 @@
 package io.github.dshmobile.app.ui.screens
 
+import io.github.dshmobile.app.ui.icons.DshIcons
+
+import io.github.dshmobile.app.ui.components.DshIcon
+
+import io.github.dshmobile.app.ui.components.ConnectionDot
+
+import io.github.dshmobile.app.ui.DshTheme
+
+import androidx.compose.material3.ButtonDefaults
+
+import androidx.compose.material3.Surface
+import androidx.compose.material3.OutlinedTextFieldDefaults
+
+import androidx.compose.ui.text.font.FontFamily
+
+import androidx.compose.ui.text.input.VisualTransformation
+
+import androidx.compose.foundation.rememberScrollState
+
+import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.verticalScroll
+
 import android.Manifest
 import android.content.pm.PackageManager
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -58,6 +81,66 @@ import com.google.zxing.common.HybridBinarizer
 import java.util.concurrent.Executors
 
 /**
+ * 配对页的输入框。
+ *
+ * 为什么不用 M3 默认的 `OutlinedTextField` + 浮动 label：
+ * 浮动 label 在有值时缩到框里、会跳动，中文场景下尤其明显（占位与标签都是中文）。
+ * 这里改成**标签固定在上方**，值区只放输入内容 —— 更稳，也更像设置页。
+ *
+ * @param monospace 地址这类技术值用等宽字体，便于核对端口号。
+ */
+@Composable
+private fun PairField(
+    value: String,
+    onValueChange: (String) -> Unit,
+    label: String,
+    placeholder: String,
+    keyboardType: KeyboardType,
+    imeAction: ImeAction,
+    isPassword: Boolean = false,
+    monospace: Boolean = false,
+) {
+    Column {
+        Text(
+            label,
+            style = MaterialTheme.typography.labelMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Spacer(Modifier.height(6.dp))
+        OutlinedTextField(
+            value = value,
+            onValueChange = onValueChange,
+            placeholder = {
+                Text(
+                    placeholder,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.55f),
+                )
+            },
+            singleLine = true,
+            visualTransformation = if (isPassword) PasswordVisualTransformation()
+            else VisualTransformation.None,
+            textStyle = MaterialTheme.typography.bodyMedium.copy(
+                fontFamily = if (monospace) FontFamily.Monospace else FontFamily.SansSerif,
+            ),
+            keyboardOptions = KeyboardOptions(
+                keyboardType = keyboardType,
+                imeAction = imeAction,
+                autoCorrectEnabled = false,
+            ),
+            shape = MaterialTheme.shapes.medium,
+            colors = OutlinedTextFieldDefaults.colors(
+                focusedBorderColor = MaterialTheme.colorScheme.primary,
+                unfocusedBorderColor = MaterialTheme.colorScheme.outlineVariant,
+                focusedContainerColor = MaterialTheme.colorScheme.surface,
+                unfocusedContainerColor = MaterialTheme.colorScheme.surface,
+            ),
+            modifier = Modifier.fillMaxWidth(),
+        )
+    }
+}
+
+/**
  * 配对 / 登录页。
  *
  * **主流程是账号密码**（用户反馈配对码要复制 22 位太麻烦）：
@@ -88,83 +171,133 @@ fun PairScreen(
     }
 
     Column(
-        modifier = Modifier.fillMaxSize().padding(20.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp),
+        modifier = Modifier
+            .fillMaxSize()
+            .verticalScroll(rememberScrollState())
+            .imePadding()
+            .padding(horizontal = DshTheme.m.xl, vertical = DshTheme.m.lg),
     ) {
-        Text("配对电脑", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.SemiBold)
-        Text(
-            "在电脑上打开 DSH 的「移动网关」面板，把上面的账号密码填进来就行。",
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
+        Spacer(Modifier.height(DshTheme.m.md))
 
-        Spacer(Modifier.height(4.dp))
+        // ── 品牌区：说清「这是什么」 ──
+        // 文案对齐逆向 MiniMax 移动端的 `computer_use_hero_title`
+        // （= 像你一样操作你的本地电脑）：先讲清价值，再要用户填东西。
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Box(
+                Modifier
+                    .size(44.dp)
+                    .background(
+                        MaterialTheme.colorScheme.primaryContainer,
+                        RoundedCornerShape(13.dp),
+                    ),
+                contentAlignment = Alignment.Center,
+            ) {
+                DshIcon(
+                    DshIcons.Desktop,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.primary,
+                    size = 24.dp,
+                )
+            }
+            Spacer(Modifier.width(DshTheme.m.md))
+            Column {
+                Text(
+                    "连接你的电脑",
+                    style = MaterialTheme.typography.headlineSmall,
+                    color = MaterialTheme.colorScheme.onBackground,
+                )
+                Text(
+                    "用手机遥控电脑上的 DSH，干活还是在电脑上",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
 
+        Spacer(Modifier.height(DshTheme.m.xl))
+
+        // ── 输入区 ──
         // 🔴 onValueChange 里**不要**对值做 trim()/uppercase() 变换。
         // 早前写成了 `code = it.uppercase()` / `baseUrl = it.trim()`，
         // 每次输入都重建字符串，导致部分输入法下粘贴失效、光标跳动。
         // 正确做法：值原样保存，提交时才规范化。
-        OutlinedTextField(
+        PairField(
             value = baseUrl,
             onValueChange = { baseUrl = it; probe = null },
-            label = { Text("电脑地址") },
-            placeholder = { Text("https://203.0.113.10:2444") },
-            singleLine = true,
-            keyboardOptions = KeyboardOptions(
-                keyboardType = KeyboardType.Uri,
-                imeAction = ImeAction.Next,
-                autoCorrectEnabled = false,
-            ),
-            modifier = Modifier.fillMaxWidth(),
+            label = "电脑地址",
+            placeholder = "https://203.0.113.10:2444",
+            keyboardType = KeyboardType.Uri,
+            imeAction = ImeAction.Next,
+            monospace = true,
         )
 
-        OutlinedTextField(
+        Spacer(Modifier.height(DshTheme.m.md))
+
+        PairField(
             value = username,
             onValueChange = { username = it },
-            label = { Text("账号") },
-            placeholder = { Text("dsh") },
-            singleLine = true,
-            keyboardOptions = KeyboardOptions(
-                keyboardType = KeyboardType.Text,
-                imeAction = ImeAction.Next,
-                autoCorrectEnabled = false,
-            ),
-            modifier = Modifier.fillMaxWidth(),
+            label = "账号",
+            placeholder = "dsh",
+            keyboardType = KeyboardType.Text,
+            imeAction = ImeAction.Next,
         )
 
-        OutlinedTextField(
+        Spacer(Modifier.height(DshTheme.m.md))
+
+        PairField(
             value = password,
             onValueChange = { password = it },
-            label = { Text("密码") },
-            placeholder = { Text("管理面板上显示的 12 位密码") },
-            singleLine = true,
-            visualTransformation = PasswordVisualTransformation(),
-            keyboardOptions = KeyboardOptions(
-                keyboardType = KeyboardType.Password,
-                imeAction = ImeAction.Done,
-                autoCorrectEnabled = false,
-            ),
-            modifier = Modifier.fillMaxWidth(),
+            label = "密码",
+            placeholder = "管理面板上显示的 12 位密码",
+            keyboardType = KeyboardType.Password,
+            imeAction = ImeAction.Done,
+            isPassword = true,
         )
 
-        if (probe != null) {
-            Text(
-                "网关可达：$probe",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.secondary,
-            )
+        // 地址探测结果：让用户填完地址就知道通没通，而不是直接点登录碰运气
+        probe?.let {
+            Spacer(Modifier.height(DshTheme.m.sm))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                ConnectionDot(connected = true, size = 6.dp)
+                Spacer(Modifier.width(7.dp))
+                Text(
+                    "网关可达 · $it",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = DshTheme.online,
+                )
+            }
         }
 
         // 🔴 早前根本没渲染 error：登录失败（TLS 拒绝、超时、密码错）时页面
         // 纹丝不动，用户只能干等。实测（公网 2444 端口）踩中过一次。
         if (error != null) {
-            Text(
-                error,
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.error,
+            Spacer(Modifier.height(DshTheme.m.md))
+            Surface(
+                color = MaterialTheme.colorScheme.errorContainer,
+                shape = MaterialTheme.shapes.small,
                 modifier = Modifier.fillMaxWidth(),
-            )
+            ) {
+                Row(
+                    Modifier.padding(DshTheme.m.md),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    DshIcon(
+                        DshIcons.Warning,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.onErrorContainer,
+                        size = 16.dp,
+                    )
+                    Spacer(Modifier.width(DshTheme.m.sm))
+                    Text(
+                        error,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onErrorContainer,
+                    )
+                }
+            }
         }
+
+        Spacer(Modifier.height(DshTheme.m.xl))
 
         Button(
             onClick = {
@@ -179,16 +312,40 @@ fun PairScreen(
                 baseUrl.isNotBlank() &&
                 username.isNotBlank() &&
                 password.isNotBlank(),
-            modifier = Modifier.fillMaxWidth(),
+            shape = MaterialTheme.shapes.medium,
+            colors = ButtonDefaults.buttonColors(
+                containerColor = MaterialTheme.colorScheme.primary,
+                contentColor = MaterialTheme.colorScheme.onPrimary,
+            ),
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(50.dp),
         ) {
-            if (busy) CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
-            else Text("登录")
+            if (busy) {
+                CircularProgressIndicator(
+                    modifier = Modifier.size(18.dp),
+                    strokeWidth = 2.dp,
+                    color = MaterialTheme.colorScheme.onPrimary,
+                )
+                Spacer(Modifier.width(DshTheme.m.sm))
+                Text("正在连接电脑…", style = MaterialTheme.typography.labelLarge)
+            } else {
+                Text("连接", style = MaterialTheme.typography.labelLarge)
+            }
         }
+
+        Spacer(Modifier.height(DshTheme.m.md))
 
         // 备选入口：配对码 / 扫码，收在折叠区里，不占主流程
         var showAdvanced by remember { mutableStateOf(false) }
-        TextButton(onClick = { showAdvanced = !showAdvanced }) {
-            Text(if (showAdvanced) "收起备选方式" else "用配对码 / 扫码（备选）")
+        TextButton(
+            onClick = { showAdvanced = !showAdvanced },
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Text(
+                if (showAdvanced) "收起备选方式" else "用配对码 / 扫码（备选）",
+                style = MaterialTheme.typography.labelMedium,
+            )
         }
 
         if (showAdvanced) {

@@ -1,5 +1,9 @@
 package io.github.dshmobile.app.ui.screens
 
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
@@ -63,6 +67,7 @@ import io.github.dshmobile.app.ui.PendingPrompt
 import io.github.dshmobile.app.ui.components.DshIcon
 import io.github.dshmobile.app.ui.components.EmptyState
 import io.github.dshmobile.app.ui.icons.DshIcons
+import io.github.dshmobile.app.render.MarkdownText
 
 /**
  * 对话页 —— **对齐 DSH Web 客户端的真实设计**，不是另起一套。
@@ -213,8 +218,20 @@ fun ChatScreen(
                 .fillMaxSize()
                 .imePadding(),
         ) {
-            // 🔴 执行上下文条：让「事情正在电脑上跑」变得可感知。
-            // 这是产品模型（手机=遥控器，电脑=执行端）的落点，不是装饰。
+            // 🔴 电脑准备中：远程创建会话时，手机要能看见「电脑正在准备」。
+            //
+            // 对齐逆向 MiniMax 移动端 `com.xproducer.yingshiai` 的
+            // `claw_pod_start_process_0..3` 四阶段：
+            //   唤醒 MaxClaw → 加载知识和技能 → 准备你的云端工作空间 → 即将准备完成
+            //
+            // 为什么必须有：我们是「手机发起、电脑执行」。从点发送到电脑真的开始跑，
+            // 中间有几秒到几十秒（唤醒进程、加载技能、准备工作区）。
+            // 没有这个反馈，用户会以为**App 卡了**，然后重复点击。
+            if (state.preparing) {
+                PreparingBanner(step = state.preparingStep)
+            }
+
+            // 🔴 执行上下文条：让「事情正在哪台电脑跑」变得可感知。
             ExecutionContextBar(
                 hostName = hostName,
                 workspace = workspace,
@@ -291,6 +308,84 @@ fun ChatScreen(
                     // 对齐 Web 端 .composerHero 的 padding-bottom:32px
                     item { Spacer(Modifier.height(DshTheme.m.xxl)) }
                 }
+            }
+        }
+    }
+}
+
+// ── 电脑准备中 ──────────────────────────────────────────────────────────────
+
+/**
+ * 「电脑准备中」横幅 —— 远程创建会话时的分阶段反馈。
+ *
+ * 文案与阶段划分对齐逆向 MiniMax 移动端的 `claw_pod_start_process_0..3`
+ * （唤醒 → 加载知识和技能 → 准备工作空间 → 即将完成），
+ * 但换成我们真实的阶段名。
+ *
+ * 设计要点：
+ *  - **阶段可见**：每一步单独显示，用户知道在等什么，而不是一个转圈；
+ *  - **可点的阶段**：已完成/当前/未开始用不同圆点区分，扫一眼就知道进度；
+ *  - **不高**：整条横幅压在 60dp 内，不能把消息流挤没。
+ */
+@Composable
+private fun PreparingBanner(step: Int) {
+    val stages = listOf("连接电脑", "加载技能", "准备工作区", "开始执行")
+
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .background(MaterialTheme.colorScheme.primaryContainer)
+            .padding(horizontal = DshTheme.m.gutter, vertical = DshTheme.m.md),
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            // 旋转的进度圈（不依赖第三方库）
+            val spin by rememberInfiniteTransition(label = "prep").animateFloat(
+                initialValue = 0f,
+                targetValue = 360f,
+                animationSpec = infiniteRepeatable(tween(1100)),
+                label = "spin",
+            )
+            CircularProgressIndicator(
+                progress = { spin / 360f },
+                modifier = Modifier.size(15.dp),
+                strokeWidth = 2.dp,
+                color = MaterialTheme.colorScheme.primary,
+            )
+            Spacer(Modifier.width(DshTheme.m.sm))
+            Text(
+                text = stages.getOrElse(step) { stages.last() },
+                style = MaterialTheme.typography.labelLarge,
+                color = MaterialTheme.colorScheme.onPrimaryContainer,
+            )
+            Spacer(Modifier.weight(1f))
+            Text(
+                text = "在你的电脑上",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.7f),
+            )
+        }
+
+        // 阶段进度条：四个点，当前项高亮
+        Row(
+            Modifier.padding(top = DshTheme.m.sm),
+            horizontalArrangement = Arrangement.spacedBy(5.dp),
+        ) {
+            stages.indices.forEach { i ->
+                val done = i < step
+                val current = i == step
+                Box(
+                    Modifier
+                        .height(3.dp)
+                        .weight(1f)
+                        .background(
+                            when {
+                                current -> MaterialTheme.colorScheme.primary
+                                done -> MaterialTheme.colorScheme.primary.copy(alpha = 0.45f)
+                                else -> MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.15f)
+                            },
+                            RoundedCornerShape(2.dp),
+                        ),
+                )
             }
         }
     }
@@ -441,9 +536,20 @@ private val MessageTextStyle = TextStyle(
 @Composable
 private fun LineBubble(line: ChatLine) {
     val fromUser = line.role == "user"
-    val isTool = line.role == "tool" || line.role == "system"
 
-    // 工具/系统：Web 端给工具单独的 meter-tint（紫），且不参与左右分栏
+    // 🔴 关键：**工具行必须按 `kind` 判断，不能只看 role**。
+    //
+    // 实测踩到的真实 bug（已修，见 JsonRender.roleOf）：
+    //   原来 roleOf 用裸子串匹配 `"assistant" in r || "ai" in r`，
+    //   而 "assistant" 本身就含 "ai"，于是正文被误判成别的角色，
+    //   最终落到 `else -> raw` 原样返回 —— **UI 表现是 `**粗体**` 仍显示星号**。
+    //
+    // 现在 roleOf 已改为「精确 → 前缀 → 兜底 assistant」，
+    // 这里再用 **kind** 做一道独立防线：只有真正的工具事件才弱化显示。
+    // 两道防线是因为这类失配在 UI 上极难定位（看起来像"渲染器坏了"）。
+    val isTool = line.kind == "tool/call" || line.kind == "tool/result" ||
+        line.role == "tool" || line.role == "system"
+
     if (isTool) {
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Center) {
             Row(
@@ -497,12 +603,10 @@ private fun LineBubble(line: ChatLine) {
                         .padding(horizontal = 16.dp, vertical = 10.dp),
                 )
             } else {
-                // agent 消息在 Web 端是纯文本，没有气泡底 —— 只靠留白分层
-                Text(
+                // agent 消息：走 Markdown 渲染（Web 端同样是 markdown）
+                MarkdownText(
                     text = line.text,
-                    style = MessageTextStyle,
                     color = MaterialTheme.colorScheme.onSurface,
-                    modifier = Modifier.padding(horizontal = 2.dp, vertical = 5.dp),
                 )
             }
         }

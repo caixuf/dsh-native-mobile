@@ -179,12 +179,27 @@ object JsonRender {
             ?: return roleFromType(typeOf(entry))
 
         val r = raw.lowercase()
-        return when {
-            "user" in r || "human" in r || "prompt" in r -> "user"
-            "assistant" in r || "model" in r || "ai" in r -> "assistant"
-            "system" in r -> "system"
-            "tool" in r -> "tool"
-            else -> raw
+        return when (r) {
+            // 🔴 顺序与匹配方式都很重要：**先精确、再前后缀子串**，不要用 `in` 裸匹配。
+            //
+            // 原来写成 `"tool" in r` 之类的裸子串匹配，导致 `assistantToolResult`
+            // 这种含 "tool" 的值被判成 tool；而 `"ai" in r` 更糟 ——
+            // **"assistant" 里就含 "ai"，但 "detail"/"email"/"maintain" 也含**，
+            // 于是大量正文被误判成 assistant/user，最后落到 `else -> raw`，
+            // 角色彻底失配（正文没走 Markdown 渲染就是这个原因）。
+            "user", "human", "prompt", "user-input" -> "user"
+            "assistant", "model", "ai", "agent", "bot", "output" -> "assistant"
+            "system", "developer" -> "system"
+            "tool", "tool-call", "tool_call", "toolcall", "function" -> "tool"
+            else -> when {
+                r.startsWith("user") || r.startsWith("human") -> "user"
+                r.startsWith("assistant") || r.startsWith("model") -> "assistant"
+                r.startsWith("tool") || r.startsWith("function") -> "tool"
+                r.startsWith("system") -> "system"
+                // 认不出来就归 assistant：正文类内容绝大多数如此，
+                // 宁可渲染成正文，也不要静默走纯文本分支。
+                else -> "assistant"
+            }
         }
     }
 
