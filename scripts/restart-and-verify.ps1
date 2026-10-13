@@ -1,4 +1,4 @@
-﻿# Restart DSH and verify the event-stream protocol.
+# Restart DSH and verify the event-stream protocol.
 #
 # Run this DETACHED from DSH: restarting DSH ends the session that would
 # otherwise be doing the verifying.
@@ -12,8 +12,13 @@
 
 $ErrorActionPreference = 'Continue'
 $log = Join-Path $PSScriptRoot '..\..\dsh-restart-verify.log'
-$node = 'C:\Users\me\AppData\Local\Programs\DeepSeek Harness\resources\runtime\primary-runtime\dependencies\node\bin\node.exe'
-$dshExe = 'C:\Users\me\AppData\Local\Programs\DeepSeek Harness\DeepSeek Harness.exe'
+# Resolve the install root from the running DSH rather than hardcoding a user path,
+# so this script stays machine-independent (and carries no personal paths).
+$dshRoot = Split-Path -Parent (Get-Process -Name 'DeepSeek Harness' -ErrorAction SilentlyContinue |
+  Select-Object -First 1 -ExpandProperty Path)
+if (-not $dshRoot) { $dshRoot = 'C:\Program Files\DeepSeek Harness' }
+$node = Join-Path $dshRoot 'resources\runtime\primary-runtime\dependencies\node\bin\node.exe'
+$dshExe = Join-Path $dshRoot 'DeepSeek Harness.exe'
 
 function Log([string]$m) {
   $line = "[$(Get-Date -Format 'HH:mm:ss')] $m"

@@ -83,7 +83,8 @@ $env:JAVA_HOME="<你的 JDK17 路径>"
 ## 提交
 
 - 提交信息用中文，格式 `type(scope): 摘要`，type ∈ `feat|fix|refactor|docs|test|chore|perf`
-- 署名（如需要）：`your-name <you@example.com>`，经 `git -c` 传入，**不改全局配置**
+- 署名用你自己的身份；若需临时指定，用 `git -c user.name=… -c user.email=… commit`，
+  **不要改全局 git 配置**
 
 ## 🔴 安全红线
 
