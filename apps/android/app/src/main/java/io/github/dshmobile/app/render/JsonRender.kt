@@ -45,6 +45,25 @@ object JsonRender {
         return null
     }
 
+    /**
+     * 读 JSON 布尔。
+     *
+     * ⚠️ 别再用 `obj[k]?.jsonPrimitive?.content == "true"` 这种写法：JSON 布尔值的
+     * `content` 恰好是 `"true"`/`"false"`，能碰对，但如果服务端把字段发成字符串
+     * `"true"` 或数字 `1`，那个写法就静默判错。这里统一按字面量解析。
+     */
+    fun bool(obj: JsonObject?, vararg keys: String): Boolean? {
+        if (obj == null) return null
+        for (k in keys) {
+            val v = obj[k] as? JsonPrimitive ?: continue
+            when (v.content.lowercase()) {
+                "true", "1" -> return true
+                "false", "0" -> return false
+            }
+        }
+        return null
+    }
+
     fun arr(obj: JsonObject, key: String): JsonArray? = obj[key] as? JsonArray
 
     fun obj(el: JsonElement?, key: String): JsonObject? = (el as? JsonObject)?.get(key) as? JsonObject

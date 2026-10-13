@@ -11,6 +11,9 @@
 import http from 'node:http';
 import { randomUUID } from 'node:crypto';
 import { once } from 'node:events';
+import { readFileSync } from 'node:fs';
+import { dirname, join as joinPath } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { WebSocket } from 'ws';
 import { DeviceStore } from '../lib/store.mjs';
 import { createBridge } from '../lib/bridge.mjs';
@@ -20,6 +23,13 @@ import { createLogger } from '../lib/util.mjs';
 import { PRIVILEGED_METHODS } from '../lib/bridge.mjs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+
+/**
+ * 仓库根（`dsh-native-mobile/`）。
+ * `test/e2e.mjs` → `packages/dsh-mobile-gateway/test` → 上溯三级。
+ * 供 [9c] 静态读 App 的 Kotlin 源码用（网关是透明桥，App 的形状错误在网关侧不可见）。
+ */
+const repoRoot = joinPath(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
 
 let passed = 0;
 let failed = 0;
@@ -221,11 +231,18 @@ async function fakeApiFetch(request) {
 /** 模拟 `ctx.typertGateway.wireStream.open(...)`：推 3 帧后结束。 */
 const fakeWireStream = {
   async open(endpoint, _payload, _uplink, _peer, signal) {
+    // 只有 `$events` 是真实主机承认的事件流 endpoint（权威常量）。
+    if (endpoint !== '$events') {
+      throw new Error(`invalid Remote endpoint ${JSON.stringify(endpoint)}`);
+    }
     return {
       async *[Symbol.asyncIterator]() {
+        // 真实主机的 `$events` 流第一帧是 `ready`（带 clientId），
+        // 之后才是 emit/waterfall。这里逐字复刻，否则 App 拿不到 clientId。
+        yield { type: 'ready', clientId: 'client-test-1', host: { home: 'C:/Users/test' } };
         for (let i = 0; i < 3; i += 1) {
           if (signal?.aborted) return;
-          yield { type: 'server-request', rpcId: `evt-${endpoint}-${i}`, method: 'tick', payload: { i } };
+          yield { type: 'emit', event: 'tick', args: [i] };
           await new Promise((r) => setTimeout(r, 10));
         }
       },
@@ -622,12 +639,27 @@ for (const method of prefixOnly) {
   check(`${method} 被前缀闸门拒绝(403)`, res.status === 403, `status=${res.status}`);
 }
 
-console.log('\n[5] 事件流');
-async function readFrames(path, token, expected) {
-  const ws = new WebSocket(base.replace('http', 'ws') + path, { headers: { authorization: `Bearer ${token}` } });
+console.log('\n[5] 事件流（单一 mux + 逻辑流帧协议）');
+//
+// 🔴 2026-10-13 公网实测 + app.asar 权威源码取证：
+// 真实主机只有**一条** mux WS —— `/api/remote.mux`（`REMOTE_STREAM_MUX_PATH`），
+// 不存在 `events.mux` / `events.host`。协议是「一条 WS 承载多条逻辑流」：
+// 客户端发 `open{streamId,endpoint,payload}`，主机在该 streamId 上回
+// `item{streamId,value}` / `end` / `error`。事件流用内部 endpoint `$events`，
+// payload 必须是 `{args:{}}`。
+const MUX = '/mobile-gateway/remote.mux';
+
+/** 连 mux 并开一条逻辑流，收集若干帧。 */
+async function readStreamFrames(path, token, expected, endpoint = '$events') {
+  const ws = new WebSocket(base.replace('http', 'ws') + path, {
+    headers: { authorization: `Bearer ${token}` },
+  });
   const frames = [];
   await new Promise((resolve, reject) => {
-    ws.on('open', resolve);
+    ws.on('open', () => {
+      ws.send(JSON.stringify({ type: 'open', streamId: 's-1', endpoint, payload: { args: {} } }));
+      resolve();
+    });
     ws.on('error', reject);
     ws.on('message', (data) => frames.push(JSON.parse(data.toString())));
   });
@@ -636,14 +668,85 @@ async function readFrames(path, token, expected) {
   ws.close();
   return frames;
 }
-const muxFrames = await readFrames('/mobile-gateway/events.mux', token, 3);
-check('mux 推来 3 帧', muxFrames.length === 3, `got ${muxFrames.length}`);
-check('帧形状为 server-request', muxFrames[0]?.type === 'server-request' && muxFrames[0].method === 'tick');
-const hostFrames = await readFrames('/mobile-gateway/events.host', token, 3);
-check('host 推来 3 帧', hostFrames.length === 3, `got ${hostFrames.length}`);
+
+const muxFrames = await readStreamFrames(MUX, token, 4);
+check('mux 能升级并收到帧', muxFrames.length > 0, `got ${muxFrames.length}`);
+check('帧形状为 item + streamId', muxFrames[0]?.type === 'item' && muxFrames[0]?.streamId === 's-1',
+  JSON.stringify(muxFrames[0])?.slice(0, 90));
+const firstValue = muxFrames[0]?.value;
+check('$events 首帧是 ready（带 clientId）',
+  firstValue?.type === 'ready' && typeof firstValue.clientId === 'string',
+  JSON.stringify(firstValue)?.slice(0, 90));
+check('ready 带 host.home', typeof firstValue?.host?.home === 'string', String(firstValue?.host?.home));
+const emitted = muxFrames.filter((f) => f.value?.type === 'emit');
+check('随后收到 emit 帧', emitted.length >= 1, `emit=${emitted.length}`);
+check('emit 帧带 event 与 args', emitted[0]?.value?.event === 'tick' && Array.isArray(emitted[0]?.value?.args),
+  JSON.stringify(emitted[0]?.value)?.slice(0, 90));
+
+// 旧的两条路径必须**不存在**了（防止有人改回去）
+for (const legacy of ['/mobile-gateway/events.mux', '/mobile-gateway/events.host']) {
+  const opened = await new Promise((resolve) => {
+    const ws = new WebSocket(base.replace('http', 'ws') + legacy, {
+      headers: { authorization: `Bearer ${token}` },
+    });
+    ws.on('open', () => resolve('opened'));
+    ws.on('error', () => resolve('rejected'));
+    setTimeout(() => resolve('timeout'), 1500);
+  });
+  check(`旧路径 ${legacy} 已不存在`, opened === 'rejected', opened);
+}
+
+// 协议违规：重复 streamId 必须关 socket（权威语义）
+const dupClose = await new Promise((resolve) => {
+  const ws = new WebSocket(base.replace('http', 'ws') + MUX, {
+    headers: { authorization: `Bearer ${token}` },
+  });
+  ws.on('open', () => {
+    const open = JSON.stringify({ type: 'open', streamId: 'dup', endpoint: '$events', payload: { args: {} } });
+    ws.send(open);
+    ws.send(open);
+  });
+  ws.on('close', (code) => resolve(code));
+  ws.on('error', () => resolve('error'));
+  setTimeout(() => resolve('timeout'), 2500);
+});
+check('重复 streamId 的 open 关闭 socket(1008)', dupClose === 1008, `close=${dupClose}`);
+
+// 协议违规：非法帧必须关 socket
+const badFrameClose = await new Promise((resolve) => {
+  const ws = new WebSocket(base.replace('http', 'ws') + MUX, {
+    headers: { authorization: `Bearer ${token}` },
+  });
+  ws.on('open', () => ws.send(JSON.stringify({ type: 'nonsense' })));
+  ws.on('close', (code) => resolve(code));
+  ws.on('error', () => resolve('error'));
+  setTimeout(() => resolve('timeout'), 2500);
+});
+check('非法帧关闭 socket(1008)', badFrameClose === 1008, `close=${badFrameClose}`);
+
+// 未知 streamId 的 item **不能**关 socket（权威语义：静默丢弃）
+const unknownIdSurvives = await new Promise((resolve) => {
+  const ws = new WebSocket(base.replace('http', 'ws') + MUX, {
+    headers: { authorization: `Bearer ${token}` },
+  });
+  ws.on('open', () => {
+    ws.send(JSON.stringify({ type: 'item', streamId: 'no-such-stream', value: 1 }));
+    setTimeout(() => resolve(ws.readyState === WebSocket.OPEN ? 'open' : 'closed'), 600);
+  });
+  ws.on('close', () => resolve('closed'));
+  ws.on('error', () => resolve('error'));
+  setTimeout(() => resolve('timeout'), 2000);
+});
+check('未知 streamId 静默丢弃（不断连）', unknownIdSurvives === 'open', unknownIdSurvives);
+
+// 非法 endpoint 必须走 error 帧（而不是静默断连）—— 这正是原来两条 events.* 的故障形态
+const badEndpoint = await readStreamFrames(MUX, token, 1, '/api/events.host');
+check('非法 endpoint 回 error 帧（不是静默断连）',
+  badEndpoint[0]?.type === 'error' && /invalid Remote endpoint/.test(badEndpoint[0]?.error?.message ?? ''),
+  JSON.stringify(badEndpoint[0])?.slice(0, 110));
 
 console.log('\n[6] WS 鉴权');
-const badWs = new WebSocket(base.replace('http', 'ws') + '/mobile-gateway/events.mux', {
+const badWs = new WebSocket(base.replace('http', 'ws') + MUX, {
   headers: { authorization: 'Bearer wrong' },
 });
 const rejected = await new Promise((resolve) => {
@@ -732,10 +835,11 @@ if (lanBase) {
   console.log('  （无可用非回环网卡，跳过非回环验证）');
 }
 
-console.log('\n[9] /api/respond（审批/提问的应答通道）');
-// 官方契约：服务端主动请求的应答**不走 WS**，而是 POST /api/respond，
-// 且 result 必须是 { ok, value } 信封（见 docs/api-contract.md §1.4）。
-// 这条路径此前零覆盖 —— 而它是 App 审批交互的唯一出口。
+console.log('\n[9] 审批/提问应答通道（$events/result）');
+// 🔴 2026-10-13 修正：真实主机**没有 `/api/respond`**（全 asar 零命中；
+// 实测直连 401、经网关 404）。应答走 RPC endpoint `$events/result`，
+// args 形状 `{clientId, eventId, outcome:{kind,...}}`（`parseRemoteEventResult` 逐字）。
+// 本组此前测的是那个不存在的端点 —— 假宿主对任何路径都回成功，所以一直是绿的。
 //
 // ⚠️ 必须重新配对：上面的 [7] 已经把先前那台设备吊销了，用旧 token 打过来
 // 只会得到 401（本组第一次写成这样，误判为「网关没转发 respond」）。
@@ -746,12 +850,18 @@ console.log('\n[9] /api/respond（审批/提问的应答通道）');
   check('respond 组重新配对成功', !!respondToken, `status=${freshPair.status}`);
 
   const rpcId = 'host-pending-1';
-  const body = {
-    type: 'client-response',
-    rpcId,
-    result: { ok: true, value: { kind: 'allow', approved: true } },
+  const args = {
+    clientId: 'client-test-1',
+    eventId: 'event-abc',
+    outcome: { kind: 'result', value: { approved: true } },
   };
-  const res = await fetch(`${base}/mobile-gateway/api/respond`, {
+  const body = {
+    type: 'client-request',
+    rpcId,
+    method: '$events/result',
+    payload: { args },
+  };
+  const res = await fetch(`${base}/mobile-gateway/api/$events/result`, {
     method: 'POST',
     headers: {
       'content-type': 'application/json',
@@ -760,27 +870,226 @@ console.log('\n[9] /api/respond（审批/提问的应答通道）');
     body: JSON.stringify(body),
   });
   const text = await res.text();
-  check('respond 经网关可达（非 404/403）', res.status !== 404 && res.status !== 403, `status=${res.status}`);
-  check('respond 由插件应答（非宿主兜底）', text.length > 0, `bodyLen=${text.length}`);
+  check('$events/result 经网关可达（非 404/403）', res.status !== 404 && res.status !== 403, `status=${res.status}`);
+  check('$events/result 由插件应答（非宿主兜底）', text.length > 0, `bodyLen=${text.length}`);
 
   // 关键：网关必须把 body **原样**交给上游，不能改写信封。
-  // 注意 calls 是全局累积的，这里按「本次 respond 的那条」筛选，别用 at(-1)。
-  const forwarded = [...calls].reverse().find((c) => c.method === 'respond');
-  check('respond 被转发到上游 /api/respond', !!forwarded, `未找到 respond 转发记录`);
+  // 注意 calls 是全局累积的，这里按「本次的那条」筛选，别用 at(-1)。
+  const forwarded = [...calls].reverse().find((c) => c.method === '$events/result');
+  check('$events/result 被转发到上游', !!forwarded, '未找到转发记录');
   check(
-    'respond 的 { ok, value } 信封被原样透传',
-    forwarded?.body?.result?.ok === true && forwarded.body.result.value?.kind === 'allow',
-    JSON.stringify(forwarded?.body).slice(0, 160),
+    'outcome 形状被原样透传（kind=result）',
+    forwarded?.body?.payload?.args?.outcome?.kind === 'result',
+    JSON.stringify(forwarded?.body?.payload?.args)?.slice(0, 160),
   );
-  check('respond 的 rpcId 未被改写', forwarded?.body?.rpcId === rpcId, `rpcId=${forwarded?.body?.rpcId}`);
+  check('clientId 未被改写', forwarded?.body?.payload?.args?.clientId === 'client-test-1',
+    `clientId=${forwarded?.body?.payload?.args?.clientId}`);
+  check('eventId 未被改写', forwarded?.body?.payload?.args?.eventId === 'event-abc',
+    `eventId=${forwarded?.body?.payload?.args?.eventId}`);
+  check('rpcId 未被改写', forwarded?.body?.rpcId === rpcId, `rpcId=${forwarded?.body?.rpcId}`);
 
   // 无令牌必须被拦。
-  const noAuth = await fetch(`${base}/mobile-gateway/api/respond`, {
+  const noAuth = await fetch(`${base}/mobile-gateway/api/$events/result`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify(body),
   });
-  check('respond 无令牌被拒 401', noAuth.status === 401, `status=${noAuth.status}`);
+  check('$events/result 无令牌被拒 401', noAuth.status === 401, `status=${noAuth.status}`);
+
+  // 旧路径必须**不存在**（防止有人改回去）。
+  // 注意：桩宿主对未知方法回成功，所以这里断言的是**网关不该再暴露 respond 这条**——
+  // 真实主机上没有它，保留它只会让 App 以为应答成功。
+  const legacy = await fetch(`${base}/mobile-gateway/api/respond`, {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+      authorization: `Bearer ${respondToken}`,
+    },
+    body: JSON.stringify({ type: 'client-response', rpcId: 'x', result: { ok: true, value: {} } }),
+  });
+  // 网关是透明桥，仍会转发任意 /api/<method>；这里只记录事实，不做强断言，
+  // 真正的守护在 App 侧（Envelopes 不再产 client-response）与 check-all-endpoints.mjs。
+  console.log(`      （参考：旧 /api/respond 经网关 → HTTP ${legacy.status}；真实主机为 404）`);
+}
+
+// ---- 9b. outcome.value 的**内容**必须按事件类型分别构造 -------------------
+//
+// 🔴 这一组防的是「信封对了、value 里塞错东西」这类**静默失败**。
+// 主机侧链路（逐字取证）：
+//   stream-protocol.ts  outcome = { kind:'result', value?: unknown }
+//   dsh-api-gateway     settleRemoteEvent(pending, { kind:'result', value: outcome.value })
+//   api-remotes         forwardWaterfall → settled.resolve(outcome.value)
+//   ↑ 从这行起 value 就是**该事件的声明返回类型**本身，不再是自由对象。
+//
+// 两个可应答事件的要求完全不同：
+//   approval/request        → ApprovalOutcome 裸字符串 'allowed-once' | 'rejected' | …
+//   user-questions/request  → { answers:[{ id, selected:string[], custom? }] }
+//
+// 且审批那条有**词表归一化**：`OUTCOMES.includes(outcome) ? outcome : 'unavailable'`。
+// 也就是说发 `{approved:true}` 这种对象**不会报错**，只会被静默改成 'unavailable'
+// —— 用户点了「允许」，工具却以「没有审批通道」被拒绝。这是本项目实际踩过的坑。
+//
+// 这里断言的是**网关把 App 的形状原样送达**（网关是透明桥，不做校验），
+// 真正的守护在 App 侧（Envelopes.approvalOutcome / questionOutcome 的单元语义）。
+console.log('\n[9b] outcome.value 按事件类型分型（防静默归一化）');
+{
+  const cases = [
+    {
+      label: '审批：value 是 ApprovalOutcome 裸字符串',
+      outcome: { kind: 'result', value: 'allowed-once' },
+      verify: (o) => o?.kind === 'result' && o.value === 'allowed-once',
+    },
+    {
+      label: '提问：value 是 {answers:[{id,selected}]}',
+      outcome: {
+        kind: 'result',
+        value: { answers: [{ id: 'q-1', selected: ['选项A'] }] },
+      },
+      verify: (o) => o?.value?.answers?.[0]?.id === 'q-1'
+        && o.value.answers[0].selected[0] === '选项A',
+    },
+    {
+      label: '拒绝：value 是 {kind:rejected,error:{name,message}}',
+      outcome: { kind: 'rejected', error: { name: 'Error', message: '用户拒绝' } },
+      verify: (o) => o?.kind === 'rejected' && o.error?.name === 'Error'
+        && o.error?.message === '用户拒绝',
+    },
+  ];
+  // 9 组重新配对的 token 仍有效（该设备没被吊销），直接复用。
+  const probeToken = (await pair(await mint())).json?.token;
+  for (const c of cases) {
+    const rpcId = `shaped-${c.label.slice(0, 4)}`;
+    const res = await fetch(`${base}/mobile-gateway/api/$events/result`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${probeToken}` },
+      body: JSON.stringify({
+        type: 'client-request',
+        rpcId,
+        method: '$events/result',
+        payload: { args: { clientId: 'c-1', eventId: 'e-1', outcome: c.outcome } },
+      }),
+    });
+    const text = await res.text();
+    const forwarded = [...calls].reverse().find(
+      (x) => x.method === '$events/result' && x.body?.rpcId === rpcId,
+    );
+    check(
+      c.label,
+      res.status === 200 && c.verify(forwarded?.body?.payload?.args?.outcome),
+      `status=${res.status} ${JSON.stringify(forwarded?.body?.payload?.args?.outcome)?.slice(0, 120) || text.slice(0, 90)}`,
+    );
+  }
+
+  // 反向对照：**错误**形状（App 曾发的 `{approved:true}`）也必须被原样转发 ——
+  // 网关是透明桥、不做语义校验，所以这一条证明「网关不会替我们发现错误」，
+  // 即 App 侧的分型构造是**唯一**防线（故 App 有对应断言）。
+  const badRpc = 'shaped-bad';
+  await fetch(`${base}/mobile-gateway/api/$events/result`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${probeToken}` },
+    body: JSON.stringify({
+      type: 'client-request',
+      rpcId: badRpc,
+      method: '$events/result',
+      payload: { args: { clientId: 'c-1', eventId: 'e-1', outcome: { kind: 'result', value: { approved: true } } } },
+    }),
+  });
+  const badForwarded = [...calls].reverse().find(
+    (x) => x.method === '$events/result' && x.body?.rpcId === badRpc,
+  );
+  check(
+    '网关不校验 value 语义（错误形状也照转 → App 侧分型是唯一防线）',
+    badForwarded?.body?.payload?.args?.outcome?.value?.approved === true,
+    JSON.stringify(badForwarded?.body?.payload?.args?.outcome)?.slice(0, 100),
+  );
+}
+
+// ---- 9c. App 侧源码静态守护 ------------------------------------------------
+//
+// 上面已证明**网关是透明桥**：它把任何形状原样送到主机。所以「App 发出的
+// outcome 对不对」只能靠 App 自己的代码保证 —— 而那个错误在网关测试里**不可见**。
+// 这一组直接读 Kotlin 源码，把两条经取证确认的语义钉住（改坏即红）：
+//
+//   1. 审批的 value 必须是 ApprovalOutcome 裸字符串（词表外的值会被主机静默
+//      归一化成 'unavailable' —— 点「允许」却得到「没有审批通道」）。
+//   2. 提问的 value 必须是 {answers:[{id, selected}]}，且 id 取**问题**的 id。
+//
+// 同时反向断言**不再存在**已被证伪的旧形状（`{ok,value}` 信封、`/api/respond`）。
+console.log('\n[9c] App 源码静态守护（应答形状 + 旧通道不得回归）');
+{
+  const appDir = joinPath(
+    repoRoot, 'apps', 'android', 'app', 'src', 'main', 'java', 'io', 'github', 'dshmobile', 'app',
+  );
+  /**
+   * 去掉 Kotlin 注释再断言。
+   *
+   * ⚠️ 必须这么做：这些源码里大量「踩过的坑」注释**故意提到**已被证伪的旧协议
+   * （例如「曾经的 client-response 已删除」），直接对全文做否定断言会命中注释、
+   * 把「注释解释历史」误判成「代码仍在用旧协议」。这里只检查**真实代码**。
+   */
+  const stripKotlinComments = (src) =>
+    src
+      .replace(/\/\*[\s\S]*?\*\//g, ' ')  // 块注释（含 KDoc）
+      .replace(/\/\/[^\n]*/g, ' ');       // 行注释
+  const envelopesSrc = stripKotlinComments(readFileSync(joinPath(appDir, 'net', 'Envelopes.kt'), 'utf8'));
+  const connSrc = stripKotlinComments(readFileSync(joinPath(appDir, 'net', 'DshConnection.kt'), 'utf8'));
+  const vmSrc = stripKotlinComments(readFileSync(joinPath(appDir, 'ui', 'ChatViewModel.kt'), 'utf8'));
+
+  check(
+    "审批 outcome 用 ApprovalOutcome 裸字符串 'allowed-once'",
+    /put\(\s*"value"\s*,\s*if\s*\(allow\)\s*"allowed-once"\s*else\s*"rejected"\s*\)/.test(envelopesSrc),
+    'Envelopes.approvalOutcome 形状不符',
+  );
+  check(
+    '提问 outcome 是 {answers:[{id,selected}]}',
+    /put\(\s*"answers"/.test(envelopesSrc) && /put\(\s*"selected"/.test(envelopesSrc)
+      && /fun questionOutcome\(questionId: String, selected: List<String>\)/.test(envelopesSrc),
+    'Envelopes.questionOutcome 形状不符',
+  );
+  check(
+    '提问取的是**问题** id（questions[0].id），不是选项',
+    /JsonRender\.arr\(req\.payload,\s*"questions"\)/.test(vmSrc)
+      && /JsonRender\.str\(it,\s*"id"\)/.test(vmSrc),
+    'ChatViewModel 未从 questions[].id 取问题 id',
+  );
+  check(
+    '选项从 questions[0].options[].label 取（对象数组，不是字符串数组）',
+    /"label"/.test(vmSrc),
+    'ChatViewModel 选项解析未用 label',
+  );
+  // 已被证伪的旧形状必须**不再出现**（否则会静默失效）。
+  check(
+    '不再产出 {ok,value} 信封（client-response）',
+    !/client-response/.test(envelopesSrc) && !/TYPE_CLIENT_RESPONSE/.test(envelopesSrc),
+    'Envelopes 仍在产 client-response 信封',
+  );
+  check(
+    '不再使用 /api/respond（真实主机无此端点）',
+    !/respond"?\s*\)/.test(connSrc) && !/"respond"/.test(connSrc) && /EVENT_RESULT_ENDPOINT/.test(connSrc),
+    'DshConnection 仍在用 /api/respond',
+  );
+  check(
+    '单条 mux：WS_MUX 指向 remote.mux，且无 WS_HOST',
+    /WS_MUX\s*=\s*"\/mobile-gateway\/remote\.mux"/.test(connSrc) && !/WS_HOST/.test(connSrc),
+    'DshConnection 的 WS 常量不符',
+  );
+  check(
+    '事件流 endpoint 是 $events（转义后的 \\$events）',
+    /EVENT_STREAM_ENDPOINT\s*=\s*"\\\$events"/.test(connSrc)
+      && /EVENT_RESULT_ENDPOINT\s*=\s*"\\\$events\/result"/.test(connSrc),
+    '事件流 endpoint 常量不符',
+  );
+  check(
+    '阻塞式 execute() 仍包在 Dispatchers.IO 里（防 NetworkOnMainThreadException）',
+    /withContext\(Dispatchers\.IO\)/.test(connSrc)
+      && !/execute\(\)[\s\S]{0,80}viewModelScope/.test(connSrc),
+    'DshConnection 的 execute 可能不在 IO 线程',
+  );
+  check(
+    'ready 帧记下 clientId（应答必须带上）',
+    /eventClientId\s*=\s*value\.str\("clientId"\)/.test(connSrc),
+    'DshConnection 未记录 clientId',
+  );
 }
 
 // ---- 10. 路由命中回归：防「宿主兜底 404」这种静默故障 -------------------

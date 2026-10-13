@@ -11,7 +11,7 @@
  *   GET  /mobile-gateway/health            公开的最小健康信息
  *   POST /mobile-gateway/pair              用一次性配对码换长期设备令牌
  *   POST /mobile-gateway/api/<method...>   已鉴权的 `/api` 桥（官方 envelope 透传）
- *   WS   /mobile-gateway/events.mux|host   已鉴权的两条下行事件流
+ *   WS   /mobile-gateway/remote.mux      已鉴权的**唯一** mux（逻辑流承载事件流）
  *   GET  /mobile-gateway/manage            仅回环的管理面板（铸码 / 二维码 / 设备吊销）
  *
  * 安装：插件页安装后，在 `cordis.patch.yml` 注册一行
@@ -188,7 +188,11 @@ async function start(ctx, config, log, dataDir) {
                 token: result.token,
                 instance,
                 apiPrefix: API_PREFIX,
-                events: { mux: '/mobile-gateway/events.mux', host: '/mobile-gateway/events.host' },
+                // 🔴 只有**一条** mux WS（真实主机侧常量 REMOTE_STREAM_MUX_PATH）。
+                // 原来这里发的是 events.mux / events.host 两条 —— 它们对应的主机
+                // endpoint 根本不存在，客户端照着连只会被 `invalid Remote endpoint`
+                // 立刻断开。事件流是这条 mux 上的逻辑流（endpoint `$events`）。
+                stream: { mux: '/mobile-gateway/remote.mux', eventEndpoint: '$events' },
               });
               return;
             }
@@ -217,7 +221,8 @@ async function start(ctx, config, log, dataDir) {
                 token: result.token,
                 instance,
                 apiPrefix: API_PREFIX,
-                events: { mux: '/mobile-gateway/events.mux', host: '/mobile-gateway/events.host' },
+                // 同 login：只有一条 mux WS + 逻辑事件流 endpoint。
+                stream: { mux: '/mobile-gateway/remote.mux', eventEndpoint: '$events' },
               });
               return;
             }
@@ -246,20 +251,22 @@ async function start(ctx, config, log, dataDir) {
       }),
   );
 
-  // ---- 两条下行事件流 -----------------------------------------------------
-  for (const endpoint of ['/api/events.mux', '/api/events.host']) {
-    const path = endpoint.replace('/api/', '/mobile-gateway/');
-    ctx.effect(
-      () =>
-        webServer.registerUpgrade({
-          path,
-          handler(req, socket, head) {
-            bridge.handleEventsUpgrade(req, socket, head, endpoint);
-          },
-        }),
-      `dsh-mobile-gateway: upgrade ${path}`,
-    );
-  }
+  // ---- 单一 mux WebSocket（真实主机只有一条）------------------------------
+  //
+  // 🔴 原来是两条（/mobile-gateway/events.mux、/mobile-gateway/events.host），
+  // 实测在真实主机上**两条都立即断开**：`invalid Remote endpoint "/api/events.host"`
+  // ——真实源码里只有一条 `/api/remote.mux`（REMOTE_STREAM_MUX_PATH）。
+  // 详见 lib/bridge.mjs 顶部说明。
+  ctx.effect(
+    () =>
+      webServer.registerUpgrade({
+        path: '/mobile-gateway/remote.mux',
+        handler(req, socket, head) {
+          bridge.handleMuxUpgrade(req, socket, head);
+        },
+      }),
+    'dsh-mobile-gateway: upgrade /mobile-gateway/remote.mux',
+  );
 
   log.info('mobile gateway ready', {
     dataDir,

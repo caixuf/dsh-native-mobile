@@ -14,7 +14,10 @@ apps/android/app/build/
 .idea/
 *.iml
 .vscode/
-# �ύ��Ϣ��ʱ�ļ�
+# 提交信息临时文件
 .git-commit-msg.txt
 
 .git-msg.txt
+
+# 外部仓库研读临时目录（含第三方源码，绝不提交）
+.scratch/

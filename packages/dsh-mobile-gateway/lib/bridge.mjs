@@ -1,6 +1,6 @@
 /**
  * @file lib/bridge.mjs
- * @description 协议透明的 `/api` 桥：把 DSH 官方 RPC 与两条下行事件流，
+ * @description 协议透明的 `/api` 桥：把 DSH 官方 RPC 与**唯一的 mux 事件流**，
  *              在**已鉴权**的前提下原样送到手机。
  *
  * 为什么是透明桥而不是另造一套移动 API：
@@ -15,8 +15,8 @@
  *
  * 转发规则：
  *   POST /mobile-gateway/api/<method...>   →  http://127.0.0.1/api/<method...>
- *   WS   /mobile-gateway/events.mux        →  typertGateway.wireStream.open('/api/events.mux', …)
- *   WS   /mobile-gateway/events.host       →  typertGateway.wireStream.open('/api/events.host', …)
+ *   WS   /mobile-gateway/remote.mux        →  mux 帧协议；每条逻辑流映射成一次
+ *                                             typertGateway.wireStream.open(endpoint, …)
  */
 
 import { WebSocketServer } from 'ws';
@@ -253,13 +253,29 @@ export function createBridge({ ctx, store, log, config }) {
           for (const item of items) {
             const vals = item?.projections?.values;
             if (vals && typeof vals === 'object') {
-              // 只保留列表页真正用到的
+              // 只保留列表页真正用到的。
+              //
+              // 🔴 `origin` / `parentSessionId` **必须留**（2026-10-13 公网实测）：
+              // 真实主机把**子代理会话**也列在 session/list 里，靠这两个字段区分。
+              // 68 个会话里 53 个是子代理，而子代理会话**不能用裸 sessionId 打开**
+              // （主机回 `subagent Sessions require their durable parent address`）。
+              // 早前这里把顶层字段整体丢弃，App 拿不到判据，只能把它们混在主列表里，
+              // 用户点进去全是错误页。`blank`/`cwd` 供将来做空态与工作区显示。
               item.projections.values = {
                 title: vals.title,
                 sessionListMetadata: vals.sessionListMetadata,
               };
               item.projections.asOfSeq = undefined;
             }
+            // 顶层字段 `origin` / `parentSessionId` / `blank` / `agentAvailable` / `cwd`
+            // **原样保留**（上面只动了 projections.values，顶层没碰）。
+            //
+            // 🔴 这不是可有可无的：`origin`/`parentSessionId` 决定「这一行能不能点开」。
+            // 真实主机把**子代理会话**也列在 session/list 里，靠这两个字段区分；
+            // 68 个会话里 53 个是子代理，而子代理会话不能用裸 sessionId 打开
+            // （主机回 `subagent Sessions require their durable parent address`）。
+            // 早前若有谁顺手把顶层也白名单化，App 就会拿不到判据、把它们混进主列表，
+            // 用户点进去全是错误页。
           }
           const slim = JSON.stringify(json);
           log.debug('session/list slimmed', {
@@ -281,48 +297,295 @@ export function createBridge({ ctx, store, log, config }) {
     res.end(outBuffer);
   }
 
-  // ---- WebSocket: 两条下行事件流 -----------------------------------------
-  wss.on('connection', (socket, req, device, endpoint) => {
-    const controller = new AbortController();
+  // ---- WebSocket: 单一 mux（真实主机只有一条 WS）-------------------------
+  //
+  // 🔴 2026-10-13 公网实测 + app.asar 权威源码取证：
+  //
+  // 真实主机**只有一条** mux WebSocket，常量取自
+  // `@deepseek-ai/dsh-api-gateway/src/stream-protocol.ts`：
+  //
+  //     export const REMOTE_STREAM_MUX_PATH = '/api/remote.mux'
+  //
+  // 而 `/api/events.mux` / `/api/events.host` 在真实源码里**零出现**。
+  // 原来的实现注册两条 WS、各自把整个 socket 绑到一个 endpoint，主机侧直接抛
+  // `invalid Remote endpoint "/api/events.host"`（endpoint 校验要求 split('/')
+  // 恰好 2 段，`/api/events.host` 有 3 段）。实测两条流都在 attach 后立刻断开，
+  // 日志里只有 `device attached to event stream` + `event stream ended`。
+  //
+  // 真实协议是**一条 WS 承载多条逻辑流**，帧形状（stream-protocol.ts 逐字）：
+  //
+  //   客户端 → 主机： { type:'open',   streamId, endpoint, payload }
+  //                   { type:'item',   streamId, value? }
+  //                   { type:'end',    streamId }
+  //                   { type:'cancel', streamId }
+  //   主机 → 客户端： { type:'item',  streamId, value? }
+  //                   { type:'end',   streamId }
+  //                   { type:'error', streamId, error:{code,message,details} }
+  //
+  // `open` 必须**精确**这 4 个键（权威实现用 exactKeys 校验）；`streamId`
+  // 非空字符串；重复 streamId 的 open 会关 socket（1008）；二进制帧回 1003。
+  //
+  // 事件流用**内部 endpoint `$events`**，payload 必须是 `{args:{}}`：
+  //     REMOTE_EVENT_STREAM_ENDPOINT = '$events'
+  //     REMOTE_EVENT_STREAM_PAYLOAD  = { args: {} }
+  // 主机在该逻辑流上回 `ready` / `emit` / `waterfall` / `cancel` 四种 item。
 
-    // 官方下行是只下行的：uplink 给一个永不产出、只等中止的空流即可。
-    const uplink = {
-      async *[Symbol.asyncIterator]() {
-        await new Promise((resolve) => controller.signal.addEventListener('abort', resolve, { once: true }));
-      },
-    };
+  /** 事件流的内部 endpoint（真实主机侧常量，不是我们编的）。 */
+  const EVENT_STREAM_ENDPOINT = '$events';
 
-    socket.on('message', () => {
-      // 官方语义：下行通道收到任何上行数据都以 1008 关闭。
-      socket.close(1008, 'downlink only');
-    });
+  /**
+   * 一条逻辑流的有界上行队列。
+   *
+   * 复刻权威实现 `stream-server.ts` 的 UplinkInbox 语义（简化版）：
+   * 单消费者、`end` 之后不允许再 `item`、容量超限即失败。
+   * 事件流是**只下行**的，这个队列永远读不到东西，但形状必须正确 ——
+   * `wireStream.open()` 会把它当作方法读取的 uplink。
+   */
+  class UplinkInbox {
+    #queue = [];
+    #bytes = 0;
+    #ended = false;
+    #closed = false;
+    #taken = false;
+    #failure;
+    #wake;
+    #maxBytes;
+    #onViolation;
 
-    const pump = async () => {
-      try {
-        const stream = await typert.wireStream.open(endpoint, {}, uplink, peer, controller.signal);
-        for await (const frame of stream) {
-          if (socket.readyState !== socket.OPEN) break;
-          socket.send(JSON.stringify(frame));
-        }
-      } catch (error) {
-        log.warn('event stream ended', { endpoint, error: String(error?.message ?? error) });
-      } finally {
-        if (socket.readyState === socket.OPEN) socket.close(1000, 'stream closed');
-        socket.removeAllListeners();
+    constructor(maxBytes, onViolation) {
+      this.#maxBytes = maxBytes;
+      this.#onViolation = onViolation;
+    }
+
+    push(value, frameBytes) {
+      if (this.#failure !== undefined || this.#closed) return;
+      if (this.#ended) {
+        this.#violate(new Error('api gateway: Remote stream uplink item after end'));
+        return;
       }
-    };
+      if (this.#bytes + frameBytes > this.#maxBytes) {
+        this.#violate(new Error(`api gateway: Remote stream uplink exceeded ${this.#maxBytes} buffered bytes`));
+        return;
+      }
+      this.#queue.push({ value, bytes: frameBytes });
+      this.#bytes += frameBytes;
+      this.#signal();
+    }
 
-    socket.on('close', () => controller.abort());
-    socket.on('error', (error) => {
-      log.warn('event socket error', { endpoint, error: String(error) });
-      controller.abort();
+    end() {
+      if (this.#ended) return;
+      this.#ended = true;
+      this.#signal();
+    }
+
+    fail(error) {
+      if (this.#failure !== undefined) return;
+      this.#failure = error;
+      this.#queue = [];
+      this.#bytes = 0;
+      this.#signal();
+    }
+
+    [Symbol.asyncIterator]() {
+      if (this.#taken) throw new Error('api gateway: Remote stream uplink inbox already has a consumer');
+      this.#taken = true;
+      return this;
+    }
+
+    async next() {
+      for (;;) {
+        if (this.#closed) return { value: undefined, done: true };
+        const entry = this.#queue.shift();
+        if (entry !== undefined) {
+          this.#bytes -= entry.bytes;
+          return { value: entry.value, done: false };
+        }
+        if (this.#failure !== undefined) throw this.#failure;
+        if (this.#ended) return { value: undefined, done: true };
+        await new Promise((resolve) => { this.#wake = resolve; });
+      }
+    }
+
+    return() {
+      this.#closed = true;
+      this.#queue = [];
+      this.#bytes = 0;
+      this.#signal();
+      return Promise.resolve({ value: undefined, done: true });
+    }
+
+    #violate(error) {
+      this.fail(error);
+      this.#onViolation(error);
+    }
+
+    #signal() {
+      const wake = this.#wake;
+      this.#wake = undefined;
+      wake?.();
+    }
+  }
+
+  wss.on('connection', (socket, req, device) => {
+    /** streamId → { abort, inbox, done } */
+    const streams = new Map();
+    /** 串行化写入，避免同一 socket 上并发 send 交错。 */
+    let writes = Promise.resolve();
+
+    function send(frame) {
+      const delivery = writes.then(
+        () =>
+          new Promise((resolve, reject) => {
+            if (socket.readyState !== socket.OPEN) {
+              reject(new Error('api gateway: Remote stream socket is closed'));
+              return;
+            }
+            socket.send(JSON.stringify(frame), (error) => (error ? reject(error) : resolve()));
+          }),
+      );
+      writes = delivery.catch(() => undefined);
+      return delivery;
+    }
+
+    async function sendFailure(streamId, error) {
+      if (socket.readyState !== socket.OPEN) return;
+      const detail = error?.details;
+      await send({
+        type: 'error',
+        streamId,
+        error: {
+          code: String(error?.code ?? 'gateway/internal'),
+          message: String(error?.message ?? error),
+          details: detail && typeof detail === 'object' ? detail : {},
+        },
+      }).catch(() => {
+        socket.close(1011, 'Remote stream failure could not be delivered');
+      });
+    }
+
+    /**
+     * 跑一条逻辑流：open → 逐项 item → end，失败则 error。
+     *
+     * ⚠️ 结束顺序与权威实现一致：先把 uplink 失败掉（后续上行帧不能再改变结果），
+     * 再判断是「被 abort（取消）」还是「正常/异常结束」。
+     */
+    async function pump(streamId, endpoint, payload, active) {
+      let outcome;
+      try {
+        const source = await typert.wireStream.open(endpoint, payload, active.inbox, peer, active.abort.signal);
+        for await (const value of source) {
+          if (socket.readyState !== socket.OPEN) break;
+          await send({ type: 'item', streamId, value });
+        }
+        outcome = { failed: false };
+      } catch (error) {
+        outcome = { failed: true, error };
+      }
+      active.inbox.fail(new Error('Remote stream ended'));
+      if (active.abort.signal.aborted) {
+        // 取消：客户端主动 cancel 或 socket 关闭，不需要再发终止帧。
+        return;
+      }
+      if (outcome.failed) {
+        log.warn('remote stream failed', { endpoint, error: String(outcome.error?.message ?? outcome.error) });
+        await sendFailure(streamId, outcome.error);
+        return;
+      }
+      await send({ type: 'end', streamId }).catch(() => undefined);
+    }
+
+    function openStream(message) {
+      const { streamId, endpoint, payload } = message;
+      if (streams.has(streamId)) {
+        // 权威语义：重复 streamId 的 open 是唯一会关 socket 的协议违规。
+        socket.close(1008, 'duplicate Remote stream id');
+        return;
+      }
+      const abort = new AbortController();
+      const inbox = new UplinkInbox(MAX_BODY_BYTES, (error) => abort.abort(error));
+      const active = { abort, inbox, done: Promise.resolve() };
+      streams.set(streamId, active);
+      const done = pump(streamId, endpoint, payload, active);
+      active.done = done;
+      const remove = () => streams.delete(streamId);
+      void done.then(remove, remove);
+    }
+
+    function receive(text) {
+      let message;
+      try {
+        message = JSON.parse(text);
+      } catch {
+        socket.close(1008, 'invalid Remote stream request');
+        return;
+      }
+      if (message === null || typeof message !== 'object' || Array.isArray(message)) {
+        socket.close(1008, 'invalid Remote stream request');
+        return;
+      }
+      const { type, streamId } = message;
+      const validId = typeof streamId === 'string' && streamId.length > 0;
+
+      if (type === 'open') {
+        // 精确 4 键 + 非空 endpoint（权威 exactKeys 语义）。
+        const keys = Object.keys(message);
+        const exact = keys.length === 4
+          && keys.includes('type') && keys.includes('streamId')
+          && keys.includes('endpoint') && keys.includes('payload');
+        if (!exact || !validId || typeof message.endpoint !== 'string' || message.endpoint.length === 0) {
+          socket.close(1008, 'invalid Remote stream request');
+          return;
+        }
+        openStream(message);
+        return;
+      }
+
+      if (type === 'item' || type === 'end' || type === 'cancel') {
+        if (!validId) {
+          socket.close(1008, 'invalid Remote stream request');
+          return;
+        }
+        // 未知 streamId **静默丢弃**：已结束的流会先离开表，而在途帧还在到。
+        const active = streams.get(streamId);
+        if (active === undefined) return;
+        if (type === 'item') {
+          active.inbox.push(message.value, Buffer.byteLength(text, 'utf8'));
+        } else if (type === 'end') {
+          active.inbox.end();
+        } else {
+          active.abort.abort(new Error('Remote stream cancelled'));
+          active.inbox.fail(new Error('Remote stream cancelled'));
+        }
+        return;
+      }
+
+      socket.close(1008, 'invalid Remote stream request');
+    }
+
+    socket.on('message', (data, isBinary) => {
+      if (isBinary) {
+        socket.close(1003, 'text messages required');
+        return;
+      }
+      receive(Buffer.isBuffer(data) ? data.toString('utf8') : String(data));
     });
 
-    log.info('device attached to event stream', { endpoint, deviceId: device.id });
-    void pump();
+    socket.on('close', () => {
+      for (const active of streams.values()) {
+        active.abort.abort(new Error('Remote stream socket closed'));
+        active.inbox.fail(new Error('Remote stream socket closed'));
+      }
+      streams.clear();
+    });
+    socket.on('error', (error) => {
+      log.warn('remote mux socket error', { error: String(error), deviceId: device.id });
+      socket.terminate();
+    });
+
+    log.info('device attached to remote mux', { deviceId: device.id });
   });
 
-  function handleUpgrade(req, socket, head, endpoint) {
+  function handleUpgrade(req, socket, head) {
     const url = new URL(req.url ?? '/', 'http://localhost');
     const token = readToken(req, url);
     if (!token) {
@@ -342,13 +605,14 @@ export function createBridge({ ctx, store, log, config }) {
       return;
     }
     wss.handleUpgrade(req, socket, head, (ws) => {
-      wss.emit('connection', ws, req, device, endpoint);
+      wss.emit('connection', ws, req, device);
     });
   }
 
   return {
     handleApi,
-    handleEventsUpgrade: handleUpgrade,
+    handleMuxUpgrade: handleUpgrade,
+    EVENT_STREAM_ENDPOINT,
     describe: () => ({ eventSockets: wss.clients.size }),
 
     async dispose() {

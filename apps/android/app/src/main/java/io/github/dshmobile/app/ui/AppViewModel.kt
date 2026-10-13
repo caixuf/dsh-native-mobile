@@ -4,6 +4,7 @@ import android.os.Build
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import io.github.dshmobile.app.data.HostRecord
+import io.github.dshmobile.app.data.HostStoreException
 import io.github.dshmobile.app.data.HostStore
 import io.github.dshmobile.app.net.DshCallException
 import io.github.dshmobile.app.net.DshConnection
@@ -16,13 +17,35 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 
-/** 会话列表项。字段取自 `session.list` 的 SessionSummary，缺字段时按缺省渲染。 */
+/**
+ * 会话列表项。字段取自 `session.list` 的 SessionSummary，缺字段时按缺省渲染。
+ *
+ * ## `isSubagent` 为什么必须有（2026-10-13 公网实测）
+ *
+ * 真实主机的 `session/list` 会把**子代理会话**也列出来，并且带两个区分字段：
+ *
+ *     { "sessionId":"885c6803-…", "origin":"subagent",
+ *       "parentSessionId":"session-6d6f5432-…", … }
+ *
+ * 这类会话**不能用裸 sessionId 打开** —— 主机回
+ * `subagent Sessions require their durable parent address`。
+ * 实测 68 个会话里 **53 个**是这种，也就是说主列表里绝大多数条目点进去都是错误页。
+ * 所以必须识别出来、默认不混在主列表里。
+ *
+ * ⚠️ 判据是 **`origin === "subagent"`**，而不是「带 parentSessionId」。
+ * 实测两者不等价：`session.fork` 出来的**普通会话**也带 parentSessionId，
+ * 但它用裸 sessionId 打开是**正常**的。按后者判断会误伤可打开的会话。
+ */
 data class SessionRow(
     val sessionId: String,
     val title: String,
     val preview: String,
     val updatedAt: Long,
     val running: Boolean,
+    /** 主机 `session.list` 里 `origin === "subagent"` 的会话（判据只看 origin）。 */
+    val isSubagent: Boolean = false,
+    /** 子代理会话的所属父会话；fork 出来的普通会话也可能带，**不能当判据**。 */
+    val parentSessionId: String? = null,
 )
 
 data class HostsUiState(
@@ -135,7 +158,14 @@ class AppViewModel(private val store: HostStore) : ViewModel() {
         }
     }
 
-    /** 账号密码登录（首选入口，比配对码好记）。 */
+    /**
+     * 账号密码登录（首选入口，比配对码好记）。
+     *
+     * ⚠️ 存盘失败必须当成失败处理：早前 `store.upsert()` 抛异常时，
+     * 协程里的异常被吞，UI 却已经跳到会话列表 —— 用户看到的是
+     * 「登录成功，但一台电脑都没有」，且没有任何提示。存储层现在会抛
+     * HostStoreException，这里显式接住并显示。
+     */
     fun login(baseUrl: String, username: String, password: String, deviceName: String) {
         if (_state.value.busy) return
         _state.update { it.copy(busy = true, error = null, notice = null) }
@@ -149,7 +179,13 @@ class AppViewModel(private val store: HostStore) : ViewModel() {
                         deviceId = paired.deviceId,
                         instanceName = paired.instanceName,
                     )
-                    store.upsert(record)
+                    try {
+                        store.upsert(record)
+                    } catch (error: HostStoreException) {
+                        // 存不下去就别假装成功，否则下次启动又变回空列表。
+                        _state.update { it.copy(busy = false, error = error.message) }
+                        return@onSuccess
+                    }
                     _state.update { it.copy(busy = false, notice = "已登录 ${paired.label}") }
                     refresh()
                     select(record.id)

@@ -7,6 +7,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
@@ -16,11 +17,14 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.Visibility
+import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -69,6 +73,16 @@ fun SessionsScreen(
                     containerColor = MaterialTheme.colorScheme.surfaceVariant,
                 ),
                 actions = {
+                    // 子代理会话默认折叠 —— 实测 68 个会话里 53 个是子代理，
+                    // 全列出来会让主列表几乎全是点不开的条目。这里给一个开关。
+                    if (state.subagentRows.isNotEmpty()) {
+                        IconButton(onClick = { vm.toggleSubagents() }) {
+                            Icon(
+                                if (state.showSubagents) Icons.Default.VisibilityOff else Icons.Default.Visibility,
+                                contentDescription = if (state.showSubagents) "隐藏子代理会话" else "显示子代理会话",
+                            )
+                        }
+                    }
                     IconButton(onClick = { searchOpen = !searchOpen }) {
                         Icon(Icons.Default.Search, contentDescription = "搜索会话")
                     }
@@ -105,6 +119,23 @@ fun SessionsScreen(
                 )
             }
 
+            // 子代理会话：只列出、不提供打开入口（裸 sessionId 打不开，会报
+            // "subagent Sessions require their durable parent address"）。
+            if (state.showSubagents && state.subagentRows.isNotEmpty()) {
+                Text(
+                    text = "子代理会话（${state.subagentRows.size}）· 需从父会话打开",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp),
+                )
+                LazyColumn(modifier = Modifier.heightIn(max = 200.dp)) {
+                    items(state.subagentRows, key = { it.sessionId }) { row ->
+                        SubagentCard(row)
+                    }
+                }
+                HorizontalDivider(modifier = Modifier.padding(vertical = 6.dp))
+            }
+
             when {
                 state.loading -> Row(
                     modifier = Modifier.fillMaxWidth().padding(32.dp),
@@ -124,6 +155,35 @@ fun SessionsScreen(
                     }
                     item { Spacer(Modifier.height(24.dp)) }
                 }
+            }
+        }
+    }
+}
+
+/** 子代理会话行：明确标注、不可点开（避免又跳进错误页）。 */
+@Composable
+private fun SubagentCard(row: SessionRow) {
+    Card(
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 3.dp),
+        shape = RoundedCornerShape(10.dp),
+        elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
+    ) {
+        Column(Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
+            Text(
+                text = "子代理 · ${row.title}",
+                style = MaterialTheme.typography.bodySmall,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            if (row.parentSessionId != null) {
+                Text(
+                    text = "父会话 ${row.parentSessionId.take(18)}…",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
             }
         }
     }

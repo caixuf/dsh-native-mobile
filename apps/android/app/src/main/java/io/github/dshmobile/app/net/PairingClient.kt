@@ -1,5 +1,7 @@
 package io.github.dshmobile.app.net
 
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonObject
@@ -10,6 +12,8 @@ import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import java.util.concurrent.TimeUnit
+
+private const val TAG = "DSH_PAIRING"
 
 /** 配对结果：令牌只在这一次返回，磁盘上只留摘要。 */
 data class PairedHost(
@@ -51,9 +55,15 @@ object PairingClient {
     }
 
     /** 账号密码登录：换取长期设备令牌。 */
-    fun login(baseUrl: String, username: String, password: String, deviceName: String): Result<PairedHost> = runCatching {
+    suspend fun login(baseUrl: String, username: String, password: String, deviceName: String): Result<PairedHost> = withContext(Dispatchers.IO) {
+        runCatching {
+        val url = baseUrl.trimEnd('/') + DshConnection.LOGIN_PATH
+        // 🔴 打真机时踩过：登录失败但网关**零请求**，日志里只有一行 tagSocket，
+        // 异常被 runCatching 吞成 Result.failure 后只剩一句笼统的「登录失败」。
+        // 这里把 URL 与真实异常类型打出来，否则无从判断是 TLS、DNS 还是超时。
+        android.util.Log.i(TAG, "POST $url (user=$username, device=$deviceName)")
         val request = Request.Builder()
-            .url(baseUrl.trimEnd('/') + DshConnection.LOGIN_PATH)
+            .url(url)
             .header("Content-Type", "application/json")
             .post(
                 buildJsonObject {
@@ -65,43 +75,53 @@ object PairingClient {
             )
             .build()
 
-        client.newCall(request).execute().use { response ->
-            val text = response.body?.string().orEmpty()
-            val body = Envelopes.json.parseToJsonElement(text).jsonObject
-            if (!response.isSuccessful) {
-                val err = body.obj("error")
-                throw DshCallException(
-                    err?.str("code") ?: "login_failed",
-                    err?.str("message") ?: "登录失败（HTTP ${response.code}）",
+        try {
+            client.newCall(request).execute().use { response ->
+                val text = response.body?.string().orEmpty()
+                android.util.Log.i(TAG, "HTTP ${response.code} len=${text.length}")
+                val body = Envelopes.json.parseToJsonElement(text).jsonObject
+                if (!response.isSuccessful) {
+                    val err = body.obj("error")
+                    throw DshCallException(
+                        err?.str("code") ?: "login_failed",
+                        err?.str("message") ?: "登录失败（HTTP ${response.code}）",
+                    )
+                }
+                PairedHost(
+                    label = body.obj("instance")?.get("name")?.jsonPrimitive?.content ?: baseUrl,
+                    baseUrl = baseUrl.trimEnd('/'),
+                    token = body.get("token")?.jsonPrimitive?.content
+                        ?: throw DshCallException("malformed", "网关未返回设备令牌"),
+                    deviceId = body.obj("device")?.get("id")?.jsonPrimitive?.content ?: "unknown",
+                    instanceName = body.obj("instance")?.get("name")?.jsonPrimitive?.content ?: "",
                 )
             }
-            PairedHost(
-                label = body.obj("instance")?.get("name")?.jsonPrimitive?.content ?: baseUrl,
-                baseUrl = baseUrl.trimEnd('/'),
-                token = body.get("token")?.jsonPrimitive?.content
-                    ?: throw DshCallException("malformed", "网关未返回设备令牌"),
-                deviceId = body.obj("device")?.get("id")?.jsonPrimitive?.content ?: "unknown",
-                instanceName = body.obj("instance")?.get("name")?.jsonPrimitive?.content ?: "",
-            )
+        } catch (error: Throwable) {
+            android.util.Log.e(TAG, "登录请求失败: ${error.javaClass.name}: ${error.message}", error)
+            throw error
+        }
         }
     }
 
     /** 探测网关是否在线（公开的健康检查）。 */
-    fun probe(baseUrl: String): String? = runCatching {
-        val request = Request.Builder().url(baseUrl.trimEnd('/') + DshConnection.HEALTH_PATH).get().build()
-        client.newCall(request).execute().use { response ->
-            if (!response.isSuccessful) return null
-            val body = Envelopes.json.parseToJsonElement(response.body?.string().orEmpty()).jsonObject
-            if (body["ok"]?.jsonPrimitive?.content == "true") {
-                body.obj("instance")?.get("name")?.jsonPrimitive?.content
-            } else {
-                null
+    suspend fun probe(baseUrl: String): String? = withContext(Dispatchers.IO) {
+        runCatching {
+            val request = Request.Builder().url(baseUrl.trimEnd('/') + DshConnection.HEALTH_PATH).get().build()
+            client.newCall(request).execute().use { response ->
+                if (!response.isSuccessful) return@use null
+                val body = Envelopes.json.parseToJsonElement(response.body?.string().orEmpty()).jsonObject
+                if (body["ok"]?.jsonPrimitive?.content == "true") {
+                    body.obj("instance")?.get("name")?.jsonPrimitive?.content
+                } else {
+                    null
+                }
             }
-        }
-    }.getOrNull()
+        }.getOrNull()
+    }
 
     /** 用配对码换设备令牌。 */
-    fun pair(baseUrl: String, code: String, deviceName: String): Result<PairedHost> = runCatching {
+    suspend fun pair(baseUrl: String, code: String, deviceName: String): Result<PairedHost> = withContext(Dispatchers.IO) {
+        runCatching {
         val payload = buildJsonObject {
             put("code", code.trim())
             put("deviceName", deviceName)
@@ -133,6 +153,7 @@ object PairingClient {
                 deviceId = device?.get("id")?.jsonPrimitive?.content ?: "unknown",
                 instanceName = body.obj("instance")?.get("name")?.jsonPrimitive?.content ?: "",
             )
+        }
         }
     }
 

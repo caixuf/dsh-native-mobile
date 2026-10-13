@@ -599,8 +599,299 @@ path 修复写入磁盘   →  09:54（进程启动之后）
 
 | 检查项 | 结果 |
 |---|---|
-| 网关 E2E（`test/e2e.mjs`） | **50 通过 / 0 失败** |
+| 网关 E2E（`test/e2e.mjs`） | **81 通过 / 0 失败**（含 `[9b]` outcome 分型 + `[9c]` App 静态守护） |
+| 公网全接口巡检（`check-all-endpoints.mjs`） | **45 通过 / 0 失败** |
+| 子代理判据实测（`verify-subagent-classifier.mjs`） | 72 条逐条实测，判据精确 |
 | App→主机方法名门禁（`check-app-methods.mjs`） | **全部存在** |
 | 契约审计（`audit-contract.mjs`） | 信封形状全部通过 |
-| 突变测试（4 类安全闸门） | 注入即红，还原即绿 |
-| 真实环境端到端 | **被 8.4 阻塞**（待重启 DSH） |
+| 突变测试（4 类安全闸门 + outcome 形状） | 注入即红，还原即绿 |
+| App 编译 | BUILD SUCCESSFUL |
+| 公网真实环境端到端 | **事件流待重启 DSH 验证**（见 §9.9） |
+
+---
+
+## 9. 第二轮：公网真机实测（2026-10-13 下午）
+
+> 环境变了：**Android 模拟器已就绪**（`emulator-5554`，sdk_gphone64_x86_64，Android 15），
+> 不再受 §1「没有可用设备」限制。DSH 也已重启过，网关路由生效。
+> 目标：**公网入口 `https://203.0.113.10:2444` 全链路实测**。
+
+### 9.1 本轮结论速查
+
+| 分类 | 内容 |
+|---|---|
+| **公网入口** | health 200 / login 200 / pair 403（码不对，正常）/ api 401（无令牌）—— 全部按设计 |
+| **实测跑通** | 登录、会话列表（68 个真实会话）、新建会话、发消息（消息真实抵达主机）、停止当轮、令牌落盘、特权闸门 403 |
+| **发现并修复** | ① `NetworkOnMainThreadException`（**致命**，整个网络层在真机上失效）② `PairScreen` 不渲染 error（失败零反馈）③ 事件流协议错误（两条 `events.*` 不存在）④ 应答通道错误（`/api/respond` 不存在）⑤ 会话列表混入 53 个点不开的子代理会话 |
+| **主机侧限制（非我方缺陷）** | `session/search` 在该部署被禁用；`session/cancel` 对 subagent 会话报 `agent-busy` |
+
+### 9.2 🔴 发现 1（致命）：`NetworkOnMainThreadException` —— 请求从未离开手机
+
+**现象**：模拟器上点「登录」，界面**纹丝不动**；网关日志**零请求**（不是 401，是根本没到）。
+Windows 侧同参数 `curl`/`node fetch` 全部正常，所以第一嫌疑落在 TLS/证书 —— **这个方向是错的**。
+
+**取证过程**（值得记下，因为前两次都被误导）：
+
+1. 截图显示仍在配对页 → 说明 UI 没跳转；
+2. 网关 `gateway.log` 没有任何 login 记录 → 请求没发出；
+3. 手机 `nc` 打公网 2444 / 宿主 19387 / 8.8.8.8:53 **全部 exit 0** → 网络本身没问题；
+4. 证书用 Node 严格校验（非 `-k`）打过去 → `200`，**TLS 也没问题**；
+5. 最后给 `PairingClient.login()` 加 `Log.i/Log.e` 打印真实异常类型，才拿到决定性证据：
+
+```
+I DSH_PAIRING: POST https://203.0.113.10:2444/mobile-gateway/login (user=dsh, device=sdk_gphone64_x86_64)
+E DSH_PAIRING: 登录请求失败: android.os.NetworkOnMainThreadException: null
+    at android.os.StrictMode$AndroidBlockGuardPolicy.onNetwork(StrictMode.java:1675)
+    at java.net.AbstractPlainSocketImpl.doConnect(...)
+    at okhttp3.internal.connection.RealConnection.connectSocket(...)
+```
+
+**根因**：`AppViewModel` 用 `viewModelScope.launch { PairingClient.login(...) }`，而 `viewModelScope`
+**默认跑在主线程**；`PairingClient.login()` 用的是**阻塞式** OkHttp `execute()`。
+Android 的 StrictMode 直接拦下 —— 请求根本没发出去。
+
+**同一缺陷遍布整个网络层**：`DshConnection.call()`、`DshConnection.respond()` 同样是阻塞式
+`execute()`，同样从 `viewModelScope` 调用。也就是说**整个 App 在真机上从来没能联网**，
+而之前所有测试都是绿的 —— 因为进程内测试和电脑侧脚本都不经过 Android 主线程。
+
+**修复**：
+- `PairingClient` 的 `login()` / `pair()` / `probe()` 改为 `suspend` + `withContext(Dispatchers.IO)`；
+- `DshConnection.call()` / `respond()` 的网络调用包进 `withContext(Dispatchers.IO)`；
+- 顺带修一个**真实的超时缺陷**：`call()` 原来用 `withTimeoutOrNull(timeoutMs)` 包一个
+  **阻塞调用** —— 协程超时**中断不了**阻塞中的 socket，服务器不响应就会一直挂着。
+  改为把 `timeoutMs` 传给 OkHttp 自己的 `connectTimeout`/`readTimeout`。
+
+**验证**：重装后同一操作：
+```
+I DSH_PAIRING: POST https://203.0.113.10:2444/mobile-gateway/login (user=dsh, device=sdk_gphone64_x86_64)
+I DSH_PAIRING: HTTP 200 len=512
+I DSH_HOST_STORE: 存储初始化完成: encrypted=true, file=dsh_hosts
+```
+网关侧同时出现 `device logged in {"deviceId":"dev_GOeFb3O1RMin","name":"sdk_gphone64_x86_64"}`。
+
+### 9.3 🔴 发现 2：`PairScreen` 从不渲染 `error` —— 失败时用户只能干等
+
+**现象**：§9.2 期间，登录失败在界面上**完全没有反馈**：不跳转、不报错、不转圈结束。
+
+**根因**：`PairScreen` 的签名只有 `busy: Boolean`，**没有 error 参数**；
+`MainActivity` 也没把 `state.error` 传进去。`AppViewModel` 明明把错误写进了 state，
+但这一页从来不读。**任何**失败（TLS、超时、密码错）都表现为「点了没反应」。
+
+**修复**：`PairScreen` 增加 `error: String?` 参数并渲染成 error 色文本；
+`MainActivity` 传入 `state.error`。修复后实测界面正确显示「登录失败」。
+
+> 这个缺陷放大了 §9.2：正是因为它，一个**一行日志就能定位**的问题被拖了很久。
+
+### 9.4 🔴 发现 3：事件流协议根本错误 —— 真实主机只有**一条** mux
+
+**现象**：登录成功后，网关日志反复刷：
+```
+device attached to event stream {"endpoint":"/api/events.mux"}
+event stream ended  {"endpoint":"/api/events.mux","error":"invalid Remote endpoint \"/api/events.mux\""}
+```
+两条流（`events.mux` / `events.host`）**每条都是连上即断**。
+
+**取证**（`app.asar` 权威源码，非客户端 bundle）：
+```ts
+// @deepseek-ai/dsh-api-gateway/src/stream-protocol.ts
+export const REMOTE_STREAM_MUX_PATH = '/api/remote.mux'
+```
+- `"/api/events.mux"` / `"/api/events.host"` 在真实源码里**零出现**；
+- endpoint 校验是 `endpoint.split('/').length === 2`，而 `/api/events.host` 有 **3 段** → 直接抛错。
+
+真实协议是「**一条 WS 承载多条逻辑流**」：客户端发
+`{type:'open', streamId, endpoint, payload}`，主机在该 streamId 上回
+`item` / `end` / `error`。事件流用内部 endpoint `$events`，payload 必须是 `{args:{}}`；
+主机回 `ready`（带 `clientId`）/ `emit` / `waterfall` / `cancel` 四种。
+
+**修复**：网关改为注册单条 `/mobile-gateway/remote.mux` 并实现完整帧协议；
+App 改为单条 WS + 逻辑流。细节见 `docs/api-contract.md` §1.5。
+
+**⚠️ 连带修了 Caddy**：新路径必须同步加进 VPS 白名单，否则**本机通、公网 404**。
+判别证据（改之前）：公网 `/mobile-gateway/remote.mux` 返回 Caddy 的 `Not Found`（9 字节纯文本），
+而 `/mobile-gateway/events.mux` 返回网关的 JSON —— 前者被 Caddy 拦，后者才穿透。
+已执行 `.scratch/fix-caddy-mux.sh`（含备份 + `caddy validate` + 失败回滚），
+改后 `remote.mux` 已穿透到网关、`zzz-nonexistent` 仍是 Caddy 拦（对照组正常）。
+
+> 这是**同一类坑第二次**：上次加 `/mobile-gateway/login` 时也忘了同步 Caddy。
+
+### 9.5 🔴 发现 4：`/api/respond` 不存在 —— 审批应答送不出去
+
+**取证**：
+- `app.asar` 全量扫描 `@deepseek-ai/dsh-*`：`"/api/respond"` 命中 **0 次**；
+- 实测：直连主机 401、经网关 **404**；
+- 正确通道 `$events/result` 实测**可达主机**，回
+  `typert gateway: Remote event result identifies no active event stream`
+  —— 证明端点存在、只是没有活跃流。
+
+**真实形状**（`parseRemoteEventResult` 逐字）：
+`args = {clientId, eventId, outcome:{kind:'next'|'result'|'rejected', …}}`，
+其中 `clientId` 来自事件流 `ready` 帧、`eventId` 来自 `waterfall` 帧。
+
+**修复**：App 的 `respond()` 改打 `$events/result`；`Envelopes` 的 `clientResponse`
+（产 `{ok,value}` 信封）替换为 outcome 构造器；`ChatViewModel` 适配。网关是透明桥，无需改动转发逻辑。
+
+#### 9.5.1 🔴 二次更正：`outcome.value` 的**语义**也曾写错（2026-10-13 下午）
+
+第一次修只解决了「**通道**」问题（`$events/result` 而非 `/api/respond`），但
+`outcome.value` 的**内容形状**仍然是自造的，而主机**不校验、只静默归一化** —— 这是最危险的一类错误。
+
+**取证链**（`app.asar` 逐字，四层）：
+
+```js
+// 1) dsh-user-approval/lib/index.js:30-35 —— 权威词表
+const OUTCOMES = ["allowed-once", "rejected", "cancelled", "unavailable"];
+
+// 2) 同文件:176 —— 归一化：**词表外的值不报错，静默变成 'unavailable'**
+this.ctx.waterfall(…, "approval/request", req, () => Promise.resolve("unavailable"))
+  .then((outcome) => OUTCOMES.includes(outcome) ? outcome : "unavailable",
+        () => "unavailable");
+
+// 3) dsh-sandbox/lib/index.js:117-121 —— 消费侧 switch + assertNever
+case "allowed-once": return mode;
+case "rejected": throw new Error(`the user rejected escalating this ${subject} …`);
+case "unavailable": throw new Error(`… requires approval, but no approval channel is available`);
+default: return assertNever(outcome, "EscalationOutcome");
+
+// 4) 官方客户端 dsh-client-ui-approval/lib/client.js:79,131 —— 它就是发裸字符串
+answer(event.key === "Enter" ? "allowed-once" : "rejected");
+```
+
+**原来的错误**：App 发 `value: {approved: true}`（**对象**）。
+它不在 `OUTCOMES` 里 → 被归一化成 `'unavailable'` → 沙箱抛
+「requires approval, but no approval channel is available」。
+**用户点了"允许"，却得到"没有审批通道"**，且**全程无任何报错**。
+
+**提问同理**：原来发 `{answer: "文本"}`；权威形状是
+`{answers: [{id, selected: string[]}]}`（`dsh-user-questions/lib/index.js:58-70`），
+其中 **`id` 是「问题」的 id**（不是选项 id）、**`selected` 是所选选项的 label 数组**。
+官方客户端同样如此（`dsh-client-ui-user-questions/lib/client.js:529-531`）：
+```js
+settle(() => pending.answer({ answers: [{ id: review.id, selected: [label] }] }), …)
+```
+
+**同时修正的两处**：
+- 选项来源：真实 payload 是 `questions[0].options[].label`（**对象数组**），
+  原来按字符串数组解析**必然为空**；
+- `remember`（记住本次选择）**故意不上线**：宿主 `ApprovalOutcome` 词表只有那四个字符串，
+  **没有"记住"这一档**，发出去同样会被归一化成 `'unavailable'`。
+- `HostRequest` 新增 `answerable` 标志：`emit` 是纯通知（如 `schedule/changed`），
+  **应答它毫无意义**；只有 `waterfall` 才在等结果。原来靠事件名里是否含
+  `approval`/`question` 来猜，既会漏也会误判。
+
+**守护**：e2e 新增 `[9b]` outcome 分型 4 项 + `[9c]` App 源码静态守护 10 项
+（含"审批必须用裸字符串"、"提问必须取问题 id"、"选项必须从 `.label` 取"）。
+`[9c]` 做了**突变测试**：把形状改回错误值后断言确实变红，证明不是假绿。
+
+> **教训**：透明桥**不做语义校验**，所以「形状合法但值不在词表里」的错误
+> **在网关层完全看不出来**（e2e 也照绿）。这类错误只能靠
+> ①读权威源码的**归一化分支**、②在 App 侧做静态守护 来防。
+
+### 9.6 🔴 发现 5：会话列表混入大量**点不开的**子代理会话（判据经两轮实测修正）
+
+> ⚠️ **本节的两个早期结论都被实测推翻了，保留过程是因为判据错了的代价是真实的**
+> ——要么把能打开的会话误藏（用户找不到自己的会话），要么把打不开的留在主列表
+> （用户点进去全是错误页）。最终判据只认 `origin == "subagent"`。
+
+**第一轮（错的）**：看到 68 条里 53 条是裸 UUID（非 `session-` 前缀），推断
+「非 `session-` 前缀 = 打不开」。
+
+**第二轮（仍是错的）**：改判据为 `origin == "subagent" || parentSessionId != null`。
+
+**第三轮（对，用实测裁决）**：新增
+`packages/dsh-mobile-gateway/scripts/verify-subagent-classifier.mjs` —— 对**每一条**会话
+真的发一次 `session/page`，按返回结果给三张交叉表，并打印**反例**。
+全部 **72 条**实测结果：
+
+| 判据 | 误藏能打开的 | 漏藏打不开的 | 结论 |
+|---|---|---|---|
+| 非 `session-` 前缀 | **10** | 0 | ❌ 不可用 |
+| `origin=="subagent" \|\| parent!=null` | **1** | 0 | ❌ 不可用 |
+| **只认 `origin=="subagent"`** | **0** | **0** | ✅ 精确 |
+
+```
+■ 判据 A：id 前缀          session- 前缀 共 18 可打开 18 / 非 session- 共 54 可打开 10 打不开 44
+■ 判据 B：origin          origin=(无)   共 28 可打开 28 / origin=subagent 共 44 可打开 0 打不开 44
+■ 判据 C：parentSessionId  无 共 27 可打开 27 / 有 共 45 可打开 1 打不开 44
+
+反例 [A]「|| parent!=null」会误藏 1 条：
+    session-57329df2-86bc-49be-b468-15ffbdf08a8a  origin=null → **能打开**
+反例 [B]「只认 origin」会漏藏 0 条
+反例 [C]「非 session- 前缀」会误藏 10 条
+```
+
+**关键洞察**：那 1 条带 `parentSessionId` 却无 `origin` 的是 `session.fork` 出来的
+**普通会话、打开完全正常**。所以 `parentSessionId` **不能**作为判据 ——
+`origin` 与「能否打开」是**充要**关系（44 条 subagent ↔ 44 条实际打不开），
+而 id 前缀与 parentSessionId 都只是**相关**，不是判据。
+
+**后果**：点进去得到 `subagent Sessions require their durable parent address`（实测确认）。
+
+**修复**：
+- App：`SessionRow` 增加 `isSubagent` / `parentSessionId`；`SessionsViewModel` 把子代理会话
+  **分流**到 `subagentRows`，默认不混在主列表；顶栏加「显示/隐藏子代理会话」开关，
+  且子代理行**不可点开**（避免又跳进错误页）。判据**只认 `origin == "subagent"`**，
+  三处（`SessionsViewModel`/`AppViewModel`/`docs/api-contract.md`）都写明了原因。
+- 网关：`session/list` 瘦身逻辑**保留 `origin`/`parentSessionId`/`blank`/`agentAvailable`/`cwd`**
+  （早前只留 `title`，App 拿不到判据）。瘦身后仍 ~28 KB，远低于 120 KB 门限。
+- 顺带：`JsonRender.bool()` 新增（替代 `content == "true"` 这种脆弱写法）。
+
+**可复现**：
+```powershell
+node packages\dsh-mobile-gateway\scripts\verify-subagent-classifier.mjs https://203.0.113.10:2444 dsh <密码>
+```
+
+### 9.7 公网写路径实测（脚本化，绕开模拟器 UI 不稳定因素）
+
+模拟器 UI 自动化有两个坑：`adb shell input text` **传中文直接 NPE**；键盘弹出会遮住发送按钮。
+因此把「协议对不对」与「UI 点得到点不到」分开验证 —— 新增
+`packages/dsh-mobile-gateway/scripts/public-write-test.mjs`，用与 App **逐字同构**的信封
+打同一个公网网关：
+
+```
+[1] 登录            ok POST /mobile-gateway/login → 200 · 拿到令牌 len=43
+[2] 读路径基线       ok session/list → 65 个会话
+[3] 新建会话         ok session/create → session-f7881122-…
+[4] 发消息           ok session/prompt → result.ok
+                     ok 缺 requestId → 被主机拒绝（证明该字段确实必填）
+[5] 读回             ok 主机自报 cursor · session/page → 6 条 records
+[6] 其余             ok session/cancel
+[7] 特权闸门         ok settings/describe · credentials/set · pluginManager/install 全部 403
+```
+
+后续独立复验（等 turn 结束后重翻页）确认消息**真实抵达主机**，`session/page` 读到
+`seq=8 user/message` 正文即测试所发内容，并出现 `session/title`、`turn/start`、`turn/end` 等真实事件。
+
+**两处"失败"经甄别均非我方缺陷**：
+- `session/search` → 主机回 `SessionQueryError: session search is disabled: this deployment…`
+  —— 该部署**禁用了搜索**，直连主机同样被拒；
+- `session/cancel` → 对**子代理会话**回 `session/agent-busy`（它归 subagent 所有），
+  对普通会话正常。
+
+### 9.8 全接口巡检脚本的判据修正
+
+`check-all-endpoints.mjs` 公网跑出 17 通过 / 10 失败，其中 **8 个是假失败**：
+
+- **E 组（7 个）**：脚本调 `rpc()`，而 `rpc()` 内部把期望状态**硬编码**成 `expect:[200]`，
+  于是网关**正确地**返回 403 时反被记成 FAIL。改为直接 `probe` 断言 **HTTP 403 +
+  错误码 `loopback_only`**（= 被网关拦下、根本没触达主机）。
+- **F1（1 个）**：原来断言 `/api/respond` 返回 200 —— 那正是 §9.5 证伪的端点。
+  改为：断言旧路径 **404**（防止改回去），并断言 `$events/result` **可达主机**
+  （回「无活跃事件流」而非 404）。
+
+修正后该脚本的"失败"项全部变为有意义的断言。
+
+### 9.9 本轮未验证 / 待重启
+
+| 项 | 状态 |
+|---|---|
+| 真实主机接受我们的 mux 帧（`open` → `ready`/`emit`） | **未验证** —— 网关改动需**重启 DSH** 才生效 |
+| `$events` 流是否真能推出 approval/waterfall 帧 | **未验证** —— 同上 |
+| 审批应答端到端（`$events/result` 带真实 clientId） | **未验证** —— 同上 |
+| 子代理会话不再出现在主列表 | **未验证** —— 需重装 APK 后确认（已编译通过） |
+| release 包正式签名 | 仍未做（与 debug 同证书） |
+| 真机（非模拟器）验证 | 仍未做（当前用模拟器） |
+
+> 网关改动落在 `packages/dsh-mobile-gateway/`，安装副本在
+> `C:\Users\me\.dsh\node_modules\dsh-mobile-gateway`。**重启 DSH 前需要先把改动同步到安装副本**，
+> 否则重启加载的仍是旧代码。

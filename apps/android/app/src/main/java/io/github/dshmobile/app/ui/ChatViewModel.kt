@@ -3,6 +3,7 @@ package io.github.dshmobile.app.ui
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import io.github.dshmobile.app.net.DshConnection
+import io.github.dshmobile.app.net.Envelopes
 import io.github.dshmobile.app.net.HostRequest
 import io.github.dshmobile.app.render.JsonRender
 import kotlinx.coroutines.Job
@@ -30,12 +31,24 @@ data class ChatLine(
     val kind: String,
 )
 
+/**
+ * 一条等待用户回应的主机请求。
+ *
+ * @param rpcId 主机的 `eventId`（`waterfall` 帧），应答时原样送回。
+ * @param method 事件名：`approval/request` 或 `user-questions/request`。
+ * @param questionId 提问类事件的**问题 id**（`AskUserQuestionItem.id`）。
+ *        应答形状是 `{answers:[{id, selected:[label]}]}`，这里的 `id` 指**问题**
+ *        而非选项 —— 早期实现把选项文本当答案直接发，形状完全不对。
+ * @param options 选项 **label** 列表（多选事件可能多个问题，这里只呈现第一个）。
+ */
 data class PendingPrompt(
     val rpcId: String,
     val method: String,
     val title: String,
     val body: String,
     val options: List<String>,
+    val questionId: String? = null,
+    val approval: Boolean = false,
 )
 
 data class ChatUiState(
@@ -246,41 +259,101 @@ class ChatViewModel(private val conn: DshConnection?) : ViewModel() {
         }
     }
 
-    /** 审批与提问都以稳定 rpcId 从下行流推来；答过就不再弹。 */
+    /**
+     * 主机事件 → 待确认卡片。
+     *
+     * 🔴 只处理 `answerable`（即 `waterfall`）的项。真实主机把**纯通知**（`emit`）
+     * 和**待应答的 waterfall** 都送到同一条 `$events` 流上；早前按事件名里是否含
+     * "approval"/"question"/"ask" 来猜，会把 `schedule/changed` 这类通知也弹成审批框，
+     * 而且真正需要应答的事件一旦改名就会漏掉。
+     *
+     * 两类 waterfall 的负载形状**不同**（均从 app.asar 取证）：
+     *
+     *   approval/request        { toolName, callId?, reason?, displayReason? }
+     *   user-questions/request  { questions:[{id, question, detail?, header?,
+     *                             options?:[{label, description?}], multiSelect?}], wait? }
+     *
+     * 所以选项要从 `questions[0].options[].label` 取（是**对象数组**，不是字符串数组）。
+     */
     private fun handleHostRequest(c: DshConnection, req: HostRequest) {
-        val method = req.method.lowercase()
-        if (!method.contains("approval") && !method.contains("question") && !method.contains("ask")) return
-        val title = JsonRender.str(req.payload, "title", "name", "question", "tool") ?: "需要你确认"
-        val body = JsonRender.textOf(req.payload["prompt"] ?: req.payload["message"] ?: req.payload["content"])
-            ?: JsonRender.compact(req.payload, 400)
-        val options = JsonRender.arr(req.payload, "options")
-            ?.mapNotNull { (it as? kotlinx.serialization.json.JsonPrimitive)?.content }
-            .orEmpty()
-        _state.update { it.copy(pending = PendingPrompt(req.rpcId, req.method, title, body, options)) }
+        if (!req.answerable) return
+        val isApproval = req.method.contains("approval")
+        val question = JsonRender.arr(req.payload, "questions")?.firstOrNull()
+            as? kotlinx.serialization.json.JsonObject
+        val questionId = question?.let { JsonRender.str(it, "id") }
+
+        val title = if (isApproval) {
+            "工具调用需要批准"
+        } else {
+            question?.let { JsonRender.str(it, "header", "question") } ?: "需要你确认"
+        }
+        val body = when {
+            isApproval -> JsonRender.str(req.payload, "displayReason", "reason")
+                ?: JsonRender.str(req.payload, "toolName")?.let { "工具：$it" }
+                ?: "主机请求批准一次工具调用"
+            question != null -> JsonRender.str(question, "question", "detail")
+                ?: JsonRender.compact(question, 400)
+            else -> JsonRender.compact(req.payload, 400)
+        }
+        // 选项：提问是 [{label,…}]，审批没有选项（由 UI 的允许/拒绝按钮覆盖）。
+        val options = if (question != null) {
+            JsonRender.arr(question, "options")
+                ?.mapNotNull { JsonRender.str(it as? kotlinx.serialization.json.JsonObject, "label") }
+                .orEmpty()
+        } else {
+            emptyList()
+        }
+        _state.update {
+            it.copy(
+                pending = PendingPrompt(
+                    rpcId = req.rpcId,
+                    method = req.method,
+                    title = title,
+                    body = body,
+                    options = options,
+                    questionId = questionId,
+                    approval = isApproval,
+                ),
+            )
+        }
     }
 
-    fun answer(value: JsonObject) {
+    fun answer(outcome: JsonObject) {
         val c = requireConn() ?: return
         val pending = _state.value.pending ?: return
         _state.update { it.copy(pending = null) }
         viewModelScope.launch {
-            val ok = c.respond(pending.rpcId, value)
+            val ok = c.respond(pending.rpcId, outcome)
             if (!ok) _state.update { it.copy(error = "应答未被主机接受（可能已过期）") }
         }
     }
 
+    /**
+     * 审批的允许 / 拒绝。
+     *
+     * ⚠️ `remember` 参数**故意不发上线**：宿主 `ApprovalOutcome` 词表只有
+     * `'allowed-once' | 'rejected' | 'cancelled' | 'unavailable'` 四个字符串，
+     * 没有「记住本次选择」这一项。多发字段会被判为词表外值并**归一化成
+     * `'unavailable'`**，反而把允许变成拒绝。保留参数只为兼容现有 UI 调用点。
+     */
     fun approve(approved: Boolean, remember: Boolean = false) {
-        answer(
-            buildJsonObject {
-                put("kind", if (approved) "allow" else "deny")
-                put("approved", approved)
-                if (remember) put("remember", true)
-            },
-        )
+        answer(Envelopes.approvalOutcome(approved))
     }
 
+    /**
+     * 回答一个提问选项。
+     *
+     * 形状：`{answers:[{id:<问题 id>, selected:[<选项 label>]}]}`。
+     * 问题 id 缺失时不发（宁可不发，也不要发一个主机认不出的形状）。
+     */
     fun answerOption(text: String) {
-        answer(buildJsonObject { put("kind", "answer"); put("answer", text) })
+        val pending = _state.value.pending ?: return
+        val questionId = pending.questionId
+        if (questionId == null) {
+            _state.update { it.copy(error = "这条请求没有可回答的问题 id，已忽略") }
+            return
+        }
+        answer(Envelopes.questionOutcome(questionId, listOf(text)))
     }
 
     fun send(text: String) {

@@ -68,6 +68,7 @@ import java.util.concurrent.Executors
 @Composable
 fun PairScreen(
     busy: Boolean,
+    error: String?,
     onLogin: (baseUrl: String, username: String, password: String, deviceName: String) -> Unit,
     onPair: (baseUrl: String, code: String, deviceName: String) -> Unit,
     deviceName: String,
@@ -151,6 +152,17 @@ fun PairScreen(
                 "网关可达：$probe",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.secondary,
+            )
+        }
+
+        // 🔴 早前根本没渲染 error：登录失败（TLS 拒绝、超时、密码错）时页面
+        // 纹丝不动，用户只能干等。实测（公网 2444 端口）踩中过一次。
+        if (error != null) {
+            Text(
+                error,
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.error,
+                modifier = Modifier.fillMaxWidth(),
             )
         }
 

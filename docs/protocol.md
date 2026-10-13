@@ -11,8 +11,7 @@
 | GET | `/mobile-gateway/health` | 无 | 探活 + 实例名 |
 | POST | `/mobile-gateway/pair` | 一次性配对码 | 换长期设备令牌 |
 | POST | `/mobile-gateway/api/<method…>` | Bearer 令牌 | 官方 `/api` 的透传桥 |
-| WS | `/mobile-gateway/events.mux` | Bearer 令牌 | 下行事件流（mux） |
-| WS | `/mobile-gateway/events.host` | Bearer 令牌 | 下行事件流（host） |
+| WS | `/mobile-gateway/remote.mux` | Bearer 令牌 | **唯一**的 mux；逻辑流 `$events` 承载事件流 |
 | GET/POST | `/mobile-gateway/manage*` | 回环 TCP 对端 | 铸码 / 二维码 / 设备吊销 |
 
 ## 1. 探活
@@ -73,24 +72,57 @@ Content-Type: application/json
 
 特权方法（见下节）由网关拦下，返回 **HTTP 403**，body 仍是同构的 `server-response`。
 
-## 4. 事件流
+## 4. 事件流（单一 mux + 逻辑流）
 
-两条通道都**只下行**，都不带子协议、不带查询串。
+> 🔴 **2026-10-13 整体更正**：真实主机**只有一条** mux WS ——
+> `REMOTE_STREAM_MUX_PATH = '/api/remote.mux'`（网关侧路径 `/mobile-gateway/remote.mux`）。
+> 原文档写的 `events.mux` / `events.host` 在真实源码里**零出现**，实测连上即被
+> `invalid Remote endpoint` 断开。详见 `docs/api-contract.md` §1.4 / §1.5。
 
-- 客户端**不得发送任何数据**；发了就以 **1008 "downlink only"** 关闭。
-- 每个 text 帧是一条 `{ "type": "server-request", "rpcId": <>, "method": <>, "payload": {} }`。
-- 主机发起的提问/审批带**稳定的 host-minted rpcId**，重连后会重放——**客户端必须按 rpcId 去重**。
-- **应答走 `POST /mobile-gateway/api/respond`**，不是 WS：
+mux 是「一条 WS 承载多条逻辑流」，帧协议：
 
-  ```http
-  { "type": "client-response", "rpcId": "<>", "result": { … } }
-  → { "accepted": true } | { "accepted": false, "reason": "not-pending" | "bad-response" }
-  ```
+```ts
+// 客户端 → 主机
+{ type:'open',   streamId, endpoint, payload }   // 精确 4 键
+{ type:'item',   streamId, value? }
+{ type:'end',    streamId }
+{ type:'cancel', streamId }
 
-连接就绪的判定与官方一致：**两条流都打开、且 `host.describe` 成功**才算连上。
-只开一条就宣布 Ready，会出现「看着连上了但收不到任何事件」的假在线。
+// 主机 → 客户端
+{ type:'item',  streamId, value? }
+{ type:'end',   streamId }
+{ type:'error', streamId, error:{code,message,details} }
+```
+
+事件流是其中一条逻辑流：`endpoint = '$events'`、`payload = { args: {} }`。
+主机在该流上回的 `item.value` 是 `ready` / `emit` / `waterfall` / `cancel` 四种：
+
+- `ready` 给出 **clientId** —— 后续应答**必须**带上它。
+- `emit` 是纯通知，**不需要应答**。
+- `waterfall` 才在等结果（审批 / 提问），带 **eventId**，应答时原样送回。
+
+**应答不是 WS，也不是 `/api/respond`**（后者真实主机上不存在），而是一个普通 RPC
+endpoint **`$events/result`**：
+
+```http
+POST /mobile-gateway/api/$events/result
+{ "type":"client-request", "rpcId":"…", "method":"$events/result",
+  "payload": { "args": { "clientId":"…", "eventId":"…", "outcome": { … } } } }
+```
+
+`outcome` 三选一：`{kind:'next'}` / `{kind:'result', value?}` / `{kind:'rejected', error}`。
+⚠️ `value` 的**内容**由事件自己的签名决定（审批是裸字符串 `'allowed-once'`，提问是
+`{answers:[{id,selected}]}`）—— 形状错会被主机**静默**归一化成 `'unavailable'`。
+详见 `docs/api-contract.md` §1.4。
+
+协议违规语义：重复 `streamId` 的 `open` → 关 socket 1008；非法帧 → 1008；二进制帧 → 1003；
+**未知 streamId 的 `item`/`end`/`cancel` 静默丢弃**（已结束的流先离开表，在途帧还在到）。
+
+连接就绪的判定：**mux 已开 + 一次 `session.list` 成功**才算连上
+（早期写的是 `host.describe`，但真实主机没有这个方法）。
 
 重连策略在客户端：指数退避 500ms×2ⁿ，上限 10s，带 50–100% 抖动。
+重放去重按 **eventId**（不是旧的 rpcId）。
 
 ## 安全模型
 

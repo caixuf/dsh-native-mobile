@@ -34,7 +34,9 @@ Android App ──HTTP/WS──▶ dsh-mobile-gateway ──进程内──▶ D
 2. **鉴权**：`Authorization: Bearer <token>`，HTTP 与 WebSocket 升级都验；吊销按请求生效。
 3. **协议桥**：`POST /mobile-gateway/api/<method>` → 官方 `ConnectionFetchHandler`，
    envelope 原样透传，App 与官方 Web 客户端讲同一种协议。
-4. **事件流**：`/mobile-gateway/events.mux` / `events.host` → `typertGateway.wireStream.open()`。
+4. **事件流**：唯一的 mux `/mobile-gateway/remote.mux`（帧协议）→ 逻辑流
+   `$events` → `typertGateway.wireStream.open()`；审批/提问的应答走 RPC
+   endpoint `$events/result`。
 
 **没有隧道、没有 TLS、没有账号体系**——那是 dsh-mobile 的职责。本项目假定你已经有办法
 把自己的电脑暴露出去（局域网直连、Tailscale、cloudflared、自建反代……），把地址填进 App 即可。

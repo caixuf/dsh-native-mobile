@@ -53,6 +53,13 @@ private fun AppRoot(app: DshMobileApp) {
 
     LaunchedEffect(Unit) { appVm.refresh() }
 
+    // 登录/配对成功后自动进入会话列表。
+    // ⚠️ 用 notice 的**值变化**做键，而不是 if (notice != null) —— 后者在
+    // 「第二次登录成功时 notice 恰好等于上一次的值」时会漏触发。
+    LaunchedEffect(state.notice) {
+        if (route == Route.Pair && state.notice != null) route = Route.Sessions
+    }
+
     when (route) {
         Route.Hosts -> HostsScreen(
             state = state,
@@ -64,10 +71,9 @@ private fun AppRoot(app: DshMobileApp) {
 
         Route.Pair -> PairScreen(
             busy = state.busy,
-            onLogin = { base, user, pass, name ->
-                appVm.login(base, user, pass, name)
-                route = Route.Sessions
-            },
+            error = state.error,
+            // 不在这里跳转：登录成功与否由 AppViewModel 决定（存盘失败会留在本页显示错误）。
+            onLogin = { base, user, pass, name -> appVm.login(base, user, pass, name) },
             onPair = { base, code, name ->
                 appVm.pair(base, code, name) { route = Route.Sessions }
             },

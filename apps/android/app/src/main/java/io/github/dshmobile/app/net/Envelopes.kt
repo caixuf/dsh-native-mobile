@@ -4,6 +4,7 @@ import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
@@ -35,19 +36,39 @@ import kotlinx.serialization.json.put
  * 三条全错却一路绿到真机，是因为进程内测试的假宿主对任意形状都返回成功。
  * 已给假宿主加方法契约校验，并新增 `scripts/check-app-methods.mjs` 门禁。
  *
- * 四种线上形态由 `type` 区分：
- *   `client-request`  手机 → 主机，POST /api/<method>
- *   `server-response` 主机 → 手机，对 client-request 的应答
- *   `server-request` 主机 → 手机，只走两条下行 WebSocket
- *   `client-response` 手机 → 主机，对 server-request 的应答，POST /api/respond
+ * ## 🔴 2026-10-13 再次修正：事件流与应答通道（原描述全错）
  *
- * 注意官方约定：下行通道**只下行**，客户端不得发送任何数据；且不带子协议、不带查询串。
+ * 权威来源 `@deepseek-ai/dsh-api-gateway/src/stream-protocol.ts`（从 app.asar 抠出）：
+ *
+ * 1. **只有一条 mux WebSocket**：`REMOTE_STREAM_MUX_PATH = '/api/remote.mux'`。
+ *    `/api/events.mux`、`/api/events.host` 在真实源码里**零出现** —— 原来那两条
+ *    连上就被主机以 `invalid Remote endpoint` 断开（endpoint 校验要求 split('/')
+ *    恰好 2 段，`/api/events.host` 有 3 段）。
+ * 2. mux 上跑的是**帧协议**，一条 socket 承载多条逻辑流：
+ *      客户端 → 主机  {type:'open', streamId, endpoint, payload}
+ *                      {type:'item', streamId, value?} / {type:'end'|'cancel', streamId}
+ *      主机 → 客户端  {type:'item', streamId, value?} / {type:'end'|'error', streamId}
+ * 3. 事件流是其中**一条逻辑流**，endpoint 为内部常量 `$events`，
+ *    payload 必须是 `{args:{}}`；主机在该流上回 `ready`/`emit`/`waterfall`/`cancel`。
+ * 4. 审批/提问的应答**不走** `/api/respond`（该端点不存在，asar 零命中、实测 404），
+ *    而是普通 RPC endpoint **`$events/result`**，args = `{clientId, eventId, outcome}`。
+ *
+ * 因此线上只剩**两种**信封形态：
+ *   `client-request`   手机 → 主机（含 `$events/result` 应答）
+ *   `server-response`  主机 → 手机，对 client-request 的应答
+ *
+ * 注意：mux 是**双向**的（要靠它发 open/item/end/cancel），与旧文档「下行通道只下行」
+ * 的说法相反 —— 旧说法对应的是那两条并不存在的 `events.*`。
  */
 object Envelopes {
+    /**
+     * 手机 → 主机的唯一信封形态。
+     *
+     * ⚠️ 曾经的 `server-request` / `client-response` 两个常量已删除：它们对应的是
+     * 那两条**并不存在**的 `events.*` 下行流与 `/api/respond` 应答端点。
+     * 留着只会诱导后来者按已证伪的协议写代码（本文件顶部记录了取证过程）。
+     */
     const val TYPE_CLIENT_REQUEST = "client-request"
-    const val TYPE_SERVER_RESPONSE = "server-response"
-    const val TYPE_SERVER_REQUEST = "server-request"
-    const val TYPE_CLIENT_RESPONSE = "client-response"
 
     val json = Json {
         ignoreUnknownKeys = true
@@ -60,6 +81,12 @@ object Envelopes {
         return if (i < 0) dotted else dotted.substring(0, i) + "/" + dotted.substring(i + 1)
     }
 
+    /**
+     * 构造一条 `client-request`（手机 → 主机的一问一答）。
+     *
+     * 审批/提问的应答**也走这条通道**（endpoint `$events/result`），
+     * 不是独立的 `/api/respond` —— 后者在真实主机上不存在。
+     */
     fun clientRequest(rpcId: String, method: String, args: JsonObject): JsonObject = buildJsonObject {
         put("type", TYPE_CLIENT_REQUEST)
         put("rpcId", rpcId)
@@ -68,33 +95,104 @@ object Envelopes {
     }
 
     /**
-     * 应答一条主机下发的 server-request（审批 / 提问）。
+     * 审批/提问的 `outcome` 构造器。
      *
-     * ⚠️ 官方契约里 `result` 的形状是 `{ ok: boolean, value: unknown }`，**不是**裸的业务对象。
-     * 见 `docs/api-contract.md` §1.4：
+     * 🔴 真实形状（`parseRemoteEventResult` 逐字，2026-10-13 从 app.asar 取证）：
      *
-     *     POST /api/respond
-     *     { "type":"client-response", "rpcId":"…", "result": { "ok": true, "value": {…} } }
+     *     { kind:'next' }                                   —— 交给下一个监听者
+     *     { kind:'result', value?: unknown }                —— 采纳，带返回值
+     *     { kind:'rejected', error:{name,message,code?,details?} } —— 拒绝
      *
-     * 早前的实现直接把 `{kind:"allow"}` 当作 result 传出去，主机会回
-     * `{"accepted":false,"reason":"bad-response"}` —— 表现为「点了允许但没反应」。
-     * 这里统一由本函数补信封，调用方只提供业务 value。
+     * 早前这里是 `{kind:'allow'|'deny'|'answer'}` 那种自造形状，且外面还套了
+     * `{ok,value}` 信封 —— **两层都错**。实测打 `/api/respond` 返回 404，
+     * 因为那个端点根本不存在。
      */
-    fun clientResponse(rpcId: String, value: JsonObject): JsonObject = buildJsonObject {
-        put("type", TYPE_CLIENT_RESPONSE)
-        put("rpcId", rpcId)
-        put("result", buildJsonObject {
-            put("ok", true)
-            put("value", value)
+    /**
+     * 审批（`approval/request`）的 `outcome`。
+     *
+     * 🔴 2026-10-13 从 app.asar 逐字取证：`value` 必须是 **ApprovalOutcome 字符串**，
+     * 不是对象。权威链路：
+     *
+     *   stream-protocol.ts : outcome = { kind:'result', value?: unknown }
+     *   dsh-api-gateway    : settleRemoteEvent(pending, {kind:'result', value: outcome.value})
+     *   api-remotes        : forwardWaterfall → settled.resolve(outcome.value)
+     *   dsh-user-approval  : ApprovalOutcome = 'allowed-once'|'rejected'|'cancelled'|'unavailable'
+     *   dsh-user-approval  : outcome => OUTCOMES.includes(outcome) ? outcome : 'unavailable'
+     *   dsh-tools          : switch (outcome) { case 'allowed-once': allow; case 'rejected': deny;
+     *                        default: assertNever(outcome) }
+     *
+     * 也就是说 `value` 要**裸字符串** `'allowed-once'`。早前发的是
+     * `{approved:true}` 对象 —— 它不在 OUTCOMES 词表里，会被**归一化成
+     * `'unavailable'`**，表现为「点了允许，工具却以『没有审批通道』被拒绝」。
+     *
+     * ⚠️ 宿主词表里**没有**「记住本次选择」这一项（只有那四个字符串），
+     * 所以 UI 的 remember 选项不能上线，否则同样会被判为非法值。
+     */
+    fun approvalOutcome(allow: Boolean): JsonObject = buildJsonObject {
+        put("kind", "result")
+        put("value", if (allow) "allowed-once" else "rejected")
+    }
+
+    /**
+     * 提问（`user-questions/request`）的 `outcome`。
+     *
+     * 🔴 权威形状（`AskUserQuestionAnswer` 声明，逐字）：
+     *
+     *     { answers: [ { id: string, selected: string[], custom?: string } ] }
+     *
+     * `id` 是**问题**的 id（`AskUserQuestionItem.id`），不是选项 id；
+     * `selected` 是所选选项的 **label 数组**（多选时为多个）。
+     * 早前发的是 `{answer:"文本"}` —— 形状完全不对，主机会当成非法应答。
+     */
+    fun questionOutcome(questionId: String, selected: List<String>): JsonObject = buildJsonObject {
+        put("kind", "result")
+        put("value", buildJsonObject {
+            put("answers", buildJsonArray {
+                add(buildJsonObject {
+                    put("id", questionId)
+                    put("selected", buildJsonArray { selected.forEach { add(JsonPrimitive(it)) } })
+                })
+            })
+        })
+    }
+
+    /**
+     * 拒绝 / 取消一条 waterfall。
+     *
+     * 形状（`parseRemoteEventRejection` 逐字）：`{name, message, code?, details?}`，
+     * 其中 `name` 必须**非空**。主机侧 `restoreRemoteEventRejection` 会把它还原成
+     * 一个 Error 抛回 waterfall —— 审批由此变成「用户拒绝」。
+     */
+    fun rejected(message: String, code: String? = null): JsonObject = buildJsonObject {
+        put("kind", "rejected")
+        put("error", buildJsonObject {
+            put("name", "Error")
+            put("message", message)
+            if (code != null) put("code", code)
         })
     }
 }
 
-/** 一条来自主机的 server-request（等价于一次主机发起的提问/审批/推送）。 */
+/**
+ * 一条来自主机事件流、需要（或可能不需要）用户回应的项。
+ *
+ * @param rpcId 承载主机的 **eventId**（仅 `waterfall` 有）；应答时原样送回
+ *              `$events/result`，主机靠它定位 pending。
+ * @param method 事件名（`approval/request`、`user-questions/request`、`tick` …）。
+ * @param payload 业务负载：`waterfall` 用帧里的 `request`，`emit` 用整帧。
+ * @param answerable 是否**需要应答**。
+ *
+ * 🔴 这个标志是必需的：真实主机把两类事件都送到同一条 `$events` 流上 ——
+ * `emit` 是纯通知（如 `schedule/changed`、`api-session/activity`），**应答它毫无意义**；
+ * 只有 `waterfall`（`approval/request`、`user-questions/request`）才在等我们的结果。
+ * 早前靠事件名里是否含 "approval"/"question" 来猜，既会漏（`user-questions/request`
+ * 恰好能蒙中，但别的可应答事件就漏了），也可能把纯通知误判成审批弹窗。
+ */
 data class HostRequest(
     val rpcId: String,
     val method: String,
     val payload: JsonObject,
+    val answerable: Boolean = false,
 )
 
 /** 解码后的 server-response。 */
@@ -109,7 +207,7 @@ class DshCallException(
     override val message: String,
 ) : Exception(message)
 
-/** 链路状态。`Ready` 要求两条下行流都打开且 `host.describe` 成功，与官方判定一致。 */
+/** 链路状态。`Ready` 要求 mux 已打开且 `session.list` 成功，与官方判定一致。 */
 sealed interface LinkState {
     data object Disconnected : LinkState
     data class Connecting(val attempt: Int) : LinkState

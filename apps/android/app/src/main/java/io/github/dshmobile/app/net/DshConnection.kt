@@ -2,6 +2,7 @@ package io.github.dshmobile.app.net
 
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -13,6 +14,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
@@ -35,12 +37,15 @@ import kotlin.random.Random
 /**
  * 与一台 DSH 实例的连接。
  *
- * 组成：两条只下行的 WebSocket（`events.mux` / `events.host`）+ 一条 HTTP 一问一答通道。
- * 只有两条流都打开、且 `host.describe` 成功，才算 Ready——与官方客户端的判定一致，
+ * 组成：**一条** mux WebSocket（`/mobile-gateway/remote.mux` → 主机 `/api/remote.mux`）
+ * 承载若干逻辑流，其中一条是事件流 `$events`；另有一条 HTTP 一问一答通道
+ * （审批/提问的应答也走它，endpoint `$events/result`）。
+ *
+ * 就绪判定：mux 已开 + 一次 `session.list` 成功 —— 与官方客户端的判定一致，
  * 否则会出现「看起来连上了但收不到任何事件」的假在线。
  *
- * 重连：指数退避 500ms×2ⁿ，上限 10s，带抖动。主机下发的提问/审批带**稳定的 rpcId**，
- * 重连后会被重放，因此已处理过的必须按 rpcId 去重。
+ * 重连：指数退避 500ms×2ⁿ，上限 10s，带抖动。主机下发的提问/审批带**稳定的 eventId**，
+ * 重连后会被重放，因此已处理过的必须按 eventId 去重。
  */
 class DshConnection(
     private val scope: CoroutineScope,
@@ -61,10 +66,8 @@ class DshConnection(
     private val lifecycle = Mutex()
 
     private val muxOpen = java.util.concurrent.atomic.AtomicBoolean(false)
-    private val hostOpen = java.util.concurrent.atomic.AtomicBoolean(false)
 
     @Volatile private var muxSocket: WebSocket? = null
-    @Volatile private var hostSocket: WebSocket? = null
     @Volatile private var reconnectJob: Job? = null
     @Volatile private var stopped = false
     @Volatile private var attempt = 0
@@ -79,9 +82,8 @@ class DshConnection(
         stopped = true
         reconnectJob?.cancel()
         muxSocket?.close(1000, "client closed")
-        hostSocket?.close(1000, "client closed")
         muxSocket = null
-        hostSocket = null
+        eventClientId = null
         _state.value = LinkState.Disconnected
     }
 
@@ -89,22 +91,30 @@ class DshConnection(
         if (stopped) return
         attempt += 1
         _state.value = LinkState.Connecting(attempt)
-        openSocket("mux") { socket ->
+        // 🔴 真实主机只有**一条** mux WebSocket（`/api/remote.mux`），
+        // 不是两条 `events.mux` / `events.host` —— 后两者在权威源码里零出现，
+        // 实测连上去主机立刻回 `invalid Remote endpoint` 并断开。
+        // 见 lib/bridge.mjs 顶部的取证说明。
+        openSocket { socket ->
             muxSocket = socket
             muxOpen.set(true)
-            onSocketOpen()
-        }
-        openSocket("host") { socket ->
-            hostSocket = socket
-            hostOpen.set(true)
+            // 连上后立刻开一条**逻辑流**：endpoint `$events`，payload 必须是 {args:{}}。
+            socket.send(
+                buildJsonObject {
+                    put("type", "open")
+                    put("streamId", eventStreamId)
+                    put("endpoint", EVENT_STREAM_ENDPOINT)
+                    put("payload", buildJsonObject { put("args", buildJsonObject {}) })
+                }.toString(),
+            )
             onSocketOpen()
         }
     }
 
     private fun onSocketOpen() {
-        if (!muxOpen.get() || !hostOpen.get()) return
+        if (!muxOpen.get()) return
         scope.launch {
-            // 就绪判定：两条流都开 + 一次真实的 RPC 成功。
+            // 就绪判定：mux 已开 + 一次真实的 RPC 成功。
             //
             // ⚠️ 早前用的是 `host.describe`，但**真实主机没有这个方法**
             // （实测 `host/describe` → 404 not found；枚举出的 41 个 endpoint 里没有它）。
@@ -127,48 +137,101 @@ class DshConnection(
     /** 实例名（从下行流里的主机信息学出来；拿不到就显示空）。 */
     private var hostName: String = ""
 
-    private fun openSocket(which: String, onOpen: (WebSocket) -> Unit) {
-        val path = if (which == "mux") "$WS_MUX" else "$WS_HOST"
+    /** 本次逻辑事件流的 streamId（每次重连换一个新的）。 */
+    private var eventStreamId: String = java.util.UUID.randomUUID().toString()
+
+    /**
+     * 事件流的 clientId —— 由主机在 `ready` 帧里下发。
+     *
+     * 🔴 应答审批/提问时**必须**带上它：`$events/result` 的 args 是
+     * `{clientId, eventId, outcome}`，主机用它定位是哪个活跃事件流。
+     */
+    @Volatile private var eventClientId: String? = null
+
+    private fun openSocket(onOpen: (WebSocket) -> Unit) {
         val request = Request.Builder()
-            .url(baseUrl.replaceFirst(Regex("^http"), "ws") + path)
+            .url(baseUrl.replaceFirst(Regex("^http"), "ws") + WS_MUX)
             .header("Authorization", "Bearer $token")
             .build()
 
         http.newWebSocket(request, object : WebSocketListener() {
             override fun onOpen(webSocket: WebSocket, response: Response) = onOpen(webSocket)
 
+            /**
+             * 处理 mux 上的一条帧。
+             *
+             * 主机 → 客户端只有三种（权威 stream-protocol.ts）：
+             *   item  { streamId, value? }   ← value 才是业务帧
+             *   end   { streamId }
+             *   error { streamId, error:{code,message,details} }
+             *
+             * `item.value` 是 `$events` 流的四种之一：
+             *   ready     { clientId, host }        —— 记下 clientId
+             *   emit      { event, args }           —— 纯通知
+             *   waterfall { event, eventId, agentId, request } —— **需要应答**（审批/提问）
+             *   cancel    { eventId }
+             */
             override fun onMessage(webSocket: WebSocket, text: String) {
                 val frame = runCatching { Envelopes.json.parseToJsonElement(text).jsonObject }.getOrNull() ?: return
-                if (frame.str("type") != Envelopes.TYPE_SERVER_REQUEST) return
-                val rpcId = frame.str("rpcId") ?: return
-                val method = frame.str("method") ?: return
-                if (!answered.add(rpcId)) return // 重连重放，去重
-                val payload = frame.obj("payload") ?: JsonObject(emptyMap())
-                _hostRequests.tryEmit(HostRequest(rpcId, method, payload))
+                when (frame.str("type")) {
+                    "item" -> handleStreamItem(frame.obj("value") ?: return)
+                    "end" -> scheduleReconnect("事件流被主机关闭")
+                    "error" -> {
+                        val message = frame.obj("error")?.str("message") ?: "事件流出错"
+                        scheduleReconnect(message)
+                    }
+                    else -> Unit // 未知帧类型向前兼容丢弃（协议演进不发版）
+                }
             }
 
             override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
-                if (which == "mux") {
-                    muxOpen.set(false)
-                    muxSocket = null
-                } else {
-                    hostOpen.set(false)
-                    hostSocket = null
-                }
+                muxOpen.set(false)
+                muxSocket = null
+                eventClientId = null
                 scheduleReconnect(t.message ?: "连接中断")
             }
 
             override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
-                if (which == "mux") {
-                    muxOpen.set(false)
-                    muxSocket = null
-                } else {
-                    hostOpen.set(false)
-                    hostSocket = null
-                }
+                muxOpen.set(false)
+                muxSocket = null
+                eventClientId = null
                 if (!stopped) scheduleReconnect(reason.ifEmpty { "连接被关闭" })
             }
         })
+    }
+
+    /** 处理 `$events` 逻辑流的一个 item。 */
+    private fun handleStreamItem(value: JsonObject) {
+        when (value.str("type")) {
+            "ready" -> {
+                eventClientId = value.str("clientId")
+                value.obj("host")?.str("home")?.let { hostName = it }
+            }
+            "emit" -> {
+                val event = value.str("event") ?: return
+                // 纯通知（如 schedule/changed、api-session/activity）—— **不需要应答**。
+                // answerable=false 让消费端不会把它弹成审批框。
+                _hostRequests.tryEmit(
+                    HostRequest(rpcId = event, method = event, payload = value, answerable = false),
+                )
+            }
+            "waterfall" -> {
+                val event = value.str("event") ?: return
+                val eventId = value.str("eventId") ?: return
+                // 用 eventId 作为应答标识（主机靠它定位 pending）。
+                if (!answered.add(eventId)) return
+                _hostRequests.tryEmit(
+                    HostRequest(
+                        rpcId = eventId,
+                        method = event,
+                        payload = value.obj("request") ?: value,
+                        answerable = true,
+                    ),
+                )
+            }
+            "cancel" -> Unit
+            else -> Unit
+        }
     }
 
     private fun scheduleReconnect(cause: String) {
@@ -210,15 +273,27 @@ class DshConnection(
             .post(body)
             .build()
 
-        val text = withTimeoutOrNull(timeoutMs) {
-            http.newCall(request).execute().use { response ->
+        val text = withContext(Dispatchers.IO) {
+            // 🔴 两个都必须：① 阻塞式 execute() 不能在主线程跑（否则
+            // NetworkOnMainThreadException，请求根本发不出去）；② 超时交给
+            // OkHttp 自己的 readTimeout —— 原来的 withTimeoutOrNull 包一个阻塞调用
+            // 是**中断不了**的，服务器不响应就会一直挂着。
+            val callClient = if (timeoutMs > 0) {
+                http.newBuilder()
+                    .connectTimeout(timeoutMs, TimeUnit.MILLISECONDS)
+                    .readTimeout(timeoutMs, TimeUnit.MILLISECONDS)
+                    .build()
+            } else {
+                http
+            }
+            callClient.newCall(request).execute().use { response ->
                 val raw = response.body?.string().orEmpty()
                 if (!response.isSuccessful) {
                     throw DshCallException("transport_${response.code}", "$method 失败：HTTP ${response.code}")
                 }
                 raw
             }
-        } ?: throw DshCallException("timeout", "$method 在 ${timeoutMs}ms 内没有响应")
+        }
 
         val frame = Envelopes.json.parseToJsonElement(text).jsonObject
         if (frame.str("rpcId") != rpcId) {
@@ -236,20 +311,44 @@ class DshConnection(
         }
     }
 
-    /** 应答一条主机下发的提问/审批（官方走 `POST /api/respond`，不是 WS）。 */
-    suspend fun respond(rpcId: String, result: JsonObject): Boolean {
-        val body = Envelopes.clientResponse(rpcId, result).toString().toRequestBody(JSON_MEDIA)
+    /**
+     * 应答一条主机下发的提问/审批。
+     *
+     * 🔴 2026-10-13 公网实测 + 权威源码取证：**真实主机没有 `/api/respond`**
+     * （全 asar 零命中；实测直连 401、经网关 404）。正确通道是 RPC endpoint
+     * `$events/result`，args 形状（`parseRemoteEventResult` 逐字）：
+     *
+     *     { clientId, eventId, outcome:
+     *         { kind:'next' } |
+     *         { kind:'result', value? } |
+     *         { kind:'rejected', error:{name,message,code?,details?} } }
+     *
+     * `clientId` 来自事件流的 `ready` 帧，`eventId` 来自 `waterfall` 帧。
+     * 实测：带一个假 clientId 打过去，主机会回
+     * `typert gateway: Remote event result identifies no active event stream`
+     * —— 证明端点存在，只是没有活跃流。而 `/api/respond` 是 404。
+     */
+    suspend fun respond(eventId: String, outcome: JsonObject): Boolean {
+        val clientId = eventClientId ?: return false
+        val rpcId = "r${ids.incrementAndGet()}"
+        val body = Envelopes.clientRequest(rpcId, EVENT_RESULT_ENDPOINT, buildJsonObject {
+            put("clientId", clientId)
+            put("eventId", eventId)
+            put("outcome", outcome)
+        }).toString().toRequestBody(JSON_MEDIA)
         val request = Request.Builder()
-            .url(baseUrl + API_PREFIX + "respond")
+            .url(baseUrl + API_PREFIX + EVENT_RESULT_ENDPOINT)
             .header("Authorization", "Bearer $token")
             .header("Content-Type", "application/json")
             .post(body)
             .build()
         return runCatching {
-            http.newCall(request).execute().use { response ->
-                if (!response.isSuccessful) return@use false
-                val frame = Envelopes.json.parseToJsonElement(response.body?.string().orEmpty()).jsonObject
-                frame.bool("accepted") == true
+            withContext(Dispatchers.IO) {
+                http.newCall(request).execute().use { response ->
+                    if (!response.isSuccessful) return@use false
+                    val frame = Envelopes.json.parseToJsonElement(response.body?.string().orEmpty()).jsonObject
+                    frame.obj("result")?.bool("ok") == true
+                }
             }
         }.getOrDefault(false)
     }
@@ -267,8 +366,21 @@ class DshConnection(
         const val DEFAULT_THROUGHPUT_SEQ = 1_000_000L
 
         const val API_PREFIX = "/mobile-gateway/api/"
-        const val WS_MUX = "/mobile-gateway/events.mux"
-        const val WS_HOST = "/mobile-gateway/events.host"
+        /**
+         * 唯一的 mux WebSocket。
+         *
+         * 🔴 真实主机只有这一条（权威常量 `REMOTE_STREAM_MUX_PATH = '/api/remote.mux'`）。
+         * 原来的 `events.mux` / `events.host` 两条在真实源码里零出现，
+         * 实测连上去主机立刻回 `invalid Remote endpoint` 并断开。
+         */
+        const val WS_MUX = "/mobile-gateway/remote.mux"
+
+        /** 事件流的内部 endpoint（真实主机侧常量，不是我们编的）。 */
+        const val EVENT_STREAM_ENDPOINT = "\$events"
+
+        /** 审批/提问的应答通道（**不是** `/api/respond`，那个端点不存在）。 */
+        const val EVENT_RESULT_ENDPOINT = "\$events/result"
+
         const val PAIR_PATH = "/mobile-gateway/pair"
         /** 账号密码登录入口（首选，比配对码好记）。 */
         const val LOGIN_PATH = "/mobile-gateway/login"

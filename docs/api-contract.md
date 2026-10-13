@@ -16,6 +16,9 @@
 | 本文原写法 | 真实主机 | 后果 |
 |---|---|---|
 | `session.history` | **不存在**。真名 `session.page`，参数是 `{address, throughSeq}`、返回 `records[].event` | App 的会话读取与轮询 100% 失败 |
+| `/api/events.mux`、`/api/events.host` | **都不存在**。真实主机只有**一条** mux WS `/api/remote.mux`（`REMOTE_STREAM_MUX_PATH`），且是「一条 WS 承载多条逻辑流」的帧协议 | 两条事件流连上即断（`invalid Remote endpoint`），App 只能靠 3s 轮询 |
+| `POST /api/respond` | **不存在**。应答走 RPC endpoint `$events/result`，args = `{clientId, eventId, outcome}` | 审批/提问点「允许」送不出去（实测该路径 404） |
+| `session/list` 返回的 item 都当普通会话 | 子代理会话带 `origin:"subagent"`，**不能用裸 sessionId 打开** | 实测 72 个会话里 44 个是子代理，点进去全报 `subagent Sessions require their durable parent address`。⚠️ 判据**只能**用 `origin`，不能用「带 `parentSessionId`」——详见 §2 表格 `session.list` 那行 |
 
 核实方式（可复现）：在 `app.asar` 里扫全部 423 个 `@deepseek-ai/dsh-*` 包，
 `"session.history"` 字面量出现 **0 次**，`session.page` 命中
@@ -115,37 +118,124 @@ content-type: application/json
 - 载荷槽 `payload` / `result.value` 在线上是 `unknown()` —— **两级解析**：先解信封，再按 method 做第二次解析（`cc/client.js:4837-4840`）。
 - zod `object` 非 strict，多余键会被**静默剥离**。
 
-### 1.4 `/api/respond` —— 服务端主动请求的回答通道
+### 1.4 审批/提问的应答通道 —— `$events/result`（**不是** `/api/respond`）
 
-服务端推送的、需要回答的请求（审批、提问）**不走 WebSocket**，而是通过这个独立端点回传（`cc/client.js:6291-6295`）：
+> 🔴 **本节已于 2026-10-13 用真实主机源码 + 公网实测整体更正。**
+> 原内容（挖自客户端 bundle）说应答走 `POST /api/respond`，**真实主机没有这个端点**：
+> 在 `app.asar` 里全量扫描 `@deepseek-ai/dsh-*` 包，`"/api/respond"` 字面量出现 **0 次**；
+> 实测直连主机 401、经网关 404。请勿再按旧内容实现。
+
+真实通道是一个 **RPC endpoint**，走同一套 `/api` 一问一答（`typertGateway.claimsEndpoint`
+显式认领它，见 `@deepseek-ai/dsh-api-gateway/src/index.ts` 的
+`if (endpoint === REMOTE_EVENT_RESULT_ENDPOINT) return true`）：
 
 ```
-POST /api/respond
+POST /api/$events/result
 content-type: application/json
 
-{ "type": "client-response", "rpcId": "<该帧的 rpcId>", "result": { "ok": true, "value": {...} } }
+{ "type": "client-request", "rpcId": "…", "method": "$events/result",
+  "payload": { "args": { "clientId": "…", "eventId": "…", "outcome": { … } } } }
 ```
 
-回执（`cc/client.js:5140-5143`）：
+`outcome` 的三种形状（`parseRemoteEventResult`，`stream-protocol.ts` 逐字）：
 
-```json
-{ "accepted": true }
-{ "accepted": false, "reason": "not-pending" | "bad-response" }
+```ts
+{ kind: 'next' }                                       // 交给下一个监听者
+{ kind: 'result', value?: unknown }                    // 采纳，可带返回值
+{ kind: 'rejected', error: { name, message, code?, details? } }  // 拒绝
 ```
 
-**审批载荷**（`cc/client.js:5406-5410`）：
+- `clientId` 来自事件流的 **`ready` 帧**（`{type:'ready', clientId, host}`），每次连接一代。
+- `eventId` 来自 **`waterfall` 帧**（`{type:'waterfall', event, eventId, agentId, request}`）。
+- **实测取证**：带一个假 `clientId` 打过去，主机回
+  `typert gateway: Remote event result identifies no active event stream`
+  —— 证明端点存在、只是没有活跃流；而 `/api/respond` 是 404。
+- 结果只对**当前活跃**的事件流生效：`receiveRemoteEventResult` 会检查
+  `pending.deliveries.has(client)`，已结算或已换代的结果是幂等空操作。
 
-```json
-{ "sessionId": "...", "approvalId": "...", "outcome": "allowed-once" | "rejected" }
+#### ⚠️ `outcome.value` 的**内容**由事件自己的签名决定（极易搞错）
+
+`{kind:'result', value}` 里的 `value` 不是自由对象 —— 它会被原样交回该 waterfall 的
+**声明返回类型**。主机侧链路（逐字取证）：
+
+```
+stream-protocol.ts  outcome = { kind:'result', value?: unknown }
+dsh-api-gateway     settleRemoteEvent(pending, { kind:'result', value: outcome.value })
+api-remotes         forwardWaterfall → settled.resolve(outcome.value)
+                    ↑ 从此处起 value 就是该事件的返回值本身
 ```
 
-- `rpcId` 是**服务端铸造**的，且在审批未回答期间**跨重连保持稳定**——每次 mux 重开都会以同一个 id 重放（`cc/client.js:7859-7862`）。原生客户端必须按 id 去重，不能因为重连就重复弹窗。
-- `result.ok === false` 会被服务端视为 **cancelled**（`cc/client.js:9594`）。
-- `approval/resolved` 帧的 outcome 枚举比请求更宽，多出 `cancelled` 和 `unavailable`（`cc/client.js:5517-5522`）。
+两个可应答事件要求的 `value` **完全不同**：
 
-**提问载荷形状未验证**——见 §6。
+| 事件 | 声明返回类型 | `value` 必须是 |
+|---|---|---|
+| `approval/request` | `ApprovalOutcome` | **裸字符串** `'allowed-once'`（或 `'rejected'`） |
+| `user-questions/request` | `AskUserQuestionAnswer` | `{ answers:[{ id, selected:string[], custom? }] }` |
 
-### 1.5 HTTP 状态码
+**审批**：`ApprovalOutcome = 'allowed-once' | 'rejected' | 'cancelled' | 'unavailable'`
+（`@deepseek-ai/dsh-user-approval`）。seam 会做词表归一化：
+
+```ts
+outcome => OUTCOMES.includes(outcome) ? outcome : 'unavailable'
+```
+
+而消费侧是 `switch (outcome) { case 'allowed-once': allow; case 'rejected': deny;
+default: assertNever(outcome) }`。因此发一个**词表外的值**（例如
+`{approved:true}` 这种对象，或自造的 `'allow'`）不会报错，而是被**静默归一化成
+`'unavailable'`** —— 表现为「点了允许，工具却以『没有审批通道』被拒绝」。
+词表里**没有**「记住本次选择」这一项，所以「记住」类 UI 不能上线。
+
+**提问**：`answers[].id` 是**问题**的 id（`AskUserQuestionItem.id`），
+不是选项 id；`selected` 是所选选项的 **label** 数组（多选即多项）。
+`AskUserQuestionItem` = `{ id, question, detail?, header?, options?:[{label,description?}],
+multiSelect? }` —— 注意 `options` 是**对象数组**，选项文本在 `label` 里。
+
+> 这两条都是「形状合法但语义错位」的错误：`outcome` 信封对了，`value` 里塞错东西，
+> 主机不会报错、只会静默按 fail-closed 处理。故必须按事件类型分别构造。
+
+### 1.5 事件流 —— 单一 `/api/remote.mux`（**不是两条 `events.*`**）
+
+> 🔴 同样于 2026-10-13 更正。真实主机只有**一条** mux WebSocket：
+> `REMOTE_STREAM_MUX_PATH = '/api/remote.mux'`；`/api/events.mux`、`/api/events.host`
+> 在真实源码里**零出现**，实测连上去主机立刻回 `invalid Remote endpoint` 并断开。
+
+mux 是「一条 WS 承载多条逻辑流」，帧形状（`stream-protocol.ts` 逐字）：
+
+```ts
+// 客户端 → 主机
+{ type:'open',   streamId, endpoint, payload }   // 精确 4 键，exactKeys 校验
+{ type:'item',   streamId, value? }
+{ type:'end',    streamId }
+{ type:'cancel', streamId }
+
+// 主机 → 客户端
+{ type:'item',  streamId, value? }
+{ type:'end',   streamId }
+{ type:'error', streamId, error:{code,message,details} }
+```
+
+协议违规语义（权威实现 `stream-server.ts`）：
+- **重复 `streamId` 的 `open`** → 关 socket `1008`（唯一会断连的违规）
+- 非法帧 / 非对象 / 二进制帧 → 关 `1008` / `1003`
+- **未知 `streamId` 的 `item`/`end`/`cancel` → 静默丢弃**（已结束的流先离开表，在途帧还在到）
+
+事件流用**内部 endpoint `$events`**，payload 必须是 `{args:{}}`：
+
+```ts
+REMOTE_EVENT_STREAM_ENDPOINT = '$events'
+REMOTE_EVENT_STREAM_PAYLOAD  = { args: {} }
+```
+
+主机在该逻辑流上回的 `item.value` 是四种之一：
+
+```ts
+{ type:'ready',     clientId, host:{home} }
+{ type:'emit',      event, args }
+{ type:'waterfall', event, eventId, agentId, request }   // 需要应答
+{ type:'cancel',    eventId }
+```
+
+### 1.6 HTTP 状态码
 
 | 状态 | 含义 | 来源 |
 |---|---|---|
@@ -173,7 +263,7 @@ content-type: application/json
 
 | 项 | 值 |
 |---|---|
-| 路径 | `/api/events.mux`、`/api/events.host`（`cc/types/api-path.d.ts:9`、`:11`） |
+| 路径 | ~~`/api/events.mux`、`/api/events.host`~~ → **`/api/remote.mux`**（单一 mux，逻辑流 endpoint `$events`；2026-10-13 实测更正，见 §1.5） |
 | 协议 | `ws:` / `wss:`，由页面 origin 的 http/https 决定（`cc/client.js:9785`） |
 | **子协议** | **无。** `WebSocketServer` 以 `{ noServer: true }` 构造，未设 `handleProtocols`（`cc/index.js:371`）。客户端**不得**发送 `Sec-WebSocket-Protocol` |
 | 查询串 | **无。** 不支持订阅过滤；socket 一升级，服务端立即以 `payload: {}` 开流（`cc/index.js:384-399`） |
@@ -197,7 +287,7 @@ content-type: application/json
 **`rpcId` 的语义（重要）**：
 
 - 纯推送（`session/event`、`host/*` 等）每次**新铸一个** id，无意义。
-- 可回答帧（`approval/requested`、`question/requested`）的 id **是稳定的逻辑句柄**，你必须把它原样回送到 `/api/respond`（`cc/client.js:484-487`）。
+- 可回答帧（`approval/requested`、`question/requested`）的 id **是稳定的逻辑句柄**，你必须把它原样回送 —— 真实通道是 `$events/result`（见 §1.4），**不是** `/api/respond`。
 - `method` 字段就是帧的 `payload.type` 原文（`cc/index.js:336`）。
 
 ### 2.3 重连要求
@@ -228,7 +318,7 @@ content-type: application/json
 
 | 方法 | 参数 | 返回 | 说明 | 来源 |
 |---|---|---|---|---|
-| `session.list` | `cursor?: string` | `{ items: SessionSummary[] }` | 列出会话，`cursor` 分页 | `cc/client.js:6002` / 参数 `:5202` |
+| `session.list` | `cursor?: string` | `{ items: SessionSummary[] }` | 列出会话，`cursor` 分页。⚠️ item 里的 `origin === "subagent"` 表示**子代理会话**，必须带 `parentSessionId` 才能用 `session.page` 打开；直接按普通 sessionId 打开会得到 `subagent Sessions require their durable parent address`（2026-10-13 公网实测确认）。⚠️ **判据只能用 `origin`，不能用「带 parentSessionId」**：`session.fork` 出来的普通会话同样带 `parentSessionId` 却没有 `origin`，它按裸 sessionId 打开是正常的（同次实测：`origin==="subagent"` 的 44 条**全部**打不开；带 parent 但无 origin 的 1 条**能正常打开**） | `cc/client.js:6002` / 参数 `:5202` |
 | `session.search` | `query: string`（trim，1..500，不含 NUL） | `{ items: {sessionId,snippet}[≤20], hasMore }` | 全文检索，snippet 上限 240 码点 | `cc/client.js:6003` / `:5205-5213` |
 | `session.create` | `workspaceId?`, `cwd?`, `sessionId?`, `agentPreset?` | `{ sessionId, agentPreset? }` | `workspaceId` 与 `cwd` **互斥** | `cc/client.js:6004` / `:5214-5224` |
 | `session.page` | `address: {kind:'session',sessionId} \| {kind:'subagent',…}`, `throughSeq: number`（必填）, `beforeSeq?`, `maxMessages?`, `turnWindow?` | `{ records: [ {type:'event', event:{type,seq,time,data}} ], … }` | 倒序翻页读会话事件 | **真实主机** `dsh-api-session-controller/lib/client.js` 的 `readPage()` |
@@ -278,7 +368,7 @@ content-type: application/json
 | `command.list` | `sessionId` | `{ commands: CommandDescriptor[] }` | 列斜杠命令 | `cc/client.js:6029` / `:5665-5667` |
 | `command.execute` | `sessionId`, `line` | `{ matched, commandId? }` | **纯准入**：结果靠后续生命周期事件，用 `commandId` 关联。无内建超时 | `cc/client.js:6030` / `:5668-5679` |
 | `skill.list` | `sessionId` | `{ skills: SkillEntry[] }` | 列会话可见技能 | `cc/client.js:6031` / `:5693-5695` |
-| （审批） | 走 `/api/respond`，见 §1.4 | `{ accepted }` | 审批响应 | `cc/client.js:5406-5410` |
+| （审批） | 走 `$events/result`，见 §1.4 | `{ ok:true, value:undefined }` | 审批响应 | `app.asar` `dsh-api-gateway/src/stream-protocol.ts`（2026-10-13 实测） |
 
 ### agent-presets（6）
 
@@ -466,7 +556,7 @@ content-type: application/json
 |---|---|---|
 | **job / terminal / account 域** | **不存在** | 六个包中不存在任何匹配 `"job.*"` / `"terminal.*"` / `"account.*"` 的字符串字面量。这三个域在本契约中**根本不存在** |
 | `QuestionResponsePayload` 的 schema | 未验证 | 仅作为类型导出（`cc/types/client/api.d.ts:1`），zod 定义不在任何 schema region 中。可参考 `AskUserQuestionItemSchema`（`cc/client.js:5466-5480`）推断，但有风险 |
-| `/api/respond` 服务端路由与 pending 表 | 未验证 | `cc/index.js:545` 把所有未匹配的 `/api` 请求转交 `apiProxy` 服务；pending 表实现在**未下载**的 `@deepseek-ai/dsh-host-apiproxy` 中。仅有客户端契约（`cc/client.js:6291-6295`）与一份 fixture 模拟（`cc/client.js:9561-9597`） |
+| ~~`/api/respond` 服务端路由与 pending 表~~ | **已证伪** | 2026-10-13 实测：该端点不存在（asar 零命中、直连 401、经网关 404）。真实通道是 `$events/result`，见 §1.4。pending 表在 `dsh-api-gateway` 的 `pendingRemoteEvents` 里，由 `waterfall` 帧下发、`$events/result` 结算 |
 | `goals/*` 通用 RPC 端点 | 未验证 | 仅出现在客户端 fixture（`cc/client.js:9604-9612`），无服务端注册；`{ args: {...} }` 载荷外壳是 fixture 专有的 |
 | 三个流式端点的帧结构 | 未验证 | `session/control`、`session/follow`、`workspace/follow` 是 `RemoteStreamHandle`，帧联合定义在未下载的 apiproxy/gateway 包 |
 | `SessionEvent.data` 的逐事件结构 | **刻意开放** | `cc/client.js:5186` 声明为 `unknown()`；核心是 merge-extensible 的。按事件的具体结构在 `dsh-session/types` 与 `dsh-client-ui-chat` 中，后者只暴露视图类型 |
