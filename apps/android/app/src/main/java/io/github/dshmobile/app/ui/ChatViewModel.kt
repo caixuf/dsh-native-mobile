@@ -187,33 +187,42 @@ class ChatViewModel(private val connProvider: () -> DshConnection?) : ViewModel(
     /**
      * 读一页会话记录。
      *
-     * `throughSeq` 有「不能超过 cursor」的约束，而 cursor 只有主机知道。
-     * 所以这里做一次**自适应重试**：先试一个值，若主机回 "past cursor N"，
-     * 就用 N 重试。这比猜一个上限可靠（实测 Long.MAX_VALUE 必被拒）。
+     * `throughSeq` 有「不能超过 cursor」的约束，而真实 cursor 只有主机知道。
+     * 每次用 1_000_000L 主动探测 cursor（主机必然报 "past cursor N"），
+     * 从而立刻学出当前真实 cursor，再精准拉取。
      */
-    private suspend fun fetchPage(c: DshConnection, sid: String, maxMessages: Int): Result<JsonElement> {
-        val guess = if (cursor > 0) cursor else DshConnection.DEFAULT_THROUGHPUT_SEQ
-        val first = c.call("session.page", pageArgs(sid, guess, maxMessages))
-        val message = first.exceptionOrNull()?.message
-        val learned = learnCursor(message)
-        if (learned != null && learned != guess) {
-            cursor = learned
-            return c.call("session.page", pageArgs(sid, learned, maxMessages))
-        }
-        return first
+    private suspend fun fetchPage(c: DshConnection, sid: String, maxMessages: Int): Result<Pair<Long, JsonObject>> {
+        val probe = c.call("session.page", pageArgs(sid, 1_000_000L, 1), timeoutMs = 6_000)
+        val learned = learnCursor(probe.exceptionOrNull()?.message)
+        val targetSeq = learned ?: if (cursor > 0) cursor else 1_000L
+        cursor = targetSeq
+        val r = c.call("session.page", pageArgs(sid, targetSeq, maxMessages), timeoutMs = 10_000)
+        return r.map { targetSeq to it.jsonObject }
     }
 
     fun reload() {
         val c = requireConn() ?: return
         val sid = _state.value.sessionId
         viewModelScope.launch {
-            fetchPage(c, sid, 80).onSuccess { value ->
-                val obj = value.jsonObject
-                val lines = recordsOf(obj).mapIndexedNotNull { i, e -> toLine(e, i) }
-                // 记录最后一条的 seq，轮询时从它之后增量拉。
-                lastSeq = recordsOf(obj).lastOrNull()?.get("seq")
-                    ?.jsonPrimitive?.content?.toLongOrNull() ?: lastSeq
-                _state.update { it.copy(lines = lines, loading = false, error = null) }
+            fetchPage(c, sid, 80).onSuccess { (newCursor, obj) ->
+                cursor = newCursor
+                val serverLines = recordsOf(obj).mapIndexedNotNull { i, e -> toLine(e, i) }
+                val recs = recordsOf(obj)
+                lastSeq = recs.lastOrNull()?.get("seq")
+                    ?.jsonPrimitive?.content?.toLongOrNull() ?: newCursor
+
+                // 合并现有 optimistic lines（只保留尚未被服务端记录覆盖的 pending 消息）
+                val serverTexts = serverLines.filter { it.role == "user" }.map { it.text }.toSet()
+                val pendingLines = _state.value.lines.filter { it.key.startsWith("pending-") && it.text !in serverTexts }
+
+                _state.update {
+                    it.copy(
+                        lines = serverLines + pendingLines,
+                        loading = false,
+                        error = null,
+                        running = detectRunning(obj),
+                    )
+                }
             }.onFailure { error ->
                 _state.update { it.copy(loading = false, error = error.message) }
             }
@@ -221,71 +230,44 @@ class ChatViewModel(private val connProvider: () -> DshConnection?) : ViewModel(
     }
 
     /**
-     * 轮询而不是订阅流。
-     *
-     * 官方把 `session/follow` 定义成 RemoteStreamHandle——客户端要用稳定 rpcId 发起，
-     * 主机再以 `server-request` 帧回推、客户端逐帧回 `client-response`。那条链路的帧形状
-     * 在已公开的官方包里没有可验证的定义。与其猜一个可能错的形式，不如先用必然可用的
-     * `session.page` 轮询把体验跑通；确认了流协议再切换（见 docs/api-contract.md 的 Gaps）。
-     *
-     * ## 性能（实测数据，别删）
-     *
-     * `session/page` 的 `maxMessages` **不限制 records 条数**——它限的是消息窗口，
-     * 一轮里的 step/tool 事件全都会回来。实测 30 条请求实际返回 149 条 / 268 KB，
-     * 公网链路（FRP 隧道）每 1.6s 全量拉一次 = 手机每秒下载 170 KB，这就是卡顿来源。
-     *
-     * 三个对策：
-     *  1. **增量拉取**：轮询用 `lastSeq` 作为 `throughSeq`，只拉新增部分（几 KB）
-     *  2. **降频**：1.6s → 3s（增量后单次只有几 KB，3s 足够跟手）
-     *  3. **maxMessages 只是兜底**：增量模式下通常一次只回几条
+     * 轮询会话状态与增量事件。
      */
     private fun startPolling() {
         pollJob?.cancel()
         pollJob = viewModelScope.launch {
             while (isActive) {
-                delay(3_000)
+                delay(2_500)
                 val c = conn ?: continue
                 val sid = _state.value.sessionId
                 if (sid.isEmpty() || _state.value.pending != null) continue
-                // 增量：从 lastSeq 之后拉。lastSeq<0 说明还没初始化，先全量。
-                val throughSeq = if (lastSeq > 0) lastSeq else DshConnection.DEFAULT_THROUGHPUT_SEQ
-                val r = c.call(
-                    "session.page",
-                    buildJsonObject {
-                        put("request", buildJsonObject {
-                            put("address", buildJsonObject {
-                                put("kind", "session")
-                                put("sessionId", sid)
-                            })
-                            put("throughSeq", throughSeq)
-                            put("maxMessages", 30)
-                        })
-                    },
-                    timeoutMs = 8_000,
-                )
-                // "past cursor N" 说明我们的 lastSeq 落后于主机裁剪点（会话被压缩过），
-                // 丢掉本地全量重新同步一次。
-                val err = r.exceptionOrNull()?.message
-                val learned = learnCursor(err)
+
+                // 1. 探测主机当前最新 cursor
+                val probe = c.call("session.page", pageArgs(sid, 1_000_000L, 1), timeoutMs = 5_000)
+                val learned = learnCursor(probe.exceptionOrNull()?.message)
                 if (learned != null) {
-                    cursor = learned
-                    reload()
-                    continue
-                }
-                r.onSuccess { value ->
-                    val obj = value.jsonObject
-                    val records = recordsOf(obj)
-                    val fresh = records.mapIndexedNotNull { i, entry ->
-                        val seq = entry["seq"]?.jsonPrimitive?.content?.toLongOrNull()
-                        if (seq != null && lastSeq >= 0 && seq <= lastSeq) null else toLine(entry, i)
+                    // 如果 cursor 相比上次推进了，或者当前处于 running/preparing 状态
+                    if (learned > cursor || _state.value.running || _state.value.preparing) {
+                        cursor = learned
+                        val r = c.call("session.page", pageArgs(sid, learned, 60), timeoutMs = 8_000)
+                        r.onSuccess { value ->
+                            val obj = value.jsonObject
+                            val serverLines = recordsOf(obj).mapIndexedNotNull { i, entry -> toLine(entry, i) }
+                            val serverTexts = serverLines.filter { it.role == "user" }.map { it.text }.toSet()
+                            val pendingLines = _state.value.lines.filter { it.key.startsWith("pending-") && it.text !in serverTexts }
+                            val isRunning = detectRunning(obj)
+
+                            recordsOf(obj).lastOrNull()?.get("seq")?.jsonPrimitive?.content?.toLongOrNull()
+                                ?.takeIf { it > lastSeq }?.let { lastSeq = it }
+
+                            _state.update {
+                                it.copy(
+                                    lines = serverLines + pendingLines,
+                                    running = isRunning,
+                                    preparing = if (isRunning || serverLines.any { line -> line.role == "assistant" }) false else it.preparing,
+                                )
+                            }
+                        }
                     }
-                    if (fresh.isNotEmpty()) {
-                        _state.update { it.copy(lines = it.lines + fresh) }
-                    }
-                    // 推进 lastSeq 到本页最大 seq，下轮从这里增量
-                    records.lastOrNull()?.get("seq")?.jsonPrimitive?.content?.toLongOrNull()
-                        ?.takeIf { it > lastSeq }?.let { lastSeq = it }
-                    _state.update { it.copy(running = detectRunning(obj)) }
                 }
             }
         }
@@ -424,8 +406,22 @@ class ChatViewModel(private val connProvider: () -> DshConnection?) : ViewModel(
         }
 
         val c = requireConn() ?: return
-        // 进入「电脑准备中」阶段 0
-        _state.update { it.copy(sending = true, preparing = true, preparingStep = 0, error = null) }
+        val userLine = ChatLine(
+            key = "pending-${System.currentTimeMillis()}",
+            role = "user",
+            text = body,
+            kind = "user/message",
+        )
+        // 进入「电脑准备中」阶段 0，并立即乐观呈现用户消息
+        _state.update {
+            it.copy(
+                lines = it.lines + userLine,
+                sending = true,
+                preparing = true,
+                preparingStep = 0,
+                error = null,
+            )
+        }
 
         // 阶段推进：主机没给"准备完成"的信号（我们目前也没接事件流的 turn/start），
         // 所以按**时间**推进 —— 这是诚实的近似：告诉用户在等，而不是假装知道确切进度。
@@ -546,13 +542,33 @@ class ChatViewModel(private val connProvider: () -> DshConnection?) : ViewModel(
             else -> {
                 val content = (data?.get("message") as? JsonObject)?.get("content")
                     ?: data?.get("content")
-                JsonRender.contentToText(content)
+                val extracted = JsonRender.contentToText(content)
                     ?: JsonRender.textOf(data)
                     ?: JsonRender.textOf(entry["message"])
                     ?: JsonRender.textOf(entry["content"])
                     ?: return null
+                extracted
             }
         }
+
+        if (kind == "user/message") {
+            val src = (entry["data"] as? JsonObject)?.get("source") as? JsonObject
+            val srcKind = src?.get("kind")?.jsonPrimitive?.content
+            // 过滤系统注入的运行时上下文、技能快照与记忆等，避免被伪装成用户气泡
+            if (srcKind != null && srcKind != "user") return null
+            if (text.startsWith("<system-reminder>") ||
+                text.startsWith("Current runtime context") ||
+                text.startsWith("[MNEMON]") ||
+                text.startsWith("MNEMON RUNTIME MEMORY SNAPSHOT")
+            ) {
+                return null
+            }
+        }
+        if (kind == "system/message") {
+            // 系统底层基底 prompt 过于冗长（几千字），过滤掉避免干扰界面
+            if (text.startsWith("You are an AI agent") || text.length > 300) return null
+        }
+
         return ChatLine(
             key = "$seq-$kind-$index",
             role = role,

@@ -22,6 +22,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -151,6 +152,9 @@ fun ChatScreen(
     }
 
     Scaffold(
+        modifier = Modifier
+            .fillMaxSize()
+            .imePadding(),
         containerColor = MaterialTheme.colorScheme.background,
         topBar = {
             TopAppBar(
@@ -242,8 +246,7 @@ fun ChatScreen(
         Column(
             Modifier
                 .padding(padding)
-                .fillMaxSize()
-                .imePadding(),
+                .fillMaxSize(),
         ) {
             // 🔴 电脑准备中：远程创建会话时，手机要能看见「电脑正在准备」。
             //
@@ -823,6 +826,7 @@ private fun Composer(
         Column(
             Modifier
                 .fillMaxWidth()
+                .navigationBarsPadding()
                 .padding(
                     start = DshTheme.m.gutter,
                     end = DshTheme.m.gutter,

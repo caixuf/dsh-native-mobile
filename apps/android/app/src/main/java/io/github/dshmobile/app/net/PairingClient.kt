@@ -43,13 +43,29 @@ object PairingClient {
             .build()
     }
 
-    /** 解析二维码内容：`http://host:port/mobile-gateway/pair#dshm1.XXXX-XXXX-XXXX-XXXX` */
+    /** 解析二维码内容：`http://host:port/mobile-gateway/pair#dshm1.XXXX-XXXX` 或 `?code=...` */
     fun parsePairingTarget(raw: String): PairingTarget? {
         val text = raw.trim()
         val hash = text.indexOf('#')
-        val urlPart = if (hash >= 0) text.substring(0, hash) else text
-        val code = if (hash >= 0) text.substring(hash + 1) else ""
-        val base = urlPart.substringBefore("/mobile-gateway/").trimEnd('/')
+        val query = text.indexOf('?')
+        val code = when {
+            hash >= 0 -> text.substring(hash + 1).trim()
+            query >= 0 -> {
+                val q = text.substring(query + 1)
+                q.split("&").firstOrNull { it.startsWith("code=") }?.removePrefix("code=")?.trim() ?: ""
+            }
+            else -> ""
+        }
+        val urlPart = when {
+            hash >= 0 -> text.substring(0, hash)
+            query >= 0 -> text.substring(0, query)
+            else -> text
+        }
+        val base = if (urlPart.contains("/mobile-gateway/")) {
+            urlPart.substringBefore("/mobile-gateway/").trimEnd('/')
+        } else {
+            urlPart.trimEnd('/')
+        }
         if (!base.startsWith("http://") && !base.startsWith("https://")) return null
         return PairingTarget(baseUrl = base, code = code)
     }

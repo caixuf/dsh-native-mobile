@@ -1,57 +1,57 @@
 {
-  "name": "dsh-mobile-gateway",
-  "version": "0.1.0",
-  "type": "module",
-  "description": "DSH Mobile Gateway — 为原生移动端提供的进程内鉴权网关：设备配对 + 单 WebSocket 通道 + 通用 Remote RPC 转发。",
-  "main": "./index.mjs",
-  "exports": {
-    ".": "./index.mjs",
-    "./package.json": "./package.json"
-  },
-  "files": [
-    "index.mjs",
-    "lib/",
-    "README.md",
-    "LICENSE"
-  ],
-  "keywords": [
-    "dsh",
-    "cordis",
-    "deepseek-harness",
-    "mobile",
-    "gateway",
-    "android"
-  ],
-  "dsh": {
-    "compat": {
-      "minDshVersion": "0.2.0-rc.1",
-      "testedDshVersion": "0.2.0-rc.2"
-    }
-  },
-  "engines": {
-    "node": ">=20"
-  },
-  "scripts": {
-    "test": "node test/e2e.mjs",
-    "check": "node --check index.mjs && node --check lib/util.mjs && node --check lib/store.mjs && node --check lib/http.mjs && node --check lib/bridge.mjs && node --check lib/manage.mjs",
-    "check:methods": "node scripts/check-app-methods.mjs",
-    "check:contract": "node scripts/audit-contract.mjs",
-    "check:gate": "node scripts/verify-gate-raw.mjs",
-    "check:protocol": "node scripts/verify-app-protocol.mjs",
-    "verify": "npm run check && npm run test && npm run check:contract"
-  },
-  "dependencies": {
-    "qrcode": "^1.5.4",
-    "ws": "^8.21.0"
-  },
-  "repository": {
-    "type": "git",
-    "url": "git+https://github.com/caixuf/dsh-native-mobile.git",
-    "directory": "packages/dsh-mobile-gateway"
-  },
-  "publishConfig": {
-    "access": "public"
-  },
-  "bugs": "https://github.com/caixuf/dsh-native-mobile/issues",
-  "license": "Apache-2.0"
+    "name":  "dsh-mobile-gateway",
+    "version":  "0.1.0",
+    "type":  "module",
+    "description":  "DSH Mobile Gateway — 为原生移动端提供的进程内鉴权网关：设备配对 + 单 WebSocket 通道 + 通用 Remote RPC 转发。",
+    "main":  "./index.mjs",
+    "exports":  {
+                    ".":  "./index.mjs",
+                    "./package.json":  "./package.json"
+                },
+    "files":  [
+                  "index.mjs",
+                  "lib/",
+                  "README.md",
+                  "LICENSE"
+              ],
+    "keywords":  [
+                     "dsh",
+                     "cordis",
+                     "deepseek-harness",
+                     "mobile",
+                     "gateway",
+                     "android"
+                 ],
+    "dsh":  {
+                "compat":  {
+                               "minDshVersion":  "0.2.0-rc.1",
+                               "testedDshVersion":  "0.2.0-rc.2"
+                           }
+            },
+    "engines":  {
+                    "node":  "\u003e=20"
+                },
+    "scripts":  {
+                    "test":  "node test/e2e.mjs",
+                    "check":  "node --check index.mjs \u0026\u0026 node --check lib/util.mjs \u0026\u0026 node --check lib/store.mjs \u0026\u0026 node --check lib/http.mjs \u0026\u0026 node --check lib/bridge.mjs \u0026\u0026 node --check lib/manage.mjs",
+                    "check:methods":  "node scripts/check-app-methods.mjs",
+                    "check:contract":  "node scripts/audit-contract.mjs",
+                    "check:gate":  "node scripts/verify-gate-raw.mjs",
+                    "check:protocol":  "node scripts/verify-app-protocol.mjs",
+                    "verify":  "npm run check \u0026\u0026 npm run test \u0026\u0026 npm run check:contract"
+                },
+    "dependencies":  {
+                         "qrcode":  "^1.5.4",
+                         "ws":  "^8.21.0"
+                     },
+    "repository":  {
+                       "type":  "git",
+                       "url":  "git+https://github.com/caixuf/dsh-native-mobile.git",
+                       "directory":  "packages/dsh-mobile-gateway"
+                   },
+    "publishConfig":  {
+                          "access":  "public"
+                      },
+    "bugs":  "https://github.com/caixuf/dsh-native-mobile/issues",
+    "license":  "Apache-2.0"
 }

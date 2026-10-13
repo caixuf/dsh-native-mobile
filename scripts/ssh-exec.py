@@ -61,13 +61,27 @@ def run(command: str) -> int:
         out = stdout.read().decode("utf-8", "replace")
         err = stderr.read().decode("utf-8", "replace")
         code = stdout.channel.recv_exit_status()
+        # ⚠️ 必须显式指定 encoding：中文 Windows 的控制台默认 GBK，
+        # 远端输出里只要有一个 ✅/❌/→ 之类字符，sys.stdout.write 就会抛
+        # UnicodeEncodeError 把整个脚本打断（实测踩过：脚本其实跑成功了，
+        # 却在打印 ✅ 时崩掉，看起来像失败）。
         if out:
-            sys.stdout.write(out)
+            _write(sys.stdout, out)
         if err:
-            sys.stderr.write(err)
+            _write(sys.stderr, err)
         return code
     finally:
         client.close()
+
+
+def _write(stream, text: str) -> None:
+    """按流自身的编码写出，必要时降级替换，绝不因编码问题抛异常。"""
+    enc = getattr(stream, "encoding", None) or "utf-8"
+    try:
+        stream.write(text)
+    except UnicodeEncodeError:
+        stream.write(text.encode(enc, "replace").decode(enc, "replace"))
+    stream.flush()
 
 
 def run_script(local: str) -> int:
@@ -83,12 +97,31 @@ def run_script(local: str) -> int:
         err = stderr.read().decode("utf-8", "replace")
         code = stdout.channel.recv_exit_status()
         if out:
-            sys.stdout.write(out)
+            _write(sys.stdout, out)
         if err:
-            sys.stderr.write(err)
+            _write(sys.stderr, err)
         return code
     finally:
         client.close()
+
+
+def _split_put(spec: str) -> tuple[str, str]:
+    """拆 `LOCAL:REMOTE`。
+
+    ⚠️ 不能直接 `partition(':')` —— Windows 绝对路径自带盘符
+    （`C:\\Users\\...`），第一个冒号会把路径切成 `C` 和 `\\Users\\...`，
+    表现为 `FileNotFoundError: 'C'`（实测踩过）。
+
+    规则：**从右往左**找那个「后面不含盘符」的冒号，
+    即用 `rsplit(':', 1)`，并要求右侧部分不含 `\\`（远端路径是 POSIX）。
+    """
+    left, sep, right = spec.rpartition(":")
+    if not sep:
+        return spec, ""
+    # 右段像 Windows 盘符（如 `C:\...`）说明整体没有分隔符
+    if len(right) >= 2 and right[1] in ":\\/":
+        return spec, ""
+    return left, right
 
 
 def get(remote: str, local: str) -> int:
@@ -121,13 +154,22 @@ def main() -> int:
     parser.add_argument("--get", metavar="REMOTE:LOCAL", help="下载文件（凭据类文件推荐走这条，不经过命令行）")
     args = parser.parse_args()
 
+    # 兜底：中文 Windows 的控制台默认 GBK，远端输出含 ✅/❌/→ 等字符会
+    # 直接抛 UnicodeEncodeError 把脚本打断。这里统一改成 errors='replace'，
+    # 保证「命令失败」和「打印失败」能被区分开。
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(errors="replace")
+        except Exception:
+            pass
+
     if args.put:
-        local, _, remote = args.put.partition(":")
+        local, remote = _split_put(args.put)
         if not remote:
             parser.error("--put 需要 LOCAL:REMOTE 形式")
         return put(local, remote)
     if args.get:
-        remote, _, local = args.get.partition(":")
+        remote, local = _split_put(args.get)
         if not local:
             parser.error("--get 需要 REMOTE:LOCAL 形式")
         return get(remote, local)

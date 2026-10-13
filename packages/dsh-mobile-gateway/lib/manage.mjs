@@ -7,6 +7,7 @@
  * 绑到 0.0.0.0，用 Host 判断会被自身配置误伤）。
  */
 
+import os from 'node:os';
 import QRCode from 'qrcode';
 import { sendError, sendHtml, sendJson, readJsonBody } from './http.mjs';
 import { isLoopbackAddress } from './util.mjs';
@@ -31,15 +32,17 @@ const PAGE = /* html */ `<!doctype html>
   section { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:20px; margin-bottom:16px; }
   h2 { font-size:14px; margin:0 0 14px; text-transform:uppercase; letter-spacing:.06em; color:var(--muted); }
   .pair { display:flex; gap:20px; align-items:center; flex-wrap:wrap; }
-  .qr { width:180px; height:180px; background:#fff; border-radius:10px; padding:8px; flex:0 0 auto; }
+  .qr { width:190px; height:190px; background:#fff; border-radius:10px; padding:8px; flex:0 0 auto; box-shadow:0 1px 3px rgba(0,0,0,0.06); border:1px solid var(--line); display:flex; align-items:center; justify-content:center; }
   .qr svg { width:100%; height:100%; display:block; }
-  code.code { font:600 16px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace; letter-spacing:.02em;
-             background:var(--bg); border:1px solid var(--line); border-radius:8px; padding:8px 12px; display:inline-block; }
-  .meta { color:var(--muted); font-size:12px; margin-top:10px; }
+  code.code { font:600 15px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace; letter-spacing:.02em;
+             background:var(--bg); border:1px solid var(--line); border-radius:8px; padding:7px 10px; display:inline-block; }
+  .meta { color:var(--muted); font-size:12px; margin-top:8px; }
   button { font:inherit; padding:7px 14px; border-radius:8px; border:1px solid var(--line);
-           background:var(--bg); color:var(--fg); cursor:pointer; }
+           background:var(--bg); color:var(--fg); cursor:pointer; font-weight:500; }
   button.primary { background:#2563eb; border-color:#2563eb; color:#fff; }
+  button.primary:hover { background:#1d4ed8; }
   button.danger { color:#dc2626; }
+  select { font:inherit; padding:7px 12px; border-radius:8px; border:1px solid var(--line); background:var(--bg); color:var(--fg); outline:none; }
   table { width:100%; border-collapse:collapse; font-size:13px; }
   th,td { text-align:left; padding:9px 8px; border-bottom:1px solid var(--line); vertical-align:middle; }
   th { color:var(--muted); font-weight:500; font-size:12px; }
@@ -49,6 +52,7 @@ const PAGE = /* html */ `<!doctype html>
   .empty { color:var(--muted); padding:10px 0; }
   .warn { border-left:3px solid #f59e0b; padding:10px 14px; background:rgba(245,158,11,.08);
           border-radius:0 8px 8px 0; color:var(--fg); font-size:13px; }
+  .tip-box { background:rgba(37,99,235,0.08); border:1px solid rgba(37,99,235,0.2); border-radius:8px; padding:10px 12px; color:var(--fg); font-size:12.5px; margin-top:12px; line-height:1.5; }
 </style>
 </head>
 <body>
@@ -57,26 +61,42 @@ const PAGE = /* html */ `<!doctype html>
   <p class="sub" id="subtitle">加载中…</p>
 
   <section>
-    <h2>账号密码登录（推荐）</h2>
-    <div id="credArea"></div>
+    <h2>扫码 / 6位数字配对码（极速连接 · 推荐）</h2>
+    
+    <div style="margin-bottom:14px;">
+      <label style="font-size:12.5px; color:var(--muted); font-weight:500;">电脑局域网访问地址（手机同局域网/Wi-Fi）：</label>
+      <div style="display:flex; gap:10px; margin-top:5px;">
+        <select id="netSelect" style="flex:1;"></select>
+      </div>
+    </div>
+
+    <div class="pair">
+      <div class="qr" id="qr"></div>
+      <div style="flex:1; min-width:240px;">
+        <div id="pairArea"></div>
+        <div style="margin:12px 0 8px;">
+          <button class="primary" id="copyPairUrl" style="width:100%; padding:9px 14px;">一键复制手机直连配对链接</button>
+        </div>
+        <div class="meta" id="pairMeta"></div>
+      </div>
+    </div>
+
+    <div class="tip-box">
+      <strong>📱 免输网址说明：</strong>手机打开 DSH 遥控 App 点击<strong>「扫码配对」</strong>扫描上方二维码，手机端将<strong>全自动识别电脑地址并立即连接</strong>，彻底免去手动输入 IP 与端口的烦恼！
+    </div>
+
     <p style="margin:16px 0 0">
-      <button class="primary" id="genCred">生成 / 重置密码</button>
-      <span class="meta" style="margin-left:8px">手机上填这两个就能登录，不用配对码</span>
+      <button id="mint">刷新配对码</button>
+      <span class="meta" style="margin-left:8px">刷新后旧码立即作废</span>
     </p>
   </section>
 
   <section>
-    <h2>6位数字配对码 / 扫码（极速连接）</h2>
-    <div class="pair">
-      <div class="qr" id="qr"></div>
-      <div>
-        <div id="pairArea"></div>
-        <div class="meta" id="pairMeta"></div>
-      </div>
-    </div>
+    <h2>账号密码登录（备用）</h2>
+    <div id="credArea"></div>
     <p style="margin:16px 0 0">
-      <button id="mint">刷新配对码</button>
-      <span class="meta" style="margin-left:8px">刷新后旧码立即作废</span>
+      <button class="primary" id="genCred">生成 / 重置密码</button>
+      <span class="meta" style="margin-left:8px">手机上输入账号密码即可登录</span>
     </p>
   </section>
 
@@ -108,32 +128,51 @@ function fmtTime(ms) {
   return new Date(ms).toLocaleString();
 }
 
-async function refresh() {
-  const { data } = await api('/mobile-gateway/manage/api/state');
+let currentSelectedBase = '';
+let currentPairFullUrl = '';
+
+async function refresh(customBase) {
+  const url = '/mobile-gateway/manage/api/state' + (customBase ? '?base=' + encodeURIComponent(customBase) : '');
+  const { data } = await api(url);
   if (data.error) { $('subtitle').textContent = data.error.message; return; }
   $('subtitle').textContent =
     data.instance.name + ' · 网关版本 ' + data.gatewayVersion +
     (data.channel ? ' · 在线事件流 ' + data.channel.eventSockets : '');
 
+  // 局域网网卡下拉菜单
+  if (data.lanAddresses && $('netSelect')) {
+    const sel = $('netSelect');
+    const selected = customBase || data.selectedBaseUrl;
+    currentSelectedBase = selected;
+    const options = data.lanAddresses.map((a) => {
+      const isSel = a.url === selected ? ' selected' : '';
+      return '<option value="' + a.url + '"' + isSel + '>' +
+        a.name + ' (' + a.ip + ') ' + (a.isVirtual ? '[虚拟网卡]' : '[推荐·局域网]') +
+        '</option>';
+    });
+    options.push('<option value="custom"' + (data.isCustomBase ? ' selected' : '') + '>自定义公网/穿透域名…</option>');
+    sel.innerHTML = options.join('');
+  }
+
   const pair = data.pairing;
   if (pair) {
+    currentPairFullUrl = pair.pairFullUrl || '';
     const pinHtml = pair.pinDisplay
-      ? '<div style="font-size:26px; font-weight:700; letter-spacing:4px; font-family:ui-monospace,SFMono-Regular,monospace; color:#2563eb; margin-bottom:6px;">' + pair.pinDisplay + '</div>' +
-        '<div class="meta" style="margin-bottom:8px;">手机 App 输入这 6 位数直接配对</div>'
+      ? '<div style="font-size:28px; font-weight:700; letter-spacing:4px; font-family:ui-monospace,SFMono-Regular,monospace; color:#2563eb; margin-bottom:4px;">' + pair.pinDisplay + '</div>' +
+        '<div class="meta" style="margin-bottom:8px;">手机输入 6 位数或扫码均可</div>'
       : '';
     $('pairArea').innerHTML = pinHtml + '<code class="code" style="font-size:12px; color:var(--muted);">' + pair.display + '</code>';
-    $('qr').innerHTML = pair.qrSvg || '<div class="meta">（二维码不可用，请手动输入配对码）</div>';
+    $('qr').innerHTML = pair.qrSvg || '<div class="meta">生成二维码中…</div>';
     $('pairMeta').textContent =
-      '扫码或手动输入 · 有效期至 ' + fmtTime(pair.expiresAt) +
-      (pair.pairUrl ? ' · 地址 ' + pair.pairUrl : ' · 未配置公网地址');
+      '有效期至 ' + fmtTime(pair.expiresAt) + ' · 直连主机：' + (pair.pairBaseUrl || '自动识别');
   } else {
+    currentPairFullUrl = '';
     $('pairArea').innerHTML = '<span class="meta">当前没有有效配对码</span>';
-    $('qr').innerHTML = '';
+    $('qr').innerHTML = '<div class="meta">暂无配对码</div>';
     $('pairMeta').textContent = '点击「刷新配对码」生成一枚新的';
   }
 
-  // 账号密码卡片。密码明文只在「刚生成」时显示一次（freshPassword），
-  // 之后刷新页面就看不到 —— 落盘的是摘要，取不回来。
+  // 账号密码卡片
   const cred = data.credentials;
   if (!cred) {
     $('credArea').innerHTML = '<div class="empty">还没设置。点下面的按钮生成。</div>';
@@ -171,8 +210,24 @@ async function refresh() {
   }
 }
 
-/** 刚生成的密码明文 —— 只在本次生成后显示，刷新即消失（摘要取不回来）。 */
+/** 刚生成的密码明文 —— 只在本次生成后显示，刷新即消失 */
 let freshPassword = null;
+
+$('netSelect')?.addEventListener('change', async (ev) => {
+  const val = ev.target.value;
+  if (val === 'custom') {
+    const input = prompt('请输入你的公网域名或局域网 IP（例如 http://192.168.31.79:19387 或 https://dsh.example.com）：', currentSelectedBase || 'http://');
+    if (input && input.startsWith('http')) {
+      currentSelectedBase = input.trim().replace(/\\/+$/, '');
+      await refresh(currentSelectedBase);
+    } else {
+      await refresh();
+    }
+  } else {
+    currentSelectedBase = val;
+    await refresh(currentSelectedBase);
+  }
+});
 
 document.addEventListener('click', async (ev) => {
   const btn = ev.target.closest('button');
@@ -181,10 +236,22 @@ document.addEventListener('click', async (ev) => {
     btn.disabled = true;
     await api('/mobile-gateway/manage/api/mint', {});
     btn.disabled = false;
-    await refresh();
+    await refresh(currentSelectedBase);
     return;
   }
-  // 生成 / 重置密码：返回的明文只展示一次
+  if (btn.id === 'copyPairUrl') {
+    if (currentPairFullUrl) {
+      try {
+        await navigator.clipboard.writeText(currentPairFullUrl);
+        btn.textContent = '已复制！可直接发送到手机或输入法粘贴';
+        setTimeout(() => { btn.textContent = '一键复制手机直连配对链接'; }, 2000);
+      } catch {
+        prompt('请复制以下配对链接：', currentPairFullUrl);
+      }
+    }
+    return;
+  }
+  // 生成 / 重置密码
   if (btn.id === 'genCred') {
     if (!confirm('重置后旧密码立即失效，手机上需要重新登录。确定？')) return;
     btn.disabled = true;
@@ -193,7 +260,7 @@ document.addEventListener('click', async (ev) => {
     if (r.data?.password) {
       freshPassword = r.data.password;
     }
-    await refresh();
+    await refresh(currentSelectedBase);
     return;
   }
   // 复制密码到剪贴板
@@ -217,11 +284,11 @@ document.addEventListener('click', async (ev) => {
   btn.disabled = true;
   await api('/mobile-gateway/manage/api/' + act, { deviceId: btn.dataset.id });
   btn.disabled = false;
-  await refresh();
+  await refresh(currentSelectedBase);
 });
 
 refresh();
-setInterval(refresh, 5000);
+setInterval(() => refresh(currentSelectedBase), 5000);
 </script>
 </body>
 </html>`;
@@ -236,10 +303,47 @@ export function createManageApi({ store, log, config, instance, gatewayVersion, 
     }
   }
 
-  /** 二维码里放的是什么，取决于是否配置了公网地址。 */
-  function pairPayload() {
-    const base = (config.publicBaseUrl || '').trim().replace(/\/+$/, '');
-    return base ? `${base}/mobile-gateway/pair` : null;
+  function extractPort(req) {
+    const host = req?.headers?.host || '';
+    if (host.includes(':')) return host.split(':')[1];
+    return '19387';
+  }
+
+  function getLanCandidates(port) {
+    const interfaces = os.networkInterfaces();
+    const list = [];
+    for (const [name, addrs] of Object.entries(interfaces)) {
+      if (!addrs) continue;
+      for (const addr of addrs) {
+        if (addr.family === 'IPv4' && !addr.internal) {
+          const isVirtual = /wsl|vEthernet|vmnet|docker|hyper-v|tailscale|loopback/i.test(name);
+          list.push({
+            name,
+            ip: addr.address,
+            url: `http://${addr.address}:${port}`,
+            isVirtual,
+          });
+        }
+      }
+    }
+    // 物理局域网排在前面
+    list.sort((a, b) => (a.isVirtual === b.isVirtual ? 0 : a.isVirtual ? 1 : -1));
+    return list;
+  }
+
+  function resolvePairBase(req, overrideBase) {
+    if (overrideBase && overrideBase.trim()) {
+      return overrideBase.trim().replace(/\/+$/, '');
+    }
+    if (config.publicBaseUrl && config.publicBaseUrl.trim()) {
+      return config.publicBaseUrl.trim().replace(/\/+$/, '');
+    }
+    const port = extractPort(req);
+    const lans = getLanCandidates(port);
+    if (lans.length > 0) {
+      return lans[0].url;
+    }
+    return `http://${req?.headers?.host || '127.0.0.1:' + port}`;
   }
 
   function guard(req, res) {
@@ -250,23 +354,38 @@ export function createManageApi({ store, log, config, instance, gatewayVersion, 
     return true;
   }
 
-  async function statePayload() {
+  async function statePayload(req, overrideBase) {
     const pairing = store.currentPairing();
-    const pairUrl = pairPayload();
-    // 凭据视图（仅回环可达）。密码明文**不**由此返回 —— 只在刚生成时
-    // 由 ensureCredentials() 交回调用方展示一次，落盘的始终是摘要。
+    const port = extractPort(req);
+    const lanAddresses = getLanCandidates(port);
+    const selectedBaseUrl = resolvePairBase(req, overrideBase);
+    const pairUrl = `${selectedBaseUrl}/mobile-gateway/pair`;
+    const pairFullUrl = pairing ? `${pairUrl}#${pairing.display}` : null;
     const credentials = store.credentialsView();
+
+    let qrSvg = null;
+    if (pairFullUrl) {
+      qrSvg = await qrSvgFor(pairFullUrl);
+    } else if (pairing) {
+      qrSvg = await qrSvgFor(pairing.display);
+    }
+
     return {
       gatewayVersion,
       instance,
       devices: store.list(),
       channel: describeChannel?.() ?? null,
       credentials,
+      lanAddresses,
+      selectedBaseUrl,
+      isCustomBase: Boolean(overrideBase && overrideBase.trim()),
       pairing: pairing
         ? {
             ...pairing,
             pairUrl,
-            qrSvg: pairUrl ? await qrSvgFor(`${pairUrl}#${pairing.display}`) : null,
+            pairBaseUrl: selectedBaseUrl,
+            pairFullUrl,
+            qrSvg,
           }
         : null,
     };
@@ -281,7 +400,9 @@ export function createManageApi({ store, log, config, instance, gatewayVersion, 
     }
 
     if (req.method === 'GET' && pathname === '/mobile-gateway/manage/api/state') {
-      sendJson(res, 200, await statePayload());
+      const parsedUrl = new URL(req.url, 'http://localhost');
+      const customBase = parsedUrl.searchParams.get('base');
+      sendJson(res, 200, await statePayload(req, customBase));
       return true;
     }
 
@@ -291,7 +412,9 @@ export function createManageApi({ store, log, config, instance, gatewayVersion, 
         origin: String(req.headers.host ?? 'localhost'),
       });
       log.info('pairing code minted', { expiresAt: pairing.expiresAt });
-      sendJson(res, 200, await statePayload());
+      const parsedUrl = new URL(req.url, 'http://localhost');
+      const customBase = parsedUrl.searchParams.get('base');
+      sendJson(res, 200, await statePayload(req, customBase));
       return true;
     }
 
@@ -315,8 +438,7 @@ export function createManageApi({ store, log, config, instance, gatewayVersion, 
       return true;
     }
 
-    // 生成 / 重置密码。明文只在**这一次响应**里返回，之后刷新页面即看不到
-    // （落盘的是 SHA-256 摘要，取不回来）—— 用户需要记下或复制。
+    // 生成 / 重置密码。明文只在**这一次响应**里返回
     if (req.method === 'POST' && pathname === '/mobile-gateway/manage/api/credentials') {
       const body = await readJsonBody(req);
       const action = String(body.action ?? 'regenerate');
@@ -324,9 +446,7 @@ export function createManageApi({ store, log, config, instance, gatewayVersion, 
         sendError(res, 400, 'bad_action', `未知动作 ${action}`);
         return true;
       }
-      // 生成一套新的（覆盖旧的）。旧密码无需提供 —— 操作者已在回环上。
       const { randomBytes } = await import('node:crypto');
-      const { sha256Hex } = await import('./store.mjs');
       const ALPHABET = '23456789ABCDEFGHJKMNPQRSTUVWXYZ';
       const bytes = randomBytes(12);
       let password = '';

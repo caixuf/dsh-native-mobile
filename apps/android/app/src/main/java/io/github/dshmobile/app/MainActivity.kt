@@ -162,7 +162,10 @@ private fun AppRoot(app: DshMobileApp) {
                 }
                 ChatScreen(
                     title = current?.title.orEmpty(),
-                    onBack = { route = Route.Sessions },
+                    onBack = {
+                        sessionsVm.load()
+                        route = Route.Sessions
+                    },
                     vm = chatVm,
                     hostName = (state.link as? LinkState.Ready)?.hostName?.takeIf { it.isNotBlank() },
                     workspace = current?.workspace,

@@ -399,7 +399,35 @@ fun PairScreen(
                 color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
             )
 
-            Spacer(Modifier.height(DshTheme.m.lg))
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.End,
+            ) {
+                val clipboardManager = androidx.compose.ui.platform.LocalClipboardManager.current
+                androidx.compose.material3.TextButton(
+                    onClick = {
+                        val clip = clipboardManager.getText()?.text?.trim().orEmpty()
+                        if (clip.isNotBlank()) {
+                            val target = io.github.dshmobile.app.net.PairingClient.parsePairingTarget(clip)
+                            if (target != null) {
+                                baseUrl = target.baseUrl
+                                pin = target.code
+                                if (target.code.isNotBlank()) {
+                                    onPair(target.baseUrl, target.code, deviceName)
+                                }
+                            } else if (clip.startsWith("http://") || clip.startsWith("https://")) {
+                                baseUrl = clip
+                            } else {
+                                pin = clip
+                            }
+                        }
+                    },
+                ) {
+                    Text("从剪贴板一键粘贴", style = MaterialTheme.typography.labelMedium)
+                }
+            }
+
+            Spacer(Modifier.height(DshTheme.m.sm))
 
             Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                 OutlinedButton(
@@ -544,13 +572,18 @@ fun PairScreen(
                         if (target.code.isNotBlank()) {
                             pin = target.code
                             selectedTab = 0
+                            onPair(target.baseUrl, target.code, deviceName)
                         }
                     } else {
-                        if (raw.startsWith("dshm") || raw.startsWith("DSHM") || raw.all { it.isDigit() }) {
-                            pin = raw
+                        val clean = raw.trim()
+                        if (clean.startsWith("dshm") || clean.startsWith("DSHM") || clean.all { it.isDigit() }) {
+                            pin = clean
                             selectedTab = 0
+                            if (baseUrl.isNotBlank()) {
+                                onPair(baseUrl.trim(), pin.trim(), deviceName)
+                            }
                         } else {
-                            baseUrl = raw.trim()
+                            baseUrl = clean
                         }
                     }
                 },
