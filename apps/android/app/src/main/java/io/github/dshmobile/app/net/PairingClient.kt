@@ -97,20 +97,10 @@ object PairingClient {
         }
     }
 
-    /** 构造一个空的 prompt 负载：`content` 是 PromptContentPart 数组。 */
-    fun textPrompt(text: String): JsonObject = buildJsonObject {
-        put(
-            "content",
-            buildJsonObject {
-                put(
-                    "value",
-                    kotlinx.serialization.json.buildJsonArray {
-                        add(buildJsonObject { put("type", "text"); put("text", text) })
-                    },
-                )
-            },
-        )
-    }
+    // 注：这里曾有一个 textPrompt() helper，形状是错的（把 content 数组包进了
+    // {value: …}），而且没有任何调用点 —— 已删除。发消息的正确构造在
+    // ChatViewModel.send()：content 直接就是 [{type:'text', text}] 数组，
+    // 且 session.prompt 还需要必填的 requestId。
 }
 
 data class PairingTarget(val baseUrl: String, val code: String)
