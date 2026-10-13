@@ -118,9 +118,18 @@ await probe('B2 /api 伪造令牌 → 401', '/mobile-gateway/api/session/list', 
 // ---------------------------------------------------------------------------
 console.log('\n■ C. 账号密码登录（App 主路径）');
 // ---------------------------------------------------------------------------
+// 🔴 C0 会**重置电脑端密码**，让之前发出去的密码立刻失效 —— 这是个副作用，
+// 必须显式 opt-in，不能默认执行。
+//
+// 踩过的坑：C0 默认跑，于是「巡检一次」就把当前密码换掉了，
+// 紧接着用旧密码跑别的脚本（如 verify-mux-events.mjs）会以 `mismatch` 失败，
+// 看起来像「功能坏了」，实际是巡检自己改了凭据。
+//
+// 现在：默认**不**重置，改用 `DSH_MOBILE_PASSWORD` 环境变量里已有的密码；
+// 只有显式加 `--reset-credentials` 才去生成新的。
+const resetCredentials = process.argv.includes('--reset-credentials');
 let credentials = null;
-if (!publicMode) {
-  // 管理面仅回环，公网测不到凭据就跳过
+if (!publicMode && resetCredentials) {
   const cred = await probe('C0 生成/重置凭据（管理面，仅回环）', '/mobile-gateway/manage/api/credentials', {
     method: 'POST',
     body: { action: 'regenerate' },
@@ -131,6 +140,11 @@ if (!publicMode) {
   } catch {
     /* 忽略 */
   }
+} else if (!publicMode) {
+  // 只读地确认管理面可达（不产生副作用）。
+  await probe('C0 管理面可达（仅回环，只读，不改凭据）', '/mobile-gateway/manage/api/state', {
+    expect: [200],
+  });
 }
 
 const USERNAME = credentials?.username ?? 'dsh';
