@@ -66,7 +66,7 @@ const PAGE = /* html */ `<!doctype html>
   </section>
 
   <section>
-    <h2>设备配对（备选）</h2>
+    <h2>6位数字配对码 / 扫码（极速连接）</h2>
     <div class="pair">
       <div class="qr" id="qr"></div>
       <div>
@@ -117,7 +117,11 @@ async function refresh() {
 
   const pair = data.pairing;
   if (pair) {
-    $('pairArea').innerHTML = '<code class="code">' + pair.display + '</code>';
+    const pinHtml = pair.pinDisplay
+      ? '<div style="font-size:26px; font-weight:700; letter-spacing:4px; font-family:ui-monospace,SFMono-Regular,monospace; color:#2563eb; margin-bottom:6px;">' + pair.pinDisplay + '</div>' +
+        '<div class="meta" style="margin-bottom:8px;">手机 App 输入这 6 位数直接配对</div>'
+      : '';
+    $('pairArea').innerHTML = pinHtml + '<code class="code" style="font-size:12px; color:var(--muted);">' + pair.display + '</code>';
     $('qr').innerHTML = pair.qrSvg || '<div class="meta">（二维码不可用，请手动输入配对码）</div>';
     $('pairMeta').textContent =
       '扫码或手动输入 · 有效期至 ' + fmtTime(pair.expiresAt) +

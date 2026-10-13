@@ -502,6 +502,18 @@ check('配对码一次性（重放被拒）', replay.status === 404, `status=${r
 const malformed = await pair('not-a-code');
 check('畸形配对码被拒', malformed.status === 403, `status=${malformed.status}`);
 
+// 验证 6 位纯数字 PIN 配对
+const mintRes = await fetch(`${base}/mobile-gateway/manage/api/mint`, {
+  method: 'POST',
+  headers: { 'content-type': 'application/json' },
+  body: '{}',
+});
+const pinState = await mintRes.json();
+const pin = pinState?.pairing?.pin;
+check('铸码包含 6 位纯数字 PIN', /^\d{6}$/.test(pin), `pin=${pin}`);
+const pinPaired = await pair(pin);
+check('6位数字 PIN 首次配对成功', pinPaired.status === 200 && !!pinPaired.json.token, `status=${pinPaired.status}`);
+
 console.log('\n[2] 鉴权');
 check('无令牌 → 401', (await api('host.describe')).status === 401);
 check('伪造令牌 → 401', (await api('host.describe', { token: 'nope' })).status === 401);

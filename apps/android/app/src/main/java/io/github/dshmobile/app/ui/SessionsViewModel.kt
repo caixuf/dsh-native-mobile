@@ -127,15 +127,26 @@ class SessionsViewModel(private val conn: DshConnection?) : ViewModel() {
         }
     }
 
-    fun create(onCreated: (SessionRow) -> Unit) {
+    fun create(cwd: String? = null, onCreated: (SessionRow) -> Unit) {
         val c = conn ?: return
         viewModelScope.launch {
             // session/create 的 args 形参名是 `request`（实测确认）。
-            // 传空对象让主机用默认值建会话。
-            c.call("session.create", buildJsonObject { put("request", buildJsonObject {}) })
-                .onSuccess { value ->
+            // 支持传入 cwd 绑定已有电脑工作区。
+            c.call(
+                "session.create",
+                buildJsonObject {
+                    put(
+                        "request",
+                        buildJsonObject {
+                            if (!cwd.isNullOrBlank()) {
+                                put("cwd", cwd)
+                            }
+                        },
+                    )
+                },
+            ).onSuccess { value ->
                 val id = JsonRender.str(value.jsonObject, "sessionId") ?: return@onSuccess
-                val row = SessionRow(id, "新会话", "", System.currentTimeMillis(), false)
+                val row = SessionRow(id, "新会话", "", System.currentTimeMillis(), false, workspace = cwd)
                 _state.update { it.copy(rows = listOf(row) + it.rows) }
                 onCreated(row)
             }.onFailure { error -> _state.update { it.copy(error = error.message) } }

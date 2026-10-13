@@ -29,6 +29,11 @@ data class ChatLine(
     val role: String,
     val text: String,
     val kind: String,
+    val toolName: String? = null,
+    val toolArgs: String? = null,
+    val toolResult: String? = null,
+    val toolCallId: String? = null,
+    val isError: Boolean = false,
 )
 
 /**
@@ -464,24 +469,57 @@ class ChatViewModel(private val conn: DshConnection?) : ViewModel() {
         val role = JsonRender.roleOf(entry)
         val data = entry["data"] as? JsonObject
 
-        // tool/call 特例：arguments 是字符串，需要单独拼装，不能走通用 textOf。
-        val text = if (kind == "tool/call") {
-            val name = JsonRender.str(data, "name") ?: "工具"
-            val args = data?.get("arguments")
-            if (args == null) "调用 $name" else "调用 $name · ${JsonRender.compact(args, 200)}"
-        } else {
-            // 优先按 content 数组抽正文 —— 实测 tool/result 的正文在
-            // data.message.content[]（元素是 {type:'text',text} 对象），
-            // 直接走 textOf 会落到 compact() 而显示 [object Object]。
-            val content = (data?.get("message") as? JsonObject)?.get("content")
-                ?: data?.get("content")
-            JsonRender.contentToText(content)
-                ?: JsonRender.textOf(data)
-                ?: JsonRender.textOf(entry["message"])
-                ?: JsonRender.textOf(entry["content"])
-                ?: return null
+        var toolName: String? = null
+        var toolArgs: String? = null
+        var toolResult: String? = null
+        var toolCallId: String? = null
+        var isError = false
+
+        val text = when (kind) {
+            "tool/call" -> {
+                toolName = JsonRender.str(data, "name") ?: "工具"
+                toolCallId = JsonRender.str(data, "callId", "id")
+                val rawArgs = data?.get("arguments") ?: data?.get("input")
+                toolArgs = when (rawArgs) {
+                    is kotlinx.serialization.json.JsonPrimitive -> rawArgs.content
+                    null -> null
+                    else -> rawArgs.toString()
+                }
+                if (rawArgs == null) "调用 $toolName" else "调用 $toolName · ${JsonRender.compact(rawArgs, 200)}"
+            }
+            "tool/result" -> {
+                val message = data?.get("message") as? JsonObject
+                toolCallId = JsonRender.str(message ?: data, "toolCallId", "callId")
+                isError = JsonRender.bool(message ?: data, "isError", "error") ?: false
+                val content = message?.get("content") ?: data?.get("content") ?: data?.get("result")
+                val res = JsonRender.contentToText(content)
+                    ?: JsonRender.textOf(content)
+                    ?: (data ?: entry)?.let { JsonRender.compact(it, 500) }
+                    ?: ""
+                toolResult = res
+                res
+            }
+            else -> {
+                val content = (data?.get("message") as? JsonObject)?.get("content")
+                    ?: data?.get("content")
+                JsonRender.contentToText(content)
+                    ?: JsonRender.textOf(data)
+                    ?: JsonRender.textOf(entry["message"])
+                    ?: JsonRender.textOf(entry["content"])
+                    ?: return null
+            }
         }
-        return ChatLine(key = "$seq-$kind-$index", role = role, text = text, kind = kind)
+        return ChatLine(
+            key = "$seq-$kind-$index",
+            role = role,
+            text = text,
+            kind = kind,
+            toolName = toolName,
+            toolArgs = toolArgs,
+            toolResult = toolResult,
+            toolCallId = toolCallId,
+            isError = isError,
+        )
     }
 
     private fun detectRunning(page: JsonObject): Boolean {

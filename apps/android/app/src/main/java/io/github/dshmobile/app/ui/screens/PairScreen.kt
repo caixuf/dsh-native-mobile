@@ -1,28 +1,5 @@
 package io.github.dshmobile.app.ui.screens
 
-import io.github.dshmobile.app.ui.icons.DshIcons
-
-import io.github.dshmobile.app.ui.components.DshIcon
-
-import io.github.dshmobile.app.ui.components.ConnectionDot
-
-import io.github.dshmobile.app.ui.DshTheme
-
-import androidx.compose.material3.ButtonDefaults
-
-import androidx.compose.material3.Surface
-import androidx.compose.material3.OutlinedTextFieldDefaults
-
-import androidx.compose.ui.text.font.FontFamily
-
-import androidx.compose.ui.text.input.VisualTransformation
-
-import androidx.compose.foundation.rememberScrollState
-
-import androidx.compose.foundation.layout.imePadding
-import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.verticalScroll
-
 import android.Manifest
 import android.content.pm.PackageManager
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -35,6 +12,7 @@ import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -43,51 +21,69 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.OutlinedTextFieldDefaults
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Tab
+import androidx.compose.material3.TabRow
+import androidx.compose.material3.TabRowDefaults
+import androidx.compose.material3.TabRowDefaults.tabIndicatorOffset
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLifecycleOwner
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
-import androidx.compose.foundation.text.KeyboardOptions
-import androidx.compose.ui.text.input.ImeAction
 import androidx.core.content.ContextCompat
 import com.google.zxing.BinaryBitmap
 import com.google.zxing.DecodeHintType
 import com.google.zxing.MultiFormatReader
 import com.google.zxing.PlanarYUVLuminanceSource
 import com.google.zxing.common.HybridBinarizer
+import io.github.dshmobile.app.ui.DshTheme
+import io.github.dshmobile.app.ui.components.ConnectionDot
+import io.github.dshmobile.app.ui.components.DshIcon
+import io.github.dshmobile.app.ui.icons.DshIcons
 import java.util.concurrent.Executors
 
 /**
- * 配对页的输入框。
- *
- * 为什么不用 M3 默认的 `OutlinedTextField` + 浮动 label：
- * 浮动 label 在有值时缩到框里、会跳动，中文场景下尤其明显（占位与标签都是中文）。
- * 这里改成**标签固定在上方**，值区只放输入内容 —— 更稳，也更像设置页。
- *
- * @param monospace 地址这类技术值用等宽字体，便于核对端口号。
+ * 配对页输入框。
+ * 标签固定在上方，值区只放输入内容。
  */
 @Composable
 private fun PairField(
@@ -141,12 +137,80 @@ private fun PairField(
 }
 
 /**
- * 配对 / 登录页。
+ * 6 位数字配对码独立卡槽输入组件（对齐 MiniMax 极简连接体验）。
+ */
+@Composable
+private fun PinInputBoxes(
+    pin: String,
+    onPinChange: (String) -> Unit,
+    length: Int = 6,
+    modifier: Modifier = Modifier,
+) {
+    val focusRequester = remember { FocusRequester() }
+
+    Box(modifier = modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
+        // 捕获真实输入事件的隐藏输入框
+        BasicTextField(
+            value = pin,
+            onValueChange = { input ->
+                val filtered = input.filter { it.isDigit() }.take(length)
+                onPinChange(filtered)
+            },
+            keyboardOptions = KeyboardOptions(
+                keyboardType = KeyboardType.Number,
+                imeAction = ImeAction.Done,
+            ),
+            modifier = Modifier
+                .size(1.dp)
+                .alpha(0.01f)
+                .focusRequester(focusRequester),
+        )
+
+        // 6 个独立展示的圆角卡槽
+        Row(
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            modifier = Modifier
+                .clickable { focusRequester.requestFocus() }
+                .padding(vertical = 6.dp),
+        ) {
+            for (i in 0 until length) {
+                val digit = pin.getOrNull(i)?.toString() ?: ""
+                val isFocused = pin.length == i || (i == length - 1 && pin.length == length)
+
+                Surface(
+                    shape = RoundedCornerShape(10.dp),
+                    color = MaterialTheme.colorScheme.surface,
+                    border = androidx.compose.foundation.BorderStroke(
+                        if (isFocused) 2.dp else 1.dp,
+                        if (isFocused) MaterialTheme.colorScheme.primary
+                        else MaterialTheme.colorScheme.outlineVariant,
+                    ),
+                    modifier = Modifier.size(width = 44.dp, height = 52.dp),
+                ) {
+                    Box(contentAlignment = Alignment.Center) {
+                        Text(
+                            text = digit,
+                            style = MaterialTheme.typography.titleLarge.copy(
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 22.sp,
+                                fontFamily = FontFamily.Monospace,
+                            ),
+                            color = MaterialTheme.colorScheme.onSurface,
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+/**
+ * 配对 / 连接页。
  *
- * **主流程是账号密码**（用户反馈配对码要复制 22 位太麻烦）：
- * 电脑端管理面板显示账号与密码，手机上三个输入框填完点登录。
- *
- * 配对码与扫码收在「备选」折叠区，保留给不方便看密码的场景。
+ * 支持两种首选方式：
+ *  1. **6位数字配对码**（极速连接，无需复杂密码，对齐 MiniMax 交互）；
+ *  2. **账号密码登录**（持久管理密码）。
  */
 @Composable
 fun PairScreen(
@@ -155,11 +219,13 @@ fun PairScreen(
     onLogin: (baseUrl: String, username: String, password: String, deviceName: String) -> Unit,
     onPair: (baseUrl: String, code: String, deviceName: String) -> Unit,
     deviceName: String,
+    onBack: (() -> Unit)? = null,
 ) {
+    var selectedTab by remember { mutableIntStateOf(0) } // 0: 6位数字配对, 1: 账号密码
     var baseUrl by remember { mutableStateOf("") }
+    var pin by remember { mutableStateOf("") }
     var username by remember { mutableStateOf("dsh") }
     var password by remember { mutableStateOf("") }
-    var code by remember { mutableStateOf("") }
     var scanning by remember { mutableStateOf(false) }
     var probe by remember { mutableStateOf<String?>(null) }
 
@@ -170,6 +236,10 @@ fun PairScreen(
         onDispose { scannerExecutor.shutdown() }
     }
 
+    if (onBack != null) {
+        androidx.activity.compose.BackHandler(onBack = onBack)
+    }
+
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -177,18 +247,43 @@ fun PairScreen(
             .imePadding()
             .padding(horizontal = DshTheme.m.xl, vertical = DshTheme.m.lg),
     ) {
-        Spacer(Modifier.height(DshTheme.m.md))
+        // 返回按钮
+        if (onBack != null) {
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .clickable { onBack() }
+                    .padding(vertical = 4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                IconButton(onClick = onBack) {
+                    DshIcon(
+                        DshIcons.ArrowBack,
+                        contentDescription = "返回",
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        size = 22.dp,
+                    )
+                }
+                Spacer(Modifier.width(4.dp))
+                Text(
+                    "返回主机列表",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            Spacer(Modifier.height(DshTheme.m.sm))
+        } else {
+            Spacer(Modifier.height(DshTheme.m.md))
+        }
 
-        // ── 品牌区：说清「这是什么」 ──
-        // 文案对齐逆向 MiniMax 移动端的 `computer_use_hero_title`
-        // （= 像你一样操作你的本地电脑）：先讲清价值，再要用户填东西。
+        // ── 品牌区 ──
         Row(verticalAlignment = Alignment.CenterVertically) {
             Box(
                 Modifier
-                    .size(44.dp)
+                    .size(46.dp)
                     .background(
                         MaterialTheme.colorScheme.primaryContainer,
-                        RoundedCornerShape(13.dp),
+                        RoundedCornerShape(14.dp),
                     ),
                 contentAlignment = Alignment.Center,
             ) {
@@ -196,7 +291,7 @@ fun PairScreen(
                     DshIcons.Desktop,
                     contentDescription = null,
                     tint = MaterialTheme.colorScheme.primary,
-                    size = 24.dp,
+                    size = 25.dp,
                 )
             }
             Spacer(Modifier.width(DshTheme.m.md))
@@ -204,57 +299,69 @@ fun PairScreen(
                 Text(
                     "连接你的电脑",
                     style = MaterialTheme.typography.headlineSmall,
+                    fontWeight = FontWeight.Bold,
                     color = MaterialTheme.colorScheme.onBackground,
                 )
                 Text(
-                    "用手机遥控电脑上的 DSH，干活还是在电脑上",
+                    "手机作为遥控器，在本地电脑上执行工作流",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
         }
 
-        Spacer(Modifier.height(DshTheme.m.xl))
+        Spacer(Modifier.height(DshTheme.m.lg))
 
-        // ── 输入区 ──
-        // 🔴 onValueChange 里**不要**对值做 trim()/uppercase() 变换。
-        // 早前写成了 `code = it.uppercase()` / `baseUrl = it.trim()`，
-        // 每次输入都重建字符串，导致部分输入法下粘贴失效、光标跳动。
-        // 正确做法：值原样保存，提交时才规范化。
+        // ── 模式切换 TabRow ──
+        TabRow(
+            selectedTabIndex = selectedTab,
+            containerColor = MaterialTheme.colorScheme.surfaceContainer,
+            contentColor = MaterialTheme.colorScheme.primary,
+            indicator = { tabPositions ->
+                TabRowDefaults.SecondaryIndicator(
+                    modifier = Modifier.tabIndicatorOffset(tabPositions[selectedTab]),
+                    color = MaterialTheme.colorScheme.primary,
+                )
+            },
+        ) {
+            Tab(
+                selected = selectedTab == 0,
+                onClick = { selectedTab = 0 },
+                text = {
+                    Text(
+                        "6位数字配对",
+                        style = MaterialTheme.typography.labelLarge,
+                        fontWeight = if (selectedTab == 0) FontWeight.Bold else FontWeight.Normal,
+                    )
+                },
+            )
+            Tab(
+                selected = selectedTab == 1,
+                onClick = { selectedTab = 1 },
+                text = {
+                    Text(
+                        "账号密码登录",
+                        style = MaterialTheme.typography.labelLarge,
+                        fontWeight = if (selectedTab == 1) FontWeight.Bold else FontWeight.Normal,
+                    )
+                },
+            )
+        }
+
+        Spacer(Modifier.height(DshTheme.m.lg))
+
+        // ── 电脑主机地址 ──
         PairField(
             value = baseUrl,
             onValueChange = { baseUrl = it; probe = null },
-            label = "电脑地址",
-            placeholder = "https://203.0.113.10:2444",
+            label = "电脑网关地址",
+            placeholder = "http://192.168.x.x:2444 或 https://...",
             keyboardType = KeyboardType.Uri,
             imeAction = ImeAction.Next,
             monospace = true,
         )
 
-        Spacer(Modifier.height(DshTheme.m.md))
-
-        PairField(
-            value = username,
-            onValueChange = { username = it },
-            label = "账号",
-            placeholder = "dsh",
-            keyboardType = KeyboardType.Text,
-            imeAction = ImeAction.Next,
-        )
-
-        Spacer(Modifier.height(DshTheme.m.md))
-
-        PairField(
-            value = password,
-            onValueChange = { password = it },
-            label = "密码",
-            placeholder = "管理面板上显示的 12 位密码",
-            keyboardType = KeyboardType.Password,
-            imeAction = ImeAction.Done,
-            isPassword = true,
-        )
-
-        // 地址探测结果：让用户填完地址就知道通没通，而不是直接点登录碰运气
+        // 探测结果
         probe?.let {
             Spacer(Modifier.height(DshTheme.m.sm))
             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -268,8 +375,137 @@ fun PairScreen(
             }
         }
 
-        // 🔴 早前根本没渲染 error：登录失败（TLS 拒绝、超时、密码错）时页面
-        // 纹丝不动，用户只能干等。实测（公网 2444 端口）踩中过一次。
+        Spacer(Modifier.height(DshTheme.m.md))
+
+        // ── 选项卡 0：6位数字配对 ──
+        if (selectedTab == 0) {
+            Text(
+                "电脑端 6 位数字配对码",
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Spacer(Modifier.height(6.dp))
+
+            PinInputBoxes(
+                pin = pin,
+                onPinChange = { pin = it },
+                length = 6,
+            )
+
+            Spacer(Modifier.height(8.dp))
+            Text(
+                "在电脑运行网关并在管理面板查看 6 位数配对码，或使用下方扫码",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
+            )
+
+            Spacer(Modifier.height(DshTheme.m.lg))
+
+            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                OutlinedButton(
+                    onClick = { scanning = true },
+                    enabled = !busy,
+                    shape = MaterialTheme.shapes.medium,
+                    modifier = Modifier
+                        .weight(1f)
+                        .height(48.dp),
+                ) {
+                    DshIcon(
+                        DshIcons.QrCode,
+                        contentDescription = null,
+                        size = 18.dp,
+                    )
+                    Spacer(Modifier.width(6.dp))
+                    Text("扫码配对")
+                }
+
+                Button(
+                    onClick = { onPair(baseUrl.trim(), pin.trim(), deviceName) },
+                    enabled = !busy && baseUrl.isNotBlank() && (pin.length == 6 || pin.length >= 16),
+                    shape = MaterialTheme.shapes.medium,
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = MaterialTheme.colorScheme.primary,
+                        contentColor = MaterialTheme.colorScheme.onPrimary,
+                    ),
+                    modifier = Modifier
+                        .weight(1.3f)
+                        .height(48.dp),
+                ) {
+                    if (busy) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(18.dp),
+                            strokeWidth = 2.dp,
+                            color = MaterialTheme.colorScheme.onPrimary,
+                        )
+                        Spacer(Modifier.width(DshTheme.m.sm))
+                        Text("正在配对…")
+                    } else {
+                        Text("立即配对", fontWeight = FontWeight.SemiBold)
+                    }
+                }
+            }
+        } else {
+            // ── 选项卡 1：账号密码登录 ──
+            PairField(
+                value = username,
+                onValueChange = { username = it },
+                label = "账号",
+                placeholder = "dsh",
+                keyboardType = KeyboardType.Text,
+                imeAction = ImeAction.Next,
+            )
+
+            Spacer(Modifier.height(DshTheme.m.md))
+
+            PairField(
+                value = password,
+                onValueChange = { password = it },
+                label = "密码",
+                placeholder = "管理面板上显示的 12 位密码",
+                keyboardType = KeyboardType.Password,
+                imeAction = ImeAction.Done,
+                isPassword = true,
+            )
+
+            Spacer(Modifier.height(DshTheme.m.lg))
+
+            Button(
+                onClick = {
+                    onLogin(
+                        baseUrl.trim(),
+                        username.trim(),
+                        password,
+                        deviceName,
+                    )
+                },
+                enabled = !busy &&
+                    baseUrl.isNotBlank() &&
+                    username.isNotBlank() &&
+                    password.isNotBlank(),
+                shape = MaterialTheme.shapes.medium,
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = MaterialTheme.colorScheme.primary,
+                    contentColor = MaterialTheme.colorScheme.onPrimary,
+                ),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(48.dp),
+            ) {
+                if (busy) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(18.dp),
+                        strokeWidth = 2.dp,
+                        color = MaterialTheme.colorScheme.onPrimary,
+                    )
+                    Spacer(Modifier.width(DshTheme.m.sm))
+                    Text("正在连接…")
+                } else {
+                    Text("登录并连接", fontWeight = FontWeight.SemiBold)
+                }
+            }
+        }
+
+        // 错误提示条
         if (error != null) {
             Spacer(Modifier.height(DshTheme.m.md))
             Surface(
@@ -297,81 +533,7 @@ fun PairScreen(
             }
         }
 
-        Spacer(Modifier.height(DshTheme.m.xl))
-
-        Button(
-            onClick = {
-                onLogin(
-                    baseUrl.trim(),
-                    username.trim(),
-                    password,
-                    deviceName,
-                )
-            },
-            enabled = !busy &&
-                baseUrl.isNotBlank() &&
-                username.isNotBlank() &&
-                password.isNotBlank(),
-            shape = MaterialTheme.shapes.medium,
-            colors = ButtonDefaults.buttonColors(
-                containerColor = MaterialTheme.colorScheme.primary,
-                contentColor = MaterialTheme.colorScheme.onPrimary,
-            ),
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(50.dp),
-        ) {
-            if (busy) {
-                CircularProgressIndicator(
-                    modifier = Modifier.size(18.dp),
-                    strokeWidth = 2.dp,
-                    color = MaterialTheme.colorScheme.onPrimary,
-                )
-                Spacer(Modifier.width(DshTheme.m.sm))
-                Text("正在连接电脑…", style = MaterialTheme.typography.labelLarge)
-            } else {
-                Text("连接", style = MaterialTheme.typography.labelLarge)
-            }
-        }
-
-        Spacer(Modifier.height(DshTheme.m.md))
-
-        // 备选入口：配对码 / 扫码，收在折叠区里，不占主流程
-        var showAdvanced by remember { mutableStateOf(false) }
-        TextButton(
-            onClick = { showAdvanced = !showAdvanced },
-            modifier = Modifier.fillMaxWidth(),
-        ) {
-            Text(
-                if (showAdvanced) "收起备选方式" else "用配对码 / 扫码（备选）",
-                style = MaterialTheme.typography.labelMedium,
-            )
-        }
-
-        if (showAdvanced) {
-            OutlinedTextField(
-                value = code,
-                onValueChange = { code = it },
-                label = { Text("配对码") },
-                placeholder = { Text("dshm1.XXXX-XXXX-XXXX-XXXX") },
-                singleLine = true,
-                keyboardOptions = KeyboardOptions(autoCorrectEnabled = false),
-                modifier = Modifier.fillMaxWidth(),
-            )
-            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                OutlinedButton(
-                    onClick = { scanning = true },
-                    enabled = !busy,
-                    modifier = Modifier.weight(1f),
-                ) { Text("扫码") }
-                Button(
-                    onClick = { onPair(baseUrl.trim(), code.trim(), deviceName) },
-                    enabled = !busy && baseUrl.isNotBlank() && code.length >= 16,
-                    modifier = Modifier.weight(1f),
-                ) { Text("配对") }
-            }
-        }
-
+        // 扫码弹层
         if (scanning) {
             QrScannerSheet(
                 onResult = { raw ->
@@ -379,10 +541,17 @@ fun PairScreen(
                     val target = io.github.dshmobile.app.net.PairingClient.parsePairingTarget(raw)
                     if (target != null) {
                         baseUrl = target.baseUrl
-                        if (target.code.isNotBlank()) code = target.code
+                        if (target.code.isNotBlank()) {
+                            pin = target.code
+                            selectedTab = 0
+                        }
                     } else {
-                        // 只扫到码或只扫到裸地址，都接受。
-                        if (raw.startsWith("dshm") || raw.startsWith("DSHM")) code = raw.uppercase() else baseUrl = raw.trim()
+                        if (raw.startsWith("dshm") || raw.startsWith("DSHM") || raw.all { it.isDigit() }) {
+                            pin = raw
+                            selectedTab = 0
+                        } else {
+                            baseUrl = raw.trim()
+                        }
                     }
                 },
                 onCancel = { scanning = false },

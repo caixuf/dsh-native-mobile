@@ -4,25 +4,32 @@ import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.compose.material3.DrawerValue
+import androidx.compose.material3.ModalNavigationDrawer
+import androidx.compose.material3.rememberDrawerState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
+import io.github.dshmobile.app.net.LinkState
 import io.github.dshmobile.app.ui.AppViewModel
 import io.github.dshmobile.app.ui.ChatViewModel
 import io.github.dshmobile.app.ui.DshMobileTheme
 import io.github.dshmobile.app.ui.SessionRow
 import io.github.dshmobile.app.ui.SessionsViewModel
+import io.github.dshmobile.app.ui.components.AppDrawer
 import io.github.dshmobile.app.ui.screens.ChatScreen
 import io.github.dshmobile.app.ui.screens.HostsScreen
 import io.github.dshmobile.app.ui.screens.PairScreen
 import io.github.dshmobile.app.ui.screens.SessionsScreen
+import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -51,73 +58,117 @@ private fun AppRoot(app: DshMobileApp) {
     var route by remember { mutableStateOf(Route.Hosts) }
     var session by remember { mutableStateOf<SessionRow?>(null) }
 
+    val drawerState = rememberDrawerState(initialValue = DrawerValue.Closed)
+    val scope = rememberCoroutineScope()
+
+    val sessionsVm: SessionsViewModel = viewModel(
+        key = "sessions-${state.activeId}",
+        factory = object : ViewModelProvider.Factory {
+            @Suppress("UNCHECKED_CAST")
+            override fun <T : ViewModel> create(modelClass: Class<T>): T =
+                SessionsViewModel(appVm.connection) as T
+        },
+    )
+    val sessionsState by sessionsVm.state.collectAsStateWithLifecycle()
+
     LaunchedEffect(Unit) { appVm.refresh() }
 
     // 登录/配对成功后自动进入会话列表。
-    // ⚠️ 用 notice 的**值变化**做键，而不是 if (notice != null) —— 后者在
-    // 「第二次登录成功时 notice 恰好等于上一次的值」时会漏触发。
     LaunchedEffect(state.notice) {
         if (route == Route.Pair && state.notice != null) route = Route.Sessions
     }
 
-    when (route) {
-        Route.Hosts -> HostsScreen(
-            state = state,
-            onOpen = { id -> appVm.select(id); route = Route.Sessions },
-            onForget = { appVm.forget(it) },
-            onReconnect = { appVm.reconnect() },
-            onAdd = { route = Route.Pair },
-        )
+    val isDrawerEnabled = (route == Route.Sessions || route == Route.Chat)
 
-        Route.Pair -> PairScreen(
-            busy = state.busy,
-            error = state.error,
-            // 不在这里跳转：登录成功与否由 AppViewModel 决定（存盘失败会留在本页显示错误）。
-            onLogin = { base, user, pass, name -> appVm.login(base, user, pass, name) },
-            onPair = { base, code, name ->
-                appVm.pair(base, code, name) { route = Route.Sessions }
-            },
-            deviceName = AppViewModel.deviceName(),
-        )
-
-        Route.Sessions -> {
-            val sessionsVm: SessionsViewModel = viewModel(
-                factory = object : ViewModelProvider.Factory {
-                    @Suppress("UNCHECKED_CAST")
-                    override fun <T : ViewModel> create(modelClass: Class<T>): T =
-                        SessionsViewModel(appVm.connection) as T
-                },
-            )
-            SessionsScreen(
-                linkState = state.link,
-                onOpen = { row -> session = row; route = Route.Chat },
-                vm = sessionsVm,
-            )
-        }
-
-        Route.Chat -> {
-            val current = session
-            val chatVm: ChatViewModel = viewModel(
-                key = "chat-${current?.sessionId}",
-                factory = object : ViewModelProvider.Factory {
-                    @Suppress("UNCHECKED_CAST")
-                    override fun <T : ViewModel> create(modelClass: Class<T>): T =
-                        ChatViewModel(appVm.connection) as T
-                },
-            )
-            LaunchedEffect(current?.sessionId) {
-                if (current != null) chatVm.open(current.sessionId, current.title)
+    ModalNavigationDrawer(
+        drawerState = drawerState,
+        gesturesEnabled = isDrawerEnabled,
+        drawerContent = {
+            if (isDrawerEnabled) {
+                val readyHostName = (state.link as? LinkState.Ready)?.hostName?.takeIf { it.isNotBlank() }
+                val currentHostName = readyHostName
+                    ?: state.hosts.firstOrNull { it.id == state.activeId }?.label
+                AppDrawer(
+                    activeHostName = currentHostName,
+                    isHostOnline = state.link is LinkState.Ready,
+                    sessions = sessionsState.rows,
+                    currentSessionId = session?.sessionId,
+                    onSelectSession = { row ->
+                        session = row
+                        route = Route.Chat
+                        scope.launch { drawerState.close() }
+                    },
+                    onNewSession = {
+                        val currentWs = session?.workspace
+                            ?: sessionsState.rows.firstOrNull()?.workspace
+                        sessionsVm.create(currentWs) { row ->
+                            session = row
+                            route = Route.Chat
+                        }
+                        scope.launch { drawerState.close() }
+                    },
+                    onManageHosts = {
+                        route = Route.Hosts
+                        scope.launch { drawerState.close() }
+                    },
+                    onClose = {
+                        scope.launch { drawerState.close() }
+                    },
+                )
             }
-            ChatScreen(
-                title = current?.title.orEmpty(),
-                onBack = { route = Route.Sessions },
-                vm = chatVm,
-                // 执行上下文：让用户看出「事情正在哪台电脑、哪个目录里跑」。
-                // 电脑名来自事件流 ready 帧的 hostName。
-                hostName = (state.link as? io.github.dshmobile.app.net.LinkState.Ready)
-                    ?.hostName?.takeIf { it.isNotBlank() },
-                workspace = current?.workspace,
+        },
+    ) {
+        when (route) {
+            Route.Hosts -> HostsScreen(
+                state = state,
+                onOpen = { id -> appVm.select(id); route = Route.Sessions },
+                onForget = { appVm.forget(it) },
+                onReconnect = { appVm.reconnect() },
+                onAdd = { route = Route.Pair },
             )
+
+            Route.Pair -> PairScreen(
+                busy = state.busy,
+                error = state.error,
+                onBack = if (state.hosts.isNotEmpty()) { { route = Route.Hosts } } else null,
+                onLogin = { base, user, pass, name -> appVm.login(base, user, pass, name) },
+                onPair = { base, code, name ->
+                    appVm.pair(base, code, name) { route = Route.Sessions }
+                },
+                deviceName = AppViewModel.deviceName(),
+            )
+
+            Route.Sessions -> {
+                SessionsScreen(
+                    linkState = state.link,
+                    onOpen = { row -> session = row; route = Route.Chat },
+                    vm = sessionsVm,
+                    onOpenDrawer = { scope.launch { drawerState.open() } },
+                )
+            }
+
+            Route.Chat -> {
+                val current = session
+                val chatVm: ChatViewModel = viewModel(
+                    key = "chat-${current?.sessionId}",
+                    factory = object : ViewModelProvider.Factory {
+                        @Suppress("UNCHECKED_CAST")
+                        override fun <T : ViewModel> create(modelClass: Class<T>): T =
+                            ChatViewModel(appVm.connection) as T
+                    },
+                )
+                LaunchedEffect(current?.sessionId) {
+                    if (current != null) chatVm.open(current.sessionId, current.title)
+                }
+                ChatScreen(
+                    title = current?.title.orEmpty(),
+                    onBack = { route = Route.Sessions },
+                    vm = chatVm,
+                    hostName = (state.link as? LinkState.Ready)?.hostName?.takeIf { it.isNotBlank() },
+                    workspace = current?.workspace,
+                    onOpenDrawer = { scope.launch { drawerState.open() } },
+                )
+            }
         }
     }
 }

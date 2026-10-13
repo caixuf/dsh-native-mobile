@@ -52,6 +52,16 @@ object DshIcons {
 
     // ── 导航 / 动作 ─────────────────────────────────────────────────────────
 
+    /** 极简双线菜单/抽屉图标（对齐 MiniMax uikit_menu_20ic） */
+    val Menu: ImageVector by lazy {
+        icon("Menu") {
+            path(fill = null, stroke = SolidColor(Color.Black), strokeLineWidth = STROKE) {
+                moveTo(4f, 8.5f); lineTo(20f, 8.5f)
+                moveTo(4f, 15.5f); lineTo(14f, 15.5f)
+            }
+        }
+    }
+
     /** 发送（右上方箭头）。上游是 32 圆形底 + 箭头，我们用同样几何但交给调用方配色。 */
     val Send: ImageVector by lazy {
         icon("Send") {
@@ -318,6 +328,132 @@ object DshIcons {
                 moveTo(12f, 4f); lineTo(21f, 19.5f); lineTo(3f, 19.5f); close()
                 moveTo(12f, 10f); lineTo(12f, 14f)
                 moveTo(12f, 16.8f); lineTo(12f, 16.9f)
+            }
+        }
+    }
+
+    /** 复制（剪贴板卡片） */
+    val Copy: ImageVector by lazy {
+        icon("Copy") {
+            path(fill = null, stroke = SolidColor(Color.Black), strokeLineWidth = STROKE) {
+                moveTo(9f, 9f)
+                curveTo(9f, 7.9f, 9.9f, 7f, 11f, 7f)
+                lineTo(18f, 7f)
+                curveTo(19.1f, 7f, 20f, 7.9f, 20f, 9f)
+                lineTo(20f, 18f)
+                curveTo(20f, 19.1f, 19.1f, 20f, 18f, 20f)
+                lineTo(11f, 20f)
+                curveTo(9.9f, 20f, 9f, 19.1f, 9f, 18f)
+                close()
+                moveTo(6f, 15f)
+                curveTo(4.9f, 15f, 4f, 14.1f, 4f, 13f)
+                lineTo(4f, 6f)
+                curveTo(4f, 4.9f, 4.9f, 4f, 6f, 4f)
+                lineTo(13f, 4f)
+                curveTo(14.1f, 4f, 15f, 4.9f, 15f, 6f)
+            }
+        }
+    }
+
+    /** 向下箭头 (展开) */
+    val ChevronDown: ImageVector by lazy {
+        icon("ChevronDown") {
+            path(fill = null, stroke = SolidColor(Color.Black), strokeLineWidth = STROKE) {
+                moveTo(6f, 9f); lineTo(12f, 15f); lineTo(18f, 9f)
+            }
+        }
+    }
+
+    /** 向上箭头 (收起) */
+    val ChevronUp: ImageVector by lazy {
+        icon("ChevronUp") {
+            path(fill = null, stroke = SolidColor(Color.Black), strokeLineWidth = STROKE) {
+                moveTo(6f, 15f); lineTo(12f, 9f); lineTo(18f, 15f)
+            }
+        }
+    }
+
+    /** 终端命令提示符 */
+    val Terminal: ImageVector by lazy {
+        icon("Terminal") {
+            path(fill = null, stroke = SolidColor(Color.Black), strokeLineWidth = STROKE) {
+                moveTo(4f, 17f); lineTo(10f, 12f); lineTo(4f, 7f)
+                moveTo(12f, 17f); lineTo(20f, 17f)
+            }
+        }
+    }
+
+    /** 代码尖括号 */
+    val Code: ImageVector by lazy {
+        icon("Code") {
+            path(fill = null, stroke = SolidColor(Color.Black), strokeLineWidth = STROKE) {
+                moveTo(16f, 18f); lineTo(22f, 12f); lineTo(16f, 6f)
+                moveTo(8f, 6f); lineTo(2f, 12f); lineTo(8f, 18f)
+            }
+        }
+    }
+
+    /** AI 闪烁星星 / Sparkles */
+    val Sparkles: ImageVector by lazy {
+        icon("Sparkles") {
+            path(fill = null, stroke = SolidColor(Color.Black), strokeLineWidth = STROKE) {
+                moveTo(12f, 3f); lineTo(14.5f, 9.5f); lineTo(21f, 12f); lineTo(14.5f, 14.5f); lineTo(12f, 21f); lineTo(9.5f, 14.5f); lineTo(3f, 12f); lineTo(9.5f, 9.5f); close()
+            }
+        }
+    }
+
+    /** CPU / 硬件算力 */
+    val Cpu: ImageVector by lazy {
+        icon("Cpu") {
+            path(fill = null, stroke = SolidColor(Color.Black), strokeLineWidth = STROKE) {
+                moveTo(6f, 6f); lineTo(18f, 6f); lineTo(18f, 18f); lineTo(6f, 18f); close()
+                moveTo(9f, 9f); lineTo(15f, 9f); lineTo(15f, 15f); lineTo(9f, 15f); close()
+                moveTo(9f, 3f); lineTo(9f, 6f)
+                moveTo(15f, 3f); lineTo(15f, 6f)
+                moveTo(9f, 18f); lineTo(9f, 21f)
+                moveTo(15f, 18f); lineTo(15f, 21f)
+                moveTo(3f, 9f); lineTo(6f, 9f)
+                moveTo(3f, 15f); lineTo(6f, 15f)
+                moveTo(18f, 9f); lineTo(21f, 9f)
+                moveTo(18f, 15f); lineTo(21f, 15f)
+            }
+        }
+    }
+
+    /** 任务清单 / 剪贴板 */
+    val TaskList: ImageVector by lazy {
+        icon("TaskList") {
+            path(fill = null, stroke = SolidColor(Color.Black), strokeLineWidth = STROKE) {
+                moveTo(9f, 5f); lineTo(15f, 5f)
+                moveTo(9f, 3f); lineTo(15f, 3f); curveTo(15.55f, 3f, 16f, 3.45f, 16f, 4f); lineTo(16f, 6f); curveTo(16f, 6.55f, 15.55f, 7f, 15f, 7f); lineTo(9f, 7f); curveTo(8.45f, 7f, 8f, 6.55f, 8f, 6f); lineTo(8f, 4f); curveTo(8f, 3.45f, 8.45f, 3f, 9f, 3f); close()
+                moveTo(7f, 5f); lineTo(5f, 5f); curveTo(4.45f, 5f, 4f, 5.45f, 4f, 6f); lineTo(4f, 20f); curveTo(4f, 20.55f, 4.45f, 21f, 5f, 21f); lineTo(19f, 21f); curveTo(19.55f, 21f, 20f, 20.55f, 20f, 20f); lineTo(20f, 6f); curveTo(20f, 5.45f, 19.55f, 5f, 19f, 5f); lineTo(17f, 5f)
+                moveTo(8f, 11f); lineTo(16f, 11f)
+                moveTo(8f, 15f); lineTo(14f, 15f)
+            }
+        }
+    }
+
+    /** 二维码 */
+    val QrCode: ImageVector by lazy {
+        icon("QrCode") {
+            path(fill = null, stroke = SolidColor(Color.Black), strokeLineWidth = STROKE) {
+                moveTo(3f, 3f); lineTo(9f, 3f); lineTo(9f, 9f); lineTo(3f, 9f); close()
+                moveTo(15f, 3f); lineTo(21f, 3f); lineTo(21f, 9f); lineTo(15f, 9f); close()
+                moveTo(3f, 15f); lineTo(9f, 15f); lineTo(9f, 21f); lineTo(3f, 21f); close()
+                moveTo(14f, 14f); lineTo(16f, 14f); lineTo(16f, 16f); lineTo(14f, 16f); close()
+                moveTo(18f, 14f); lineTo(21f, 14f); lineTo(21f, 17f); lineTo(18f, 17f); close()
+                moveTo(14f, 18f); lineTo(18f, 18f); lineTo(18f, 21f); lineTo(14f, 21f); close()
+            }
+        }
+    }
+
+    /** 更多操作（三个水平圆点） */
+    val MoreHorizontal: ImageVector by lazy {
+        icon("MoreHorizontal") {
+            path(fill = SolidColor(Color.Black)) {
+                moveTo(6.5f, 12f); curveTo(6.5f, 12.83f, 5.83f, 13.5f, 5f, 13.5f); curveTo(4.17f, 13.5f, 3.5f, 12.83f, 3.5f, 12f); curveTo(3.5f, 11.17f, 4.17f, 10.5f, 5f, 10.5f); curveTo(5.83f, 10.5f, 6.5f, 11.17f, 6.5f, 12f); close()
+                moveTo(13.5f, 12f); curveTo(13.5f, 12.83f, 12.83f, 13.5f, 12f, 13.5f); curveTo(11.17f, 13.5f, 10.5f, 12.83f, 10.5f, 12f); curveTo(10.5f, 11.17f, 11.17f, 10.5f, 12f, 10.5f); curveTo(12.83f, 10.5f, 13.5f, 11.17f, 13.5f, 12f); close()
+                moveTo(20.5f, 12f); curveTo(20.5f, 12.83f, 19.83f, 13.5f, 19f, 13.5f); curveTo(18.17f, 13.5f, 17.5f, 12.83f, 17.5f, 12f); curveTo(17.5f, 11.17f, 18.17f, 10.5f, 19f, 10.5f); curveTo(19.83f, 10.5f, 20.5f, 11.17f, 20.5f, 12f); close()
             }
         }
     }

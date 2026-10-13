@@ -124,6 +124,7 @@ fun ChatScreen(
     hostName: String? = null,
     /** 工作区目录，来自 `session.page` 的 cwd。 */
     workspace: String? = null,
+    onOpenDrawer: (() -> Unit)? = null,
 ) {
     val state by vm.state.collectAsStateWithLifecycle()
     var draft by remember { mutableStateOf("") }
@@ -193,6 +194,16 @@ fun ChatScreen(
                             )
                         }
                     }
+                    if (onOpenDrawer != null) {
+                        IconButton(onClick = onOpenDrawer) {
+                            DshIcon(
+                                DshIcons.Menu,
+                                contentDescription = "打开抽屉",
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                size = 20.dp,
+                            )
+                        }
+                    }
                 },
                 colors = TopAppBarDefaults.topAppBarColors(
                     containerColor = MaterialTheme.colorScheme.background,
@@ -237,6 +248,18 @@ fun ChatScreen(
                 workspace = workspace,
                 running = state.running,
             )
+
+            // 🔴 任务执行进度与规划卡片（对齐 MiniMax team_plan_card / cycle_phase 交互）
+            val taskSteps = remember(state.lines, state.running) {
+                io.github.dshmobile.app.ui.components.TaskProgressParser.extractSteps(state.lines, state.running)
+            }
+            if (taskSteps.isNotEmpty()) {
+                io.github.dshmobile.app.ui.components.TaskProgressCard(
+                    steps = taskSteps,
+                    running = state.running,
+                    modifier = Modifier.padding(horizontal = DshTheme.m.gutter, vertical = DshTheme.m.xs),
+                )
+            }
 
             state.pending?.let { pending ->
                 ApprovalCard(
@@ -420,16 +443,22 @@ private fun ExecutionContextBar(
 ) {
     val displayHost = hostName?.takeIf { it.isNotBlank() } ?: "我的电脑"
     val busyColor = MaterialTheme.colorScheme.primary
+    val clipboardManager = androidx.compose.ui.platform.LocalClipboardManager.current
+    var showDialog by remember { mutableStateOf(false) }
 
     Row(
         Modifier
             .fillMaxWidth()
             .background(MaterialTheme.colorScheme.surfaceContainer)
+            .clickable { showDialog = true }
             .padding(horizontal = DshTheme.m.gutter, vertical = DshTheme.m.sm),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         // 左：设备身份（图标 + 名字 + 状态）
-        Row(verticalAlignment = Alignment.CenterVertically) {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            modifier = Modifier.weight(1f, fill = false),
+        ) {
             Box(
                 Modifier
                     .size(26.dp)
@@ -449,27 +478,36 @@ private fun ExecutionContextBar(
             }
             Spacer(Modifier.width(DshTheme.m.sm))
             Column {
-                Text(
-                    text = displayHost,
-                    style = MaterialTheme.typography.labelLarge,
-                    color = MaterialTheme.colorScheme.onSurface,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
-                // 只在「忙」时说一句话；空闲时保持安静
-                if (running) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
                     Text(
-                        text = "正在这台电脑上执行",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = busyColor,
+                        text = displayHost,
+                        style = MaterialTheme.typography.labelLarge,
+                        color = MaterialTheme.colorScheme.onSurface,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    Spacer(Modifier.width(6.dp))
+                    Box(
+                        Modifier
+                            .size(6.dp)
+                            .background(
+                                if (running) busyColor else DshTheme.online,
+                                CircleShape,
+                            ),
                     )
                 }
+                Text(
+                    text = if (running) "正在这台电脑上执行任务…" else "远程守护中 · 点击看详情",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = if (running) busyColor else MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                )
             }
         }
 
         // 右：工作区目录（有才显示）
         workspace?.takeIf { it.isNotBlank() }?.let { dir ->
-            Spacer(Modifier.weight(1f))
+            Spacer(Modifier.width(DshTheme.m.sm))
             Row(
                 Modifier
                     .background(
@@ -479,15 +517,75 @@ private fun ExecutionContextBar(
                     .padding(horizontal = 8.dp, vertical = 4.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
+                DshIcon(
+                    DshIcons.Folder,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    size = 12.dp,
+                )
+                Spacer(Modifier.width(4.dp))
                 Text(
                     text = shortPath(dir),
                     style = MaterialTheme.typography.labelSmall,
                     fontFamily = FontFamily.Monospace,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
                 )
             }
         }
+    }
+
+    if (showDialog) {
+        androidx.compose.material3.AlertDialog(
+            onDismissRequest = { showDialog = false },
+            title = {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    DshIcon(DshIcons.Desktop, contentDescription = null, size = 20.dp, tint = MaterialTheme.colorScheme.primary)
+                    Spacer(Modifier.width(8.dp))
+                    Text("远端电脑执行环境", style = MaterialTheme.typography.titleMedium)
+                }
+            },
+            text = {
+                Column {
+                    Text("设备名称", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text(displayHost, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold)
+                    Spacer(Modifier.height(8.dp))
+
+                    Text("当前工作区目录", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    val fullDir = workspace?.takeIf { it.isNotBlank() } ?: "（未指定，使用电脑默认路径）"
+                    Text(
+                        fullDir,
+                        style = MaterialTheme.typography.bodySmall,
+                        fontFamily = FontFamily.Monospace,
+                        color = MaterialTheme.colorScheme.onSurface,
+                    )
+                    Spacer(Modifier.height(8.dp))
+
+                    Text("执行心智说明", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text(
+                        "手机作为遥控器下发指令并审批高风险操作，代码执行、文件修改均在你的电脑原生环境中完成。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            },
+            confirmButton = {
+                if (!workspace.isNullOrBlank()) {
+                    TextButton(onClick = {
+                        clipboardManager.setText(androidx.compose.ui.text.AnnotatedString(workspace))
+                        showDialog = false
+                    }) {
+                        Text("复制目录路径")
+                    }
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showDialog = false }) {
+                    Text("关闭")
+                }
+            },
+        )
     }
 }
 
@@ -531,48 +629,20 @@ private val MessageTextStyle = TextStyle(
  * 严格按 Web 端 `.userRow` / `.userStack` / `.bubble` 三段式：
  *  - 用户：右对齐列，气泡 `--radius-xl`，`padding 10/16`，最大 82% 宽
  *  - agent：左对齐**纯文本**，不装在盒子里
- *  - 工具：紫色标签，居中弱化
+ *  - 工具：采用可折叠展开的 DisclosureToolCard，对齐 DSH Web 端规范
  */
 @Composable
 private fun LineBubble(line: ChatLine) {
     val fromUser = line.role == "user"
 
-    // 🔴 关键：**工具行必须按 `kind` 判断，不能只看 role**。
-    //
-    // 实测踩到的真实 bug（已修，见 JsonRender.roleOf）：
-    //   原来 roleOf 用裸子串匹配 `"assistant" in r || "ai" in r`，
-    //   而 "assistant" 本身就含 "ai"，于是正文被误判成别的角色，
-    //   最终落到 `else -> raw` 原样返回 —— **UI 表现是 `**粗体**` 仍显示星号**。
-    //
-    // 现在 roleOf 已改为「精确 → 前缀 → 兜底 assistant」，
-    // 这里再用 **kind** 做一道独立防线：只有真正的工具事件才弱化显示。
-    // 两道防线是因为这类失配在 UI 上极难定位（看起来像"渲染器坏了"）。
     val isTool = line.kind == "tool/call" || line.kind == "tool/result" ||
         line.role == "tool" || line.role == "system"
 
     if (isTool) {
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Center) {
-            Row(
-                Modifier
-                    .background(ToolTint.copy(alpha = 0.12f), RoundedCornerShape(8.dp))
-                    .padding(horizontal = 10.dp, vertical = 5.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Box(
-                    Modifier
-                        .size(5.dp)
-                        .background(ToolTint, CircleShape),
-                )
-                Spacer(Modifier.width(7.dp))
-                Text(
-                    text = line.text.take(70),
-                    style = MaterialTheme.typography.labelMedium,
-                    color = ToolTint,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
-            }
-        }
+        io.github.dshmobile.app.ui.components.DisclosureToolCard(
+            line = line,
+            modifier = Modifier.padding(vertical = 4.dp),
+        )
         return
     }
 

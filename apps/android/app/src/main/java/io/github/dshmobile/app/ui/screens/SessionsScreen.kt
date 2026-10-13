@@ -51,8 +51,14 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.foundation.border
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.TextButton
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import io.github.dshmobile.app.net.LinkState
 import io.github.dshmobile.app.ui.icons.DshIcons
@@ -84,9 +90,11 @@ fun SessionsScreen(
     linkState: LinkState,
     onOpen: (SessionRow) -> Unit,
     vm: SessionsViewModel,
+    onOpenDrawer: (() -> Unit)? = null,
 ) {
     val state by vm.state.collectAsStateWithLifecycle()
     var searchOpen by remember { mutableStateOf(false) }
+    var showCreateDialog by remember { mutableStateOf(false) }
 
     LaunchedEffect(Unit) { vm.load() }
 
@@ -94,6 +102,18 @@ fun SessionsScreen(
         containerColor = MaterialTheme.colorScheme.background,
         topBar = {
             TopAppBar(
+                navigationIcon = {
+                    if (onOpenDrawer != null) {
+                        IconButton(onClick = onOpenDrawer) {
+                            DshIcon(
+                                DshIcons.Menu,
+                                contentDescription = "打开抽屉",
+                                tint = MaterialTheme.colorScheme.onBackground,
+                                size = 22.dp,
+                            )
+                        }
+                    }
+                },
                 title = {
                     Column {
                         Text(
@@ -136,7 +156,14 @@ fun SessionsScreen(
         floatingActionButton = {
             if (state.rows.isNotEmpty()) {
                 ExtendedFloatingActionButton(
-                    onClick = { vm.create { row -> onOpen(row) } },
+                    onClick = {
+                        val workspaces = state.rows.mapNotNull { it.workspace }.filter { it.isNotBlank() }.distinct()
+                        if (workspaces.isNotEmpty()) {
+                            showCreateDialog = true
+                        } else {
+                            vm.create(null) { row -> onOpen(row) }
+                        }
+                    },
                     containerColor = MaterialTheme.colorScheme.primary,
                     contentColor = MaterialTheme.colorScheme.onPrimary,
                     shape = MaterialTheme.shapes.large,
@@ -228,6 +255,16 @@ fun SessionsScreen(
                     ),
                     verticalArrangement = Arrangement.spacedBy(DshTheme.m.listGap),
                 ) {
+                    // 🖥️ 远程电脑设备仪表板卡片 —— 强化「手机遥控电脑」产品心智
+                    item(key = "remote-dashboard-header") {
+                        RemoteHostDashboardCard(
+                            linkState = linkState,
+                            workspaceCount = state.rows.mapNotNull { it.workspace }.filter { it.isNotBlank() }.distinct().size,
+                            sessionCount = state.rows.size,
+                            runningCount = state.rows.count { it.running },
+                        )
+                        Spacer(Modifier.height(DshTheme.m.xs))
+                    }
                     // 子代理会话：只列出、不可点开。
                     // 裸 sessionId 打不开，主机会报
                     // "subagent Sessions require their durable parent address"。
@@ -274,11 +311,258 @@ fun SessionsScreen(
                     }
                 }
             }
+
+            if (showCreateDialog) {
+                val availableWorkspaces = remember(state.rows) {
+                    state.rows.mapNotNull { it.workspace }.filter { it.isNotBlank() }.distinct()
+                }
+                var selectedWorkspace by remember { mutableStateOf<String?>(availableWorkspaces.firstOrNull()) }
+
+                androidx.compose.material3.AlertDialog(
+                    onDismissRequest = { showCreateDialog = false },
+                    title = {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            DshIcon(DshIcons.Desktop, contentDescription = null, size = 20.dp, tint = MaterialTheme.colorScheme.primary)
+                            Spacer(Modifier.width(8.dp))
+                            Text("新建远程电脑会话", style = MaterialTheme.typography.titleMedium)
+                        }
+                    },
+                    text = {
+                        Column {
+                            Text(
+                                "选择此会话在电脑上执行的工作区目录：",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                            Spacer(Modifier.height(10.dp))
+
+                            Column(
+                                modifier = Modifier.fillMaxWidth(),
+                                verticalArrangement = Arrangement.spacedBy(6.dp),
+                            ) {
+                                WorkspacePickOption(
+                                    title = "电脑默认工作区",
+                                    path = "使用远端 DSH 宿主默认路径",
+                                    selected = selectedWorkspace == null,
+                                    onClick = { selectedWorkspace = null },
+                                )
+
+                                availableWorkspaces.forEach { ws ->
+                                    WorkspacePickOption(
+                                        title = shortPath(ws),
+                                        path = ws,
+                                        selected = selectedWorkspace == ws,
+                                        onClick = { selectedWorkspace = ws },
+                                    )
+                                }
+                            }
+                        }
+                    },
+                    confirmButton = {
+                        TextButton(
+                            onClick = {
+                                showCreateDialog = false
+                                vm.create(cwd = selectedWorkspace) { onOpen(it) }
+                            },
+                        ) {
+                            Text("创建并进入")
+                        }
+                    },
+                    dismissButton = {
+                        TextButton(onClick = { showCreateDialog = false }) {
+                            Text("取消")
+                        }
+                    },
+                )
+            }
         }
     }
 }
 
 // ── 子组件 ──────────────────────────────────────────────────────────────────
+
+@Composable
+private fun RemoteHostDashboardCard(
+    linkState: LinkState,
+    workspaceCount: Int,
+    sessionCount: Int,
+    runningCount: Int,
+) {
+    val hostName = (linkState as? LinkState.Ready)?.hostName?.takeIf { it.isNotBlank() } ?: "我的电脑"
+    val isOnline = linkState.isHealthy()
+
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .background(MaterialTheme.colorScheme.surface, MaterialTheme.shapes.medium)
+            .border(1.dp, MaterialTheme.colorScheme.outlineVariant, MaterialTheme.shapes.medium)
+            .padding(horizontal = DshTheme.m.lg, vertical = DshTheme.m.md),
+    ) {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween,
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Box(
+                    Modifier
+                        .size(34.dp)
+                        .background(
+                            if (isOnline) MaterialTheme.colorScheme.primaryContainer
+                            else MaterialTheme.colorScheme.surfaceContainerHighest,
+                            RoundedCornerShape(8.dp),
+                        ),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    DshIcon(
+                        DshIcons.Desktop,
+                        contentDescription = null,
+                        tint = if (isOnline) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                        size = 18.dp,
+                    )
+                }
+                Spacer(Modifier.width(DshTheme.m.md))
+                Column {
+                    Text(
+                        text = hostName,
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.SemiBold,
+                        color = MaterialTheme.colorScheme.onSurface,
+                    )
+                    Text(
+                        text = if (isOnline) "远程守护进程在线 · 手机实时遥控" else "未连接到电脑守护进程",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = if (isOnline) DshTheme.online else MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+
+            Box(
+                Modifier
+                    .size(8.dp)
+                    .background(if (isOnline) DshTheme.online else MaterialTheme.colorScheme.outline, CircleShape),
+            )
+        }
+
+        Spacer(Modifier.height(DshTheme.m.md))
+
+        Row(
+            Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(DshTheme.m.sm),
+        ) {
+            DashboardPill(
+                icon = DshIcons.Folder,
+                label = "$workspaceCount 个工作区",
+                modifier = Modifier.weight(1f),
+            )
+            DashboardPill(
+                icon = DshIcons.ChatBubble,
+                label = "$sessionCount 个会话",
+                modifier = Modifier.weight(1f),
+            )
+            DashboardPill(
+                icon = DshIcons.Cpu,
+                label = if (runningCount > 0) "$runningCount 任务运行中" else "就绪待命",
+                highlight = runningCount > 0,
+                modifier = Modifier.weight(1.1f),
+            )
+        }
+    }
+}
+
+@Composable
+private fun DashboardPill(
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    label: String,
+    highlight: Boolean = false,
+    modifier: Modifier = Modifier,
+) {
+    Row(
+        modifier = modifier
+            .background(
+                if (highlight) MaterialTheme.colorScheme.primaryContainer
+                else MaterialTheme.colorScheme.surfaceContainerHigh,
+                RoundedCornerShape(6.dp),
+            )
+            .padding(horizontal = 6.dp, vertical = 4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.Center,
+    ) {
+        DshIcon(
+            imageVector = icon,
+            contentDescription = null,
+            tint = if (highlight) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+            size = 12.dp,
+        )
+        Spacer(Modifier.width(4.dp))
+        Text(
+            text = label,
+            style = MaterialTheme.typography.labelSmall,
+            color = if (highlight) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurfaceVariant,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            fontSize = 11.sp,
+        )
+    }
+}
+
+@Composable
+private fun WorkspacePickOption(
+    title: String,
+    path: String,
+    selected: Boolean,
+    onClick: () -> Unit,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(8.dp))
+            .background(
+                if (selected) MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.5f)
+                else MaterialTheme.colorScheme.surfaceContainerHigh,
+            )
+            .border(
+                1.dp,
+                if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outlineVariant,
+                RoundedCornerShape(8.dp),
+            )
+            .clickable(onClick = onClick)
+            .padding(horizontal = 10.dp, vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        DshIcon(
+            imageVector = DshIcons.Folder,
+            contentDescription = null,
+            tint = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+            size = 16.dp,
+        )
+        Spacer(Modifier.width(8.dp))
+        Column(Modifier.weight(1f)) {
+            Text(
+                text = title,
+                style = MaterialTheme.typography.labelMedium,
+                fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
+                color = if (selected) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurface,
+            )
+            Text(
+                text = path,
+                style = MaterialTheme.typography.labelSmall,
+                fontFamily = FontFamily.Monospace,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+        if (selected) {
+            DshIcon(
+                imageVector = DshIcons.Check,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.primary,
+                size = 16.dp,
+            )
+        }
+    }
+}
 
 private fun LinkState.isHealthy(): Boolean = this is LinkState.Ready
 

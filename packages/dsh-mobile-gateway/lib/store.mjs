@@ -26,16 +26,27 @@ function randomCode(length = 16) {
   return out;
 }
 
+/** 生成6位纯数字配对码（对齐移动端极简输入体验） */
+function randomPin(length = 6) {
+  const bytes = randomBytes(length);
+  let out = '';
+  for (let i = 0; i < length; i += 1) out += (bytes[i] % 10).toString();
+  return out;
+}
+
 function formatCode(body) {
   return `dshm1.${body.match(/.{1,4}/g).join('-')}`;
 }
 
 function parseCode(input) {
   const normalized = String(input ?? '').trim().toUpperCase().replace(/[\s-]/g, '');
+  if (/^\d{6}$/.test(normalized)) {
+    return { type: 'pin', value: normalized };
+  }
   const body = normalized.startsWith('DSHM1.') ? normalized.slice(6) : normalized;
   if (body.length !== 16) return null;
   for (const ch of body) if (!CODE_ALPHABET.includes(ch)) return null;
-  return body;
+  return { type: 'code', value: body };
 }
 
 /**
@@ -201,16 +212,20 @@ export class DeviceStore {
     return { ok: true, device: this.#public(device), token };
   }
 
-  /** 铸造一枚新的配对码；旧码立即作废。 */
-  async mintPairing({ ttlMs, origin }) {
+  /** 铸造一枚新的配对码（同时生成 6 位纯数字 PIN 与 16 位字符码）；旧码立即作废。 */
+  async mintPairing({ ttlMs, origin } = {}) {
     const now = Date.now();
     this.#prune(now);
     const body = randomCode(16);
+    const pin = randomPin(6);
     this.#state.pairing = {
       codeHash: sha256Hex(body),
+      pinHash: sha256Hex(pin),
+      pin,
+      pinDisplay: `${pin.slice(0, 3)} ${pin.slice(3)}`,
       display: formatCode(body),
       createdAt: now,
-      expiresAt: now + ttlMs,
+      expiresAt: now + (ttlMs || 600_000),
       origin: origin ?? null,
     };
     await this.#persist();
@@ -221,22 +236,32 @@ export class DeviceStore {
   currentPairing(now = Date.now()) {
     this.#prune(now);
     if (!this.#state.pairing) return null;
-    const { codeHash, ...rest } = this.#state.pairing;
+    const { codeHash, pinHash, ...rest } = this.#state.pairing;
     void codeHash;
+    void pinHash;
     return rest;
   }
 
-  /** 消费配对码，签发设备令牌。返回明文令牌（仅此一次）。 */
+  /** 消费配对码，签发设备令牌。支持 6 位纯数字 PIN 或 16 位字符码。返回明文令牌（仅此一次）。 */
   async redeem(code, { ttlMs, deviceName, platform }) {
     const now = Date.now();
     this.#prune(now);
-    const body = parseCode(code);
-    if (!body) return { ok: false, reason: 'malformed' };
+    const parsed = parseCode(code);
+    if (!parsed) return { ok: false, reason: 'malformed' };
     if (!this.#state.pairing) return { ok: false, reason: 'no_active_code' };
 
-    const presented = Buffer.from(sha256Hex(body), 'hex');
-    const stored = Buffer.from(this.#state.pairing.codeHash, 'hex');
-    if (presented.length !== stored.length || !timingSafeEqual(presented, stored)) {
+    let matches = false;
+    if (parsed.type === 'pin' && this.#state.pairing.pinHash) {
+      const presented = Buffer.from(sha256Hex(parsed.value), 'hex');
+      const stored = Buffer.from(this.#state.pairing.pinHash, 'hex');
+      matches = presented.length === stored.length && timingSafeEqual(presented, stored);
+    } else if (parsed.type === 'code' && this.#state.pairing.codeHash) {
+      const presented = Buffer.from(sha256Hex(parsed.value), 'hex');
+      const stored = Buffer.from(this.#state.pairing.codeHash, 'hex');
+      matches = presented.length === stored.length && timingSafeEqual(presented, stored);
+    }
+
+    if (!matches) {
       return { ok: false, reason: 'mismatch' };
     }
 
