@@ -1,56 +1,52 @@
-# 重启 DSH 并验证事件流（在 DSH 之外的独立进程里跑，因此不会被重启杀掉）
+﻿# Restart DSH and verify the event-stream protocol.
 #
-# 背景：网关改动（单条 mux + $events + $events/result）需要重启 DSH 才生效
-# （Node ESM 不热重载）。而重启会连带结束当前 DSH 会话，所以验证逻辑必须
-# 跑在一个**独立于 DSH 的进程**里。
+# Run this DETACHED from DSH: restarting DSH ends the session that would
+# otherwise be doing the verifying.
 #
-# 验证三件事：
-#   1. /mobile-gateway/remote.mux 路由是否存在（旧代码下是空响应）
-#   2. 连上 mux 并发 open{endpoint:'$events'} 后，是否收到 ready/item 帧
-#   3. 旧路径 /mobile-gateway/events.mux 是否已消失
+# Verifies three things:
+#   1. /mobile-gateway/remote.mux exists (old code answered with an empty body)
+#   2. opening the `$events` logical stream yields ready/item frames
+#   3. the retired /mobile-gateway/events.mux is gone
 #
-# 用法（需管理员/足够权限，因为要停进程）：
-#   powershell -ExecutionPolicy Bypass -File scripts\restart-and-verify.ps1
+# Usage: powershell -ExecutionPolicy Bypass -File scripts\restart-and-verify.ps1
 
 $ErrorActionPreference = 'Continue'
-$log = "$PSScriptRoot\..\..\dsh-restart-verify.log"
-$node = "C:\Users\me\AppData\Local\Programs\DeepSeek Harness\resources\runtime\primary-runtime\dependencies\node\bin\node.exe"
+$log = Join-Path $PSScriptRoot '..\..\dsh-restart-verify.log'
+$node = 'C:\Users\me\AppData\Local\Programs\DeepSeek Harness\resources\runtime\primary-runtime\dependencies\node\bin\node.exe'
+$dshExe = 'C:\Users\me\AppData\Local\Programs\DeepSeek Harness\DeepSeek Harness.exe'
 
-function Log($m) {
+function Log([string]$m) {
   $line = "[$(Get-Date -Format 'HH:mm:ss')] $m"
   Write-Host $line
   Add-Content -Path $log -Value $line -Encoding UTF8
 }
 
-Log "=== DSH 重启 + 事件流验证 ==="
+Log '=== DSH restart + event-stream verification ==='
 
-# ---- 1. 找出并停掉 desktop profile 的 DSH ----
+# ---- 1. stop the desktop-profile DSH ----
 $dsh = Get-CimInstance Win32_Process -Filter "Name='DeepSeek Harness.exe'" |
   Where-Object { $_.CommandLine -match 'profiles\\desktop' }
-if (-not $dsh) { Log "找不到 desktop profile 的 DSH 进程，退出"; exit 1 }
-
-foreach ($p in $dsh) { Log "停止 DSH PID=$($p.ProcessId)" }
+if (-not $dsh) { Log 'no desktop-profile DSH found; aborting'; exit 1 }
+foreach ($p in $dsh) { Log "stopping DSH PID=$($p.ProcessId)" }
 $dsh | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
 Start-Sleep -Seconds 5
 
-# ---- 2. 重新拉起 ----
-$exe = "C:\Users\me\AppData\Local\Programs\DeepSeek Harness\DeepSeek Harness.exe"
-if (-not (Test-Path $exe)) { Log "找不到 DSH 可执行文件: $exe"; exit 1 }
-Log "启动 DSH…"
-Start-Process -FilePath $exe
+# ---- 2. relaunch ----
+if (-not (Test-Path $dshExe)) { Log "DSH executable missing: $dshExe"; exit 1 }
+Log 'launching DSH...'
+Start-Process -FilePath $dshExe
 Start-Sleep -Seconds 25
 
-# ---- 3. 等端口就绪 ----
+# ---- 3. wait for the port ----
 $ready = $false
 for ($i = 0; $i -lt 30; $i++) {
-  $l = Get-NetTCPConnection -LocalPort 19387 -State Listen -ErrorAction SilentlyContinue
-  if ($l) { $ready = $true; break }
+  if (Get-NetTCPConnection -LocalPort 19387 -State Listen -ErrorAction SilentlyContinue) { $ready = $true; break }
   Start-Sleep -Seconds 2
 }
-if (-not $ready) { Log "❌ 19387 未就绪，放弃"; exit 1 }
-Log "✅ 19387 已监听"
+if (-not $ready) { Log 'port 19387 never came up; aborting'; exit 1 }
+Log 'port 19387 is listening'
 
-# ---- 4. 验证 ----
+# ---- 4. probe both WS routes with a raw upgrade ----
 $probe = @'
 const net = await import('node:net');
 function rawUpgrade(path) {
@@ -59,24 +55,23 @@ function rawUpgrade(path) {
       s.write(`GET ${path} HTTP/1.1\r\nHost: 127.0.0.1:19387\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n`);
     });
     let raw = ''; s.on('data', d => raw += d);
-    s.on('close', () => resolve((raw.split('\r\n')[0] || '(空)').trim()));
+    s.on('close', () => resolve((raw.split('\r\n')[0] || 'EMPTY').trim()));
     s.on('error', e => resolve('ERR ' + e.message));
     setTimeout(() => { s.destroy(); resolve((raw.split('\r\n')[0] || 'TIMEOUT').trim()); }, 4000);
   });
 }
-console.log('RESULT remote.mux  =>', await rawUpgrade('/mobile-gateway/remote.mux'));
-console.log('RESULT events.mux  =>', await rawUpgrade('/mobile-gateway/events.mux'));
+console.log('PROBE remote.mux =>', await rawUpgrade('/mobile-gateway/remote.mux'));
+console.log('PROBE events.mux =>', await rawUpgrade('/mobile-gateway/events.mux'));
 '@
-$probe | Out-File -Encoding utf8 "$env:TEMP\dsh_probe_after.mjs"
-$out = & $node "$env:TEMP\dsh_probe_after.mjs" 2>&1
+$probe | Out-File -Encoding utf8 (Join-Path $env:TEMP 'dsh_probe_after.mjs')
+$out = & $node (Join-Path $env:TEMP 'dsh_probe_after.mjs') 2>&1
 $out | ForEach-Object { Log $_ }
 
-# 判定：remote.mux 应为 401（路由存在、需令牌）；events.mux 应为空（路由已删）
 $remote = ($out | Where-Object { $_ -match 'remote\.mux' }) -join ''
 $events = ($out | Where-Object { $_ -match 'events\.mux' }) -join ''
-if ($remote -match '401') { Log "✅ remote.mux 路由已生效（401 = 存在但需令牌）" }
-else { Log "❌ remote.mux 仍是旧行为: $remote" }
-if ($events -match '\(空\)') { Log "✅ events.mux 旧路由已消失" }
-else { Log "⚠️  events.mux 仍在: $events" }
+if ($remote -match '401') { Log 'OK  remote.mux is live (401 = route exists, token required)' }
+else { Log "BAD remote.mux still old behaviour: $remote" }
+if ($events -match 'EMPTY') { Log 'OK  retired events.mux is gone' }
+else { Log "WARN events.mux still answers: $events" }
 
-Log "=== 完成。完整日志: $log ==="
+Log "=== done. full log: $log ==="
