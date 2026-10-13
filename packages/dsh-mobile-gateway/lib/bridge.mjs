@@ -63,16 +63,37 @@ export const PRIVILEGED_PREFIXES = [
 ];
 
 /**
- * 把方法名归一化成**点号形式**，用于与上面两张表比对。
+ * 把方法名归一化成**点号小写形式**，用于与上面两张表比对。
  *
- * 真实 endpoint 是斜杠形式（`settings/describe`），而名单用点号书写；
- * 只取第一个斜杠，避免误伤命名空间本身含斜杠的情况（目前没有）。
- * 同时统一小写，防大小写绕过。
+ * ## 为什么不能只做字符串替换（这是一个真实漏洞的修法）
+ *
+ * 攻击者可以构造 `./settings.describe` 或 `x/../settings.describe`：
+ *   - 闸门若按**原样**比对，`./settings.describe` ≠ `settings.describe`，于是放行；
+ *   - 而下游 `new Request('http://127.0.0.1/api/./settings.describe')` 会把它
+ *     **归一化成** `/api/settings.describe`，主机最终执行的正是那个特权方法。
+ *
+ * 即「闸门看到的字符串 ≠ 上游执行的端点」。verifier 独立发现并验证了这条绕过路径。
+ *
+ * 所以这里必须**真正解析路径**（折叠 `.` 与 `..`、丢弃空段），而不是字符串替换 ——
+ * 替换只会让 `./settings.describe` 变成 `..settings.describe`，依然不等于
+ * `settings.describe`，闸门照样放行（这正是第一次修复时的错误）。
  */
 export function normalizeMethod(method) {
-  const firstSlash = method.indexOf('/');
-  const dotted = firstSlash < 0 ? method : method.slice(0, firstSlash) + '.' + method.slice(firstSlash + 1);
-  return dotted.trim().toLowerCase();
+  const raw = String(method ?? '').trim();
+  // 用 WHATWG URL 做权威归一化：它会折叠 `.` / `..` / 空段，
+  // 与下游 new Request() 的行为一致。
+  let pathname = raw;
+  try {
+    pathname = new URL(`http://x/${raw.replace(/^\/+/, '')}`).pathname;
+  } catch {
+    /* 解析失败就用原串，下面仍会做段清洗 */
+  }
+  const segments = pathname.split('/').filter((s) => s.length > 0 && s !== '.' && s !== '..');
+  const joined = segments.join('/');
+  const firstSlash = joined.indexOf('/');
+  const dotted =
+    firstSlash < 0 ? joined : `${joined.slice(0, firstSlash)}.${joined.slice(firstSlash + 1)}`;
+  return dotted.toLowerCase();
 }
 
 const MAX_BODY_BYTES = 32 * 1024 * 1024;
@@ -128,16 +149,37 @@ export function createBridge({ ctx, store, log, config }) {
   /**
    * 特权方法闸门。
    *
-   * 🔴 必须用 normalizeMethod() 归一化后再比对：真实请求走**斜杠 endpoint**
-   * （`settings/describe`），而名单用点号书写。曾经因为直接比对原字符串，
-   * 导致 `settings/describe` 一路放行 —— 实测确认那是提权（settings.describe 成功返回）。
+   * 🔴 三条都必须做，缺一条就是一个真实的提权漏洞（都实测过）：
    *
-   * 另外先去掉首尾斜杠与空白，防 `/settings/describe`、` settings/describe ` 这类变体绕过。
+   * 1. **归一化后再比对**：真实请求走斜杠 endpoint（`settings/describe`），
+   *    而名单用点号书写。直接比对原字符串会让 `settings/describe` 一路放行。
+   * 2. **真正解析路径**：`./settings.describe`、`x/../settings.describe` 必须
+   *    折叠成 `settings.describe` 再判断 —— 因为下游 `new Request()` 会折叠它们，
+   *    「闸门看到的字符串」必须等于「上游执行的端点」。
+   * 3. **先做百分号解码**：`%2e` 就是 `.`，不解码则 `%2e/settings.describe` 绕过。
+   *
+   * 任一步失败都**倾向于拒绝**（fail-closed）：解析异常时用原串继续比对，
+   * 而不是放行。
    */
   function isDenied(method) {
-    const normalized = normalizeMethod(String(method ?? '').replace(/^\/+|\/+$/g, ''));
+    let raw = String(method ?? '');
+    // 3. 百分号解码（多次，防 %252e 这类双重编码）。解码失败就用原串。
+    for (let i = 0; i < 2; i += 1) {
+      try {
+        const decoded = decodeURIComponent(raw);
+        if (decoded === raw) break;
+        raw = decoded;
+      } catch {
+        break; // 非法编码序列：保留原串，下面按原样比对（倾向拒绝）
+      }
+    }
+    // 1 + 2. 去掉首尾斜杠后做真正的路径归一化。
+    const normalized = normalizeMethod(raw.replace(/^\/+|\/+$/g, ''));
     if (deniedExact.has(normalized)) return true;
-    return deniedPrefixes.some((p) => normalized.startsWith(p));
+    if (deniedPrefixes.some((p) => normalized.startsWith(p))) return true;
+    // 额外兜底：归一化结果里若仍残留点段（说明有我们没预料到的形式），一律拒绝。
+    if (/(^|[.\/])\.\.?([.\/]|$)/.test(normalized)) return true;
+    return false;
   }
 
   // ---- HTTP: /mobile-gateway/api/<method...> -----------------------------

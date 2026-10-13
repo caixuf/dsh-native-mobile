@@ -566,6 +566,47 @@ for (const method of exactOnly) {
 const allowed = await api('session.list', { token });
 check('普通方法未被闸门误伤', allowed.status === 200, `status=${allowed.status}`);
 
+// ---- 4b. 闸门绕过回归（verifier 独立发现过的真实漏洞面）----------------
+// 机理：若闸门按**原样**比对，`./settings.describe` ≠ `settings.describe` 于是放行，
+// 而下游会把它归一化成 settings.describe —— 「闸门看到的字符串 ≠ 上游执行的端点」。
+//
+// ⚠️ 重要实测发现（决定了这组断言该怎么写）：
+//   **Node 的 http server 在请求到达 handler 之前就已归一化 req.url**：
+//       /a/./b     → /a/b
+//       /a/x/../b  → /a/b
+//       /a/%2e/b   → /a/b
+//   所以用 fetch/curl 发这类路径，到我们手里时**已经归一化**，闸门当然拦得住 ——
+//   这会让本组断言变成假绿（实测：把闸门退回有漏洞的旧版，本组仍全绿）。
+//   真正能测出差异的是**原始 socket 手写请求行**，见 scripts/verify-gate-raw.mjs。
+//
+// 因此这里保留本组作为「路由层可达性」检查，但**明确标注其局限**，
+// 并把归一化差异的验证交给 verify-gate-raw.mjs（它已纳入 verify 流程）。
+console.log('\n[4b] 特权路径变体（注意：Node 已预归一化，本组不足以证明闸门健壮）');
+const bypassAttempts = [
+  ['点号路径段 ./', '/mobile-gateway/api/./settings.describe'],
+  ['上级路径 x/../', '/mobile-gateway/api/x/../settings.describe'],
+  ['双斜杠 //', '/mobile-gateway/api//settings.describe'],
+  ['百分号编码 %2e', '/mobile-gateway/api/%2e/settings.describe'],
+  ['大小写混合', '/mobile-gateway/api/SETTINGS/DESCRIBE'],
+  ['credentials + ./', '/mobile-gateway/api/./credentials.set'],
+];
+for (const [label, path] of bypassAttempts) {
+  const res = await fetch(`${base}${path}`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
+    body: JSON.stringify({ type: 'client-request', rpcId: 'r1', method: 'x', payload: { args: {} } }),
+  });
+  const text = await res.text();
+  // 两种拦截都算安全：
+  //   403 + loopback_only → 我们的闸门拦下
+  //   404 + not found     → 宿主在路由匹配前拒绝
+  // 但**必须**是其中之一，绝不能到达主机（200）。
+  const blocked =
+    (res.status === 403 && /loopback_only/.test(text)) ||
+    (res.status === 404 && /not found/.test(text.trim()));
+  check(`${label} 未到达主机`, blocked, `status=${res.status} ${text.slice(0, 90)}`);
+}
+
 // 前缀闸门也要**独立**覆盖：挑那些「不在精确名单里、只能靠前缀拦住」的方法。
 // 突变测试发现：清空 PRIVILEGED_PREFIXES 时测试曾全绿，因为 settings.*/credentials.*
 // 同时也在精确名单里 —— 两道闸互为掩护。这几个方法只在精确名单之外，
