@@ -500,3 +500,107 @@ node packages/dsh-mobile-gateway/scripts/act-as-app.mjs http://127.0.0.1:19387
 - **未修改任何被测源码**（App、网关、测试均未改）
 - **未重启 DSH 进程**（避免影响其他并行工作；重启是建议动作，留给 Lead）
 - **未执行任何会改动设备/系统状态的操作**（无设备可动）
+
+---
+
+## 8. Lead 的处置记录（闭环）
+
+本节由 Lead 追加，记录本报告各条发现的处置结果与独立复核证据。
+
+### 8.1 §4.2-1 `session.history` 不存在 —— 已确认并修复
+
+**独立复核方式**：自写 asar 扫描器，遍历 11470 个文件节点、实扫 423 个
+`@deepseek-ai/dsh-*` 包，与报告结论一致：
+
+```
+"session.history"  →  0 次
+"session.page"     →  dsh-api-session-controller/lib/client.js
+"requestId"        →  该包内 37 次
+```
+
+**从真实源码抠出的权威签名**（比报告更进一步，直接取自实现）：
+
+```js
+// readPage()
+const result = await this.remote.session.page({
+  address: this.address, throughSeq, ...request
+}, signal);
+for (const record of result.value.records) assertSessionWireEvent(record.event);
+
+// prompt() —— 官方自己补 requestId，证明其为必填
+result = await this.remote.session.prompt({
+  requestId: requestId ?? randomUUID(),
+  sessionId, mode, content, clientTimeZone
+}, signal);
+```
+
+**已修**：
+- `ChatViewModel.reload()` 与 1.6s 轮询 → `session.page`；新增 `pageRequest()`
+  统一构造 `{address:{kind:'session',sessionId}, throughSeq, maxMessages}`，
+  新增 `recordsOf()` 适配 `records[].event`（保留 `events[]` 兼容分支）。
+- `send()` 补 `requestId = UUID.randomUUID()`。
+- `detectRunning()` 同步改吃 `records`。
+- `docs/api-contract.md` / `.json` 对应条目已改，并在 md 顶部加了**来源警告**：
+  该文档挖自客户端 bundle，与真实主机可能不同步；取证顺序必须是
+  「真实主机源码 → 真实请求 → 该文档」。
+- App 重新编译通过（debug 20.6 MB / release 13.86 MB）。
+
+### 8.2 §4.2-3 `/api/respond` 信封 —— 已确认并修复（比报告多一处）
+
+报告指出应答体形状可疑。Lead 复核时发现**更基础的一层错误**：
+`Envelopes.clientResponse` 把裸业务对象 `{kind:"allow"}` 当作 `result` 传，
+而契约要求 `result: { ok, value }`。已改为由 `clientResponse` 统一补信封。
+
+网关侧补了覆盖（此前 `/api/respond` **零覆盖**）：转发路径、`{ok,value}` 信封
+原样透传、rpcId 未被改写、无令牌 401。
+
+**仍为「未验证」**：服务端 pending 表（报告与项目契约都标注 UNVERIFIED）。
+
+### 8.3 §3.6 对测试的批判 —— 采纳，并补上了架构缺口
+
+报告指出「进程内 E2E 的假宿主对任意方法名都返回成功，因此证明不了 App 可用」。
+**这条批评完全正确**，Lead 据此做了三件事：
+
+1. **假宿主加方法契约校验**：只接受白名单方法，且校验必填参数
+   （`session.page` 缺 `throughSeq` 会被拒）。新增 4 条断言验证这层防护本身有效；
+   突变测试删掉 `session.page` 会红 2 条。
+2. **新增 `scripts/check-app-methods.mjs` 门禁** —— 补上此前完全缺失的一环：
+   *App ↔ 主机的方法名一致性没有任何自动化守护*。该门禁从 app.asar 枚举真实主机
+   方法名，与 App 的每个 `.call("…")` 逐个比对。
+   实测：注入 `session.history` 或 `session.abort` 都会被抓住并给出精确行号，
+   还原后归零；找不到 app.asar 时**明确报无法验证并非零退出**，不静默跳过。
+3. **突变测试暴露的旁证**：把 App 改回 `session.history`，网关 50 项断言**仍全绿**
+   —— 这从反面证实了报告的判断，也说明为什么必须新增第 2 条那种独立门禁。
+
+### 8.4 §6-1 重启 DSH —— 仍未完成（当前唯一阻塞）
+
+Lead 复核确认了报告的时间线判断，证据：
+
+```
+磁盘三份 index.mjs  →  path: '/mobile-gateway',   （已修）
+DSH 进程启动时间    →  09:50:57
+网关日志 ready      →  09:51:02
+path 修复写入磁盘   →  09:54（进程启动之后）
+```
+
+即：**进程内运行的是旧模块，Node ESM 不热重载**。健康检查仍 404 与此一致。
+磁盘已是修复版（三份哈希一致），重启后即可生效。
+
+### 8.5 尚未处置（如实列出）
+
+| 项 | 状态 |
+|---|---|
+| §6-4 `/api/respond` 服务端 pending 表 | 未验证（需官方客户端实测抓包） |
+| §6-5 release 包正式签名 | 未做（当前与 debug 同证书，已知问题） |
+| §6-6 `PairingClient.textPrompt()` 死代码形状错误 | 未清理 |
+| §6-7 真机验证 | 无设备、无模拟器镜像，仍缺 |
+
+### 8.6 当前验证状态汇总
+
+| 检查项 | 结果 |
+|---|---|
+| 网关 E2E（`test/e2e.mjs`） | **50 通过 / 0 失败** |
+| App→主机方法名门禁（`check-app-methods.mjs`） | **全部存在** |
+| 契约审计（`audit-contract.mjs`） | 信封形状全部通过 |
+| 突变测试（4 类安全闸门） | 注入即红，还原即绿 |
+| 真实环境端到端 | **被 8.4 阻塞**（待重启 DSH） |
