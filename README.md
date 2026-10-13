@@ -48,7 +48,7 @@ Android App ──HTTP/WS──▶ dsh-mobile-gateway ──进程内──▶ D
 | `GET /mobile-gateway/health` | 公开，只回服务名与实例名 |
 | `POST /mobile-gateway/pair` | 需一次性配对码，码 5 分钟过期且一次性消费 |
 | `POST /mobile-gateway/api/*` | 需有效设备令牌 |
-| `WS /mobile-gateway/events.*` | 同上；认证失败**不完成握手**，直接裸 HTTP 401/403 |
+| `WS /mobile-gateway/remote.mux` | 同上；认证失败**不完成握手**，直接裸 HTTP 401/403 |
 | `GET /mobile-gateway/manage*` | **仅回环 TCP 对端**（按 `req.socket.remoteAddress` 判断，不是 Host 头） |
 
 **特权方法闸门**：官方 node 载体把 `settings.*`、`credentials.*`、`pluginManager.*`、
@@ -109,31 +109,74 @@ Release 构建目前复用 debug 签名（先能装上跑通，正式签名后�
 
 ## 测试
 
-网关的端到端测试在**真实 HTTP + WebSocket** 上跑，只有 DSH 宿主服务被打桩：
+**网关端到端**：真实 HTTP + WebSocket，只打桩 DSH 宿主服务。
 
 ```powershell
 cd packages\dsh-mobile-gateway
-node test\e2e.mjs
+node test\e2e.mjs          # 81 断言
 ```
 
-覆盖 18 项断言：配对码格式与一次性消费、令牌鉴权（缺失/伪造/吊销）、
-`/api` 桥的透传与业务错误透传、**特权方法被拒且未触达宿主**、两条事件流的帧形状与数量、
-错误令牌无法升级 WS。
+覆盖：配对码格式与一次性消费、令牌鉴权（缺失/伪造/吊销）、`/api` 桥透传与业务错误、
+**特权方法被拒且未触达宿主**、单条 mux 的帧协议（`open`/`item`/`end`/`error`）、
+协议违规（重复 streamId 关 1008、非法帧关 1008、未知 streamId 静默丢弃）、
+`$events/result` 应答通道、**审批/提问的 outcome 形状分型**、以及一组
+**App 源码静态守护**（防旧通道与错误形状回归）。
+
+**公网全接口巡检**（需先起好公网入口，或换成本机地址）：
+
+```powershell
+node packages\dsh-mobile-gateway\scripts\check-all-endpoints.mjs https://203.0.113.10:2444   # 45 断言
+```
+
+**子代理会话判据复核**（对每条会话真的发一次 `session/page`）：
+
+```powershell
+node packages\dsh-mobile-gateway\scripts\verify-subagent-classifier.mjs https://203.0.113.10:2444 dsh <密码>
+```
+
+**App 编译**：
+
+```powershell
+cd apps\android
+.\gradlew.bat assembleDebug
+```
 
 ## 当前实现范围
 
-已做：设备配对（扫码 + 手输）、设备列表、会话列表与搜索、新建会话、
-会话历史与流式刷新、发消息、停止当轮、审批/提问卡片应答、断线退避重连、令牌加密存储。
+**已做**：账号密码登录（+ 配对码/扫码备选）、设备列表、会话列表（**子代理会话自动分流**）、
+新建会话、会话历史分页、发消息、停止当轮、审批/提问卡片应答、断线指数退避重连、
+令牌加密存储（`EncryptedSharedPreferences`）。
 
-**已知取舍**：对话流用的是 `session.history` 轮询（1.6s），不是官方 `session/follow` 订阅。
-官方把 `session/follow` 定义成 RemoteStreamHandle——客户端要用稳定 rpcId 发起、主机逐帧回推、
-客户端逐帧应答，而这条链路的帧形状在已公开的官方包里没有可验证的定义。详见
-`docs/api-contract.md` 的 Gaps 一节。宁可先用必然可用的路径跑通，也不要猜一个可能错的形式。
+**已知取舍**：
+
+- **历史读取走 `session.page` 分页 + 增量轮询**，不是官方 `session/follow` 订阅。
+  事件流（单条 mux + `$events`）已实现，但**尚未端到端验证**（需重启 DSH 后真机确认）；
+  在那之前轮询是唯一已验证可用的路径。
+- **子代理会话默认折叠**：真实主机把它们也列在 `session/list` 里，但它们**不能用裸
+  sessionId 打开**（会得到 `subagent Sessions require their durable parent address`）。
+  判据**只认 `origin == "subagent"`** —— 用 id 前缀或 `parentSessionId` 都会误伤
+  （实测有 `session.fork` 出来的普通会话带 `parentSessionId` 却能正常打开）。
+- **审批应答不支持"记住本次选择"**：宿主 `ApprovalOutcome` 词表只有
+  `allowed-once | rejected | cancelled | unavailable` 四项，**没有"记住"这一档**；
+  发词表外的值不会报错，而是被**静默归一化成 `unavailable`**（表现为"点了允许却说没有审批通道"）。
 
 ## 文档
 
 - `docs/architecture.md` — 设计取舍与替代方案
 - `docs/protocol.md` — 网关线协议与安全模型
-- `docs/api-contract.md` — 从官方 SDK 提取的完整 `/api` 契约（53 个方法 + 22 种事件帧）
+- `docs/api-contract.md` — `/api` 契约（**含 4 处已证伪条目的更正**，取证顺序：真实主机源码 → 真实请求 → 本文）
 - `docs/host-seams.md` — DSH 宿主插件可用接缝（实测取证）
+- `docs/public-access.md` — 公网访问：FRP + Caddy 白名单（地址为占位符）
+- `docs/device-test.md` — **两轮真机/公网实测报告**（含 5 个真实缺陷的定位与修复）
+- `docs/test-audit.md` — 测试体系审计
 - `docs/BUILD.md` — 从零构建工具链
+- `docs/minimax-code-study.md` — MiniMax Code 客户端设计调研
+- `docs/open-source-android-agents.md` — 开源安卓 AI Agent 客户端源码研读（8 个仓库）
+
+## 贡献
+
+见 [CONTRIBUTING.md](CONTRIBUTING.md)。
+
+## 许可证
+
+[Apache-2.0](LICENSE)。
