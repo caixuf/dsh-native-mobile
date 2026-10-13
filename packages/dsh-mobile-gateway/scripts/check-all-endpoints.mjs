@@ -16,7 +16,23 @@
  */
 
 const base = (process.argv[2] ?? 'http://127.0.0.1:19387').replace(/\/+$/, '');
-const publicMode = base.includes('203.0.113.10');
+
+// 「是不是从公网入口打」——按**主机名**判断，不要硬编码某个 IP。
+//
+// ⚠️ 这里曾经写死 `base.includes('<某个公网 IP>')`。开源脱敏把那串 IP 换成了
+// RFC 5737 占位符，于是**判定逻辑自己也跟着被换掉**，对真实的公网地址恒返回 false，
+// 结果「管理面仅回环」的那一步在公网 vantage 下被错误地执行了，报出一个假失败。
+// 教训：脱敏替换要区分「文档里的示例地址」与「代码里的判定依据」——
+// 后者不该依赖具体 IP，而应依赖结构特征（是否回环 / 是否本机）。
+function isLoopbackTarget(url) {
+  try {
+    const host = new URL(url).hostname;
+    return host === '127.0.0.1' || host === 'localhost' || host === '::1';
+  } catch {
+    return false;
+  }
+}
+const publicMode = !isLoopbackTarget(base);
 
 let pass = 0;
 let fail = 0;
