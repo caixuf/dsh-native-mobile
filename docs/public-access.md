@@ -141,3 +141,44 @@ Add-MpPreference -ExclusionPath "C:\Users\me\Downloads\android-toolchain\frpc.ex
 
 **不要用 `systemctl status` 排查崩溃循环的服务**：它的输出会把 SSH 通道写满，导致调用方看起来
 「卡死」。用 `systemctl is-active --quiet` 或直接看日志文件。
+
+**判断可达性前先绕开本机代理。** 这台机器全局设了 `HTTP_PROXY/HTTPS_PROXY=127.0.0.1:7897`，
+`curl` 会自动走代理，响应里那句 `HTTP/1.1 200 Connection established` 就是 CONNECT 握手。
+带着代理做的可达性观测会**同时失真两个方向**：把连不通的目标看成连得通，
+也把真实的失败路径（`curl` 返回码 `000`）掩盖掉。凡是判断「某地址通不通」，
+一律加 `--noproxy '*'`，或换一个网络 vantage（VPS 上没有代理环境）复测。
+
+## 顺带修的：example.com 的证书签不下来
+
+不属于本项目，但在这台机器上顺手处理了，留档以免复发。
+
+**根因**：主 Caddyfile 的 `:80` 只声明了 `http://203.0.113.10 {}`——**按 IP 匹配**。
+而 443 侧的站点块写的是 `example.com, www.example.com { ... }`（无显式 `http://` 前缀）。
+ACME HTTP-01 验证带 `Host: example.com` 打到 `:80` 时匹配不到那个按 IP 的块，
+被 308 跳走，**挑战令牌从未被应答过**，证书因此永远签不下来。
+
+**修法**（走 ACLI 的 `sites/` 扩展点，没碰主 Caddyfile）：
+
+```
+/etc/caddy/acli.d/sites/acme-http.caddy
+
+http://example.com, http://www.example.com {
+}
+```
+
+空块，不放任何业务路由——只让 Caddy 把 `/.well-known/acme-challenge/` 挂到 `:80`，
+其他请求照旧 308 跳 HTTPS。验证：改动前 `Host: example.com` 返回 308，改动后返回 200。
+
+**遗留**：`example.com` 的 DNS 里有两条 A 记录（`203.0.113.10` 与 `198.51.100.7`）。
+后者服务已到期待下线，用户会手动删除；删掉之后验证请求只会落到本机，证书即可签发。
+在删掉之前该域名约有一半概率失败。
+
+**过程中的两处自我更正**（留着当教训）：
+
+1. 一开始判断「`example.com` 的 DNS 没指向这台 VPS」——**错的**。DNS 一直指着它，
+   只是同时还有另一条指向一台已经半停机的机器。
+2. 中途观测到 `198.51.100.9`（`Server: TencentEdgeOne`，返回 418）一度让我以为
+   域名前面还挂着 CDN——**也是代理造成的假象**。用 8.8.8.8 / 114.114.114.114 /
+   223.5.5.5 三个解析器交叉查询，结论一致：**没有 CNAME，只有两条 A 记录**。
+
+教训是一样的：先用正确的 vantage 把事实钉死，再下结论。
