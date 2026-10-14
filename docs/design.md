@@ -32,17 +32,35 @@
 | 层 | 负责 | 不负责 |
 |---|---|---|
 | **DSH 宿主** | 会话、事件、审批状态机 | 认证、设备管理 |
-| **网关插件** | 认证、设备令牌、特权方法闸门、`/api` 透明桥 | 任何业务语义翻译 |
+| **网关插件** | 认证、设备令牌、特权方法闸门、`/api` 桥 | 业务语义翻译（**有一个例外，见下**） |
 | **客户端** | 信封拼装、重连退避、事件去重、UI | 依赖网关提供业务便捷接口 |
 
-🔴 **网关刻意不做语义翻译**。客户端面对的就是 DSH 原生协议。新增「便捷 API」会让
-网关随上游版本腐坏 —— 这是明确否掉过的方案（详见 `docs/architecture.md` §1）。
+**准确的说法**（2026-10-14 校正，此前写成「刻意不做语义翻译」说得太满）：
+
+> **信封与 RPC 表面不做翻译；唯一的例外是 `session/list` 的响应瘦身。**
+
+`bridge.mjs` 对 `session/list` 的 `projections.values` 做字段白名单裁剪
+（只留 `title` / `sessionListMetadata`），因为这条响应原本会带很重的字段。
+**这是性能优化，不是契约。**
+
+⚠️ 它已经**造成过一次真实事故**：早前把**顶层**字段也一并丢弃，客户端拿不到
+`origin` / `parentSessionId`，于是无法判断「哪一行能点开」——
+实测 54/120 是子代理会话，用户点进去全是错误页。
+
+> **教训**：只要网关碰了 payload，它就和「自造 API」一样会随上游腐坏，
+> **而且失败是静默的**。所以任何响应改写都应当：
+> ① 可配置关闭 ② 有对照测试（瘦身前后的**可打开集合**必须一致）。
 
 ---
 
-## 二、对外契约（HTTP 五个面）
+## 二、对外契约
 
 这是**唯一稳定的接口**，Electron 端照此实现即可，不需要读 DSH 源码。
+
+> ⚠️ **但「不需要读 DSH 源码」有个限度**：下表把面说清了，但**形参名只列了常用的几个**。
+> 主机真实表面是 **53 个 unary 方法 + 35 个 Remote 端点**，而形参名**因方法而异、
+> 无法从方法名推导**。完整表见 `docs/api-contract.json`，或用
+> `packages/dsh-mobile-gateway/scripts/probe-arg-names.mjs` 对运行实例复验（见 §2.3）。
 
 | 方法 | 路径 | 鉴权 | 用途 |
 |---|---|---|---|
@@ -50,7 +68,7 @@
 | POST | `/mobile-gateway/login` | 账号密码 | 换长期设备令牌 |
 | POST | `/mobile-gateway/pair` | 一次性配对码 | 换长期设备令牌 |
 | POST | `/mobile-gateway/api/<method>` | Bearer | DSH `/api` 的透传桥 |
-| WS | `/mobile-gateway/remote.mux` | Bearer | **唯一**的 mux，承载事件流 |
+| WS | `/mobile-gateway/remote.mux` | Bearer（或 `?token=`，见 §2.4.1） | **唯一**的 mux，承载事件流 |
 | GET/POST | `/mobile-gateway/manage*` | 回环 TCP 对端 | 管理面板（铸码/吊销） |
 
 ### 2.1 探活
@@ -214,6 +232,63 @@ mux 是「一条 WS 承载多条逻辑流」，帧协议：
 - **`waterfall`** → 才在等结果（审批/提问），带 **eventId**
 - **`cancel`** → 忽略
 
+### 2.4.1 WebSocket 怎么带令牌（Electron 必读 🔴）
+
+**浏览器/渲染进程的 `new WebSocket(url)` 无法设置自定义请求头** —— 这是 Web 规范限制，
+不是实现疏漏。所以 `Authorization: Bearer` 那条路在 Web 环境**走不通**。
+
+网关留了 query 兜底（`bridge.mjs` 的 `readToken()`）：
+
+```ts
+// 二选一
+ws = new WebSocket(`${base}/mobile-gateway/remote.mux?token=${token}`)   // ① query
+// ② 或在**主进程**用 Node 侧 WebSocket / net 模块，正常带 Authorization 头
+```
+
+| 方案 | 代价 |
+|---|---|
+| ① `?token=` | 30 天有效的**完全控制凭据进 URL** → 会进反代/隧道访问日志（本项目公网链路是 Caddy + FRP）、Electron devtools、历史记录 |
+| ② **主进程持有连接** | 无泄漏面；渲染进程经 IPC 订阅事件 |
+
+> **推荐 ②**，理由不只是安全：它与 §4.1「连接必须是进程级的」是**同一件事**。
+> 参考实现（Kotlin/OkHttp）能带头，所以从未遇到这个问题 ——
+> **Electron 端不能照抄这个假设**。
+
+⚠️ 现有 `src/services/connection.ts` 用的是 `new WebSocket(wsUrl)`，
+**既无头也无 query** → 网关 `handleUpgrade` 拿不到 token → **401 拒绝**。
+即仓库里那份 Web 实现的事件流是连不上的。
+
+### 2.4.2 特权闸门只覆盖 HTTP 路径（已实测，不是漏洞但要知道）
+
+`isDenied()` 在 `bridge.mjs` 里**只有一个调用点**（`handleApi` 内），
+`handleUpgrade → openStream → pump → wireStream.open(endpoint)` **不经过闸门**，
+把客户端自选的 endpoint 原样交给主机。
+
+**2026-10-14 实测结论：这不构成可利用的提权旁路**，原因是
+**特权方法都是 unary 方法，不是流方法** —— 主机自己会拒：
+
+```
+open(endpoint='settings/describe')
+→ error { code:'gateway/signature-invalid',
+          message:'typert gateway: settings/describe:
+                   unary Remote methods cannot be opened through the stream carrier' }
+```
+
+逐个验证 16 个特权方法走 mux 的结果：**2 个明确 unary 被拒、7 个主机上不存在、
+7 个先报 args 形状错误**（复验其一：`credentials/describe` 传对 `refs` 后
+同样返回上面的 unary 拒绝）。
+
+> **但仍要记住这条边界**：闸门是**默认放行（denylist）**，不是 fail-closed。
+> 上游若将来新增一个**流式**的特权端点，它会**自动放行**。
+> 更稳的做法是对 `/api` 与 mux 都改 **allowlist**（本项目需要的方法集合是封闭且已知的：
+> 会话读写 + 事件应答）。
+>
+> 🔎 判断某个 endpoint 是不是流方法的方法：用 HTTP 调它，看是否回
+> `stream Remote methods must be opened through the stream carrier`。
+> ⚠️ **注意主机校验顺序是「先查 args 形状，再判能否走 stream carrier」** ——
+> 传空 args 时会先报 `args fields do not match`，
+> 看起来像流方法，**是误判**（我第一轮就踩了这个）。
+
 **应答不是 WS，也不是 `/api/respond`**（后者真实主机上不存在），而是普通 RPC：
 
 ```http
@@ -254,12 +329,33 @@ POST /mobile-gateway/api/$events/result
 
 指数退避 `500ms × 2ⁿ`，上限 10s，带 50–100% 抖动。
 
+⚠️ **必须区分「传输故障」与「凭据失效」**（否则会掉进无限重试）：
+
+| 情况 | 处理 |
+|---|---|
+| 网络断开 / 超时 / 5xx | **重试**（退避） |
+| **401 / 403** | **停！** 凭据已失效 → 停止重连，提示用户重新登录/配对 |
+
+> 🔴 把这条和 §6.1「常驻进程不要在断线时自杀」**同时**照做，会得到**没有出口的死循环**：
+> token 过期/被吊销/被另一台设备轮换后，服务端**恒回 401**，
+> 而进程永不退出、每 10 秒重试一次 —— **永远**。
+>
+> 401 的三种来源：**30 天 TTL 到期**、**被吊销**、**被同名设备轮换**（见 §4.3.1）。
+> 三者表现**完全相同**，客户端都要归到「请重新登录」。
+
 ### 3.3 事件去重（**必做**）
 
 主机下发的审批/提问带**稳定的 eventId**，**重连后会被重放**。
 不去重会导致同一条审批反复弹窗。
 
 按 **eventId** 去重（不是 rpcId）—— 参考实现用一个 `LinkedHashSet` 记已应答的 id。
+
+⚠️ **去重状态需要跨重启存活**：`LinkedHashSet` 是内存态。
+而「应用重启」与「重连」对去重而言是同一件事 —— 主机在重连时**无条件重放**。
+进程重启后集合清空，用户就会**再次**看到已处理过的审批弹窗。
+
+> 要求：已应答 eventId **持久化**（至少覆盖最近 N 条或一个 TTL 窗口），
+> 并给出清理策略（eventId 是 UUID，长期累积会撑大配置目录）。
 
 ### 3.4 子代理会话的开门判据
 
@@ -313,10 +409,18 @@ POST /mobile-gateway/api/$events/result
 1. **连接必须是进程级的**，不能绑在窗口/页面上
    > 参考实现最初把连接绑在 Adapter/窗口生命周期上，窗口一关连接就断 ——
    > 电脑端卡在「等待授权」，手机完全不知道。这是**架构问题，不是加个通知能解决的**。
-2. **必须有前台常驻/托盘进程**防系统回收（Android 是前台服务，Electron 是托盘 + 主进程常驻）
+2. **必须有常驻进程**防系统回收
+   > ⚠️ **这不是「照抄 Android 前台服务」** —— 两者语义差别很大，见 §七的平台差异表。
+   > Android 的 FGS 是**操作系统级保活契约**；Electron 托盘**只是「不退出」**，
+   > 且默认 `window-all-closed → app.quit()` 会直接退出（`electron/main.cjs` 当前正是如此），
+   > 必须**显式阻止默认 quit**。这是最容易漏的一步。
 3. **通知要能直接应答**，不必先打开应用
    > 锁屏上点「允许一次」→ 后台把应答发出去 → 通知自动消失，用户继续做别的事。
    > 强迫用户先解锁进应用，就把「立刻响应」变成了「先解锁、再找应用、再点允许」。
+   >
+   > ⚠️ **但这是平台受限能力，不是跨平台保证**：Electron 的通知按钮
+   > **仅 macOS + Windows 支持**（且 macOS 需已签名 + `NSUserNotificationAlertStyle=alert`），
+   > **Linux 无按钮**。必须按平台给降级路径（Linux → 点通知打开应用内应答）。
 
 **不做的话后果很具体**：连接掉线时若停掉常驻进程，等于**一旦掉线永远回不来**。
 （参考实现踩过这个坑 —— 逻辑反转，见 §6.1。）
@@ -346,6 +450,33 @@ POST /mobile-gateway/api/$events/result
 2. 规范化后的 `baseUrl`（退路，当 instance.name 缺失时）
 
 > ⚠️ 这是 **UI 层的展示去重，不是安全边界** —— 鉴权始终靠 token。
+
+### 4.3.1 🔴 设备身份必须由客户端生成（实测：同名会互相踢下线）
+
+上面讲的是「**同一台电脑**换地址」。反过来还有一个**更严重**的方向：
+
+**网关的设备记录合并键是 `platform + name`**（`store.mjs` 的 `#issueDevice`）。
+命中已有记录时**只轮换 token、续期** —— 于是**旧 token 立即失效**。
+
+**2026-10-14 实测**：
+
+```
+同一 deviceName 登录两次
+  → deviceId 相同（复用记录），token 变了
+  → 旧 token 请求 /api → HTTP 401（已被踢）
+  → 新 token 正常 200
+```
+
+**后果**：客户端若拿「应用名」当 `deviceName`（例如都叫 `Electron`），
+**多台电脑会互相踢下线** —— 表现为「另一台机器莫名其妙掉线、要重新登录」。
+
+> Android 上不突出（一人一机），**桌面端多机是常态**，所以这是 Electron 必须处理的。
+
+**约束**：客户端应**生成并持久化一个稳定的设备标识**（随机 ID，或用 hostname 派生），
+**不要用固定的应用名**。
+
+**配套**：token 被轮换/吊销/过期**都表现为 401**，客户端必须有**明确的分流** ——
+见 §3.2。
 
 ---
 
@@ -455,6 +586,38 @@ LinkState.Disconnected -> stopServiceIfNeeded()   // ❌ 逻辑反转
 - **锁屏审批端到端**：没触发过真实审批。这是**最该优先验证**的一项
 - 真机长期后台存活（厂商省电策略下）
 - 公网隧道下的长连接稳定性
+
+### 正在进行的 Electron 重构：三处已核实的坑
+
+以下是 **2026-10-14 逐条核实**的现状，不是历史包袱而是**进行中的代码**：
+
+| 位置 | 现状 | 后果 |
+|---|---|---|
+| `electron/main.cjs` L43-45 | `window-all-closed → app.quit()` | **托盘常驻不成立** —— 关窗即退出。必须**显式阻止默认 quit**，这是最容易漏的一步 |
+| `src/services/store.ts` L10/L24 | token 硬编码 + **写 localStorage（明文）** | 凭据明文落盘。桌面端应改用 `safeStorage`（但注意它的语义弱于 Android Keystore，见下） |
+| `src/services/connection.ts` L217 | `new WebSocket(wsUrl)` —— **无头、无 query** | 网关拿不到 token → **401**，事件流根本连不上 |
+| `src/services/connection.ts` L189/L331/L361 | `token.includes('demo')` 走模拟分支 | 演示路径与真实路径混在一起，容易误判「已接通」 |
+
+> **建议**：重构以**真实网关为唯一数据源**，先删掉 demo 分支与 localStorage 凭据路径。
+> 这几处都不是"待优化"，是**当前状态跑不通**。
+
+**平台差异（Android 结论在 Electron 不成立）**：
+
+| 议题 | Android | Electron |
+|---|---|---|
+| 保活 | 前台服务是**操作系统级契约**（manifest 声明类型 + 系统通知 + 省电白名单语义） | 托盘**只是「不退出」**，无系统级语义；且默认 `window-all-closed` 会 quit |
+| 通知内应答 | 前台服务通知可带 action，锁屏直接应答 | **平台受限**：`NotificationAction.button` 仅 **macOS + Windows**；macOS 还需**已签名** + `Info.plist` 的 `NSUserNotificationAlertStyle=alert`，否则按钮**不出现**；**Linux 无按钮** |
+| 通知正文长度 | 无硬限制 | macOS **限 256 字节**，超长截断 |
+| 通知静默丢弃 | — | Windows 需 Start Menu 快捷方式 + `AppUserModelID`，否则**静默丢弃**（开发期须手动 `app.setAppUserModelId()`） |
+| 安全存储 | Keystore/`EncryptedSharedPreferences`（硬件支撑） | `safeStorage` **弱一档**：Windows 走 DPAPI（**同用户下其他应用可解密**）；Linux 无 secret store 时**用硬编码明文口令加密＝等于没加密**（可查 `getSelectedStorageBackend()` 是否为 `basic_text`）；macOS 签名不一致会**每次更新弹 Keychain 授权** |
+
+> ⚠️ 因上表，**§4.1「通知可直接应答」不应写成跨平台承诺**，需按平台给降级路径
+> （Linux 退化为「点通知打开应用内应答」）。
+
+> 出处：[Electron NotificationAction](https://www.electronjs.org/docs/latest/api/structures/notification-action) ·
+> [Notifications 教程](https://www.electronjs.org/docs/latest/tutorial/notifications) ·
+> [safeStorage](https://www.electronjs.org/docs/latest/api/safe-storage) ·
+> [app 文档（window-all-closed 默认退出）](https://www.electronjs.org/docs/latest/api/app)
 
 ---
 
