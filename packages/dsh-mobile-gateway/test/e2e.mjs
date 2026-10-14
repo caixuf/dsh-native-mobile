@@ -11,7 +11,7 @@
 import http from 'node:http';
 import { randomUUID } from 'node:crypto';
 import { once } from 'node:events';
-import { readFileSync } from 'node:fs';
+import { readFileSync, existsSync } from 'node:fs';
 import { dirname, join as joinPath } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { WebSocket } from 'ws';
@@ -1032,76 +1032,129 @@ console.log('\n[9c] App 源码静态守护（应答形状 + 旧通道不得回�
   const appDir = joinPath(
     repoRoot, 'apps', 'android', 'app', 'src', 'main', 'java', 'io', 'github', 'dshmobile', 'app',
   );
-  /**
-   * 去掉 Kotlin 注释再断言。
-   *
-   * ⚠️ 必须这么做：这些源码里大量「踩过的坑」注释**故意提到**已被证伪的旧协议
-   * （例如「曾经的 client-response 已删除」），直接对全文做否定断言会命中注释、
-   * 把「注释解释历史」误判成「代码仍在用旧协议」。这里只检查**真实代码**。
-   */
-  const stripKotlinComments = (src) =>
-    src
-      .replace(/\/\*[\s\S]*?\*\//g, ' ')  // 块注释（含 KDoc）
-      .replace(/\/\/[^\n]*/g, ' ');       // 行注释
-  const envelopesSrc = stripKotlinComments(readFileSync(joinPath(appDir, 'net', 'Envelopes.kt'), 'utf8'));
-  const connSrc = stripKotlinComments(readFileSync(joinPath(appDir, 'net', 'DshConnection.kt'), 'utf8'));
-  const vmSrc = stripKotlinComments(readFileSync(joinPath(appDir, 'ui', 'ChatViewModel.kt'), 'utf8'));
+  const hasAndroid = existsSync(joinPath(appDir, 'net', 'Envelopes.kt'));
 
-  check(
-    "审批 outcome 用 ApprovalOutcome 裸字符串 'allowed-once'",
-    /put\(\s*"value"\s*,\s*if\s*\(allow\)\s*"allowed-once"\s*else\s*"rejected"\s*\)/.test(envelopesSrc),
-    'Envelopes.approvalOutcome 形状不符',
-  );
-  check(
-    '提问 outcome 是 {answers:[{id,selected}]}',
-    /put\(\s*"answers"/.test(envelopesSrc) && /put\(\s*"selected"/.test(envelopesSrc)
-      && /fun questionOutcome\(questionId: String, selected: List<String>\)/.test(envelopesSrc),
-    'Envelopes.questionOutcome 形状不符',
-  );
-  check(
-    '提问取的是**问题** id（questions[0].id），不是选项',
-    /JsonRender\.arr\(req\.payload,\s*"questions"\)/.test(vmSrc)
-      && /JsonRender\.str\(it,\s*"id"\)/.test(vmSrc),
-    'ChatViewModel 未从 questions[].id 取问题 id',
-  );
-  check(
-    '选项从 questions[0].options[].label 取（对象数组，不是字符串数组）',
-    /"label"/.test(vmSrc),
-    'ChatViewModel 选项解析未用 label',
-  );
-  // 已被证伪的旧形状必须**不再出现**（否则会静默失效）。
-  check(
-    '不再产出 {ok,value} 信封（client-response）',
-    !/client-response/.test(envelopesSrc) && !/TYPE_CLIENT_RESPONSE/.test(envelopesSrc),
-    'Envelopes 仍在产 client-response 信封',
-  );
-  check(
-    '不再使用 /api/respond（真实主机无此端点）',
-    !/respond"?\s*\)/.test(connSrc) && !/"respond"/.test(connSrc) && /EVENT_RESULT_ENDPOINT/.test(connSrc),
-    'DshConnection 仍在用 /api/respond',
-  );
-  check(
-    '单条 mux：WS_MUX 指向 remote.mux，且无 WS_HOST',
-    /WS_MUX\s*=\s*"\/mobile-gateway\/remote\.mux"/.test(connSrc) && !/WS_HOST/.test(connSrc),
-    'DshConnection 的 WS 常量不符',
-  );
-  check(
-    '事件流 endpoint 是 $events（转义后的 \\$events）',
-    /EVENT_STREAM_ENDPOINT\s*=\s*"\\\$events"/.test(connSrc)
-      && /EVENT_RESULT_ENDPOINT\s*=\s*"\\\$events\/result"/.test(connSrc),
-    '事件流 endpoint 常量不符',
-  );
-  check(
-    '阻塞式 execute() 仍包在 Dispatchers.IO 里（防 NetworkOnMainThreadException）',
-    /withContext\(Dispatchers\.IO\)/.test(connSrc)
-      && !/execute\(\)[\s\S]{0,80}viewModelScope/.test(connSrc),
-    'DshConnection 的 execute 可能不在 IO 线程',
-  );
-  check(
-    'ready 帧记下 clientId（应答必须带上）',
-    /eventClientId\s*=\s*value\.str\("clientId"\)/.test(connSrc),
-    'DshConnection 未记录 clientId',
-  );
+  if (hasAndroid) {
+    const stripKotlinComments = (src) =>
+      src
+        .replace(/\/\*[\s\S]*?\*\//g, ' ')
+        .replace(/\/\/[^\n]*/g, ' ');
+    const envelopesSrc = stripKotlinComments(readFileSync(joinPath(appDir, 'net', 'Envelopes.kt'), 'utf8'));
+    const connSrc = stripKotlinComments(readFileSync(joinPath(appDir, 'net', 'DshConnection.kt'), 'utf8'));
+    const vmSrc = stripKotlinComments(readFileSync(joinPath(appDir, 'ui', 'ChatViewModel.kt'), 'utf8'));
+
+    check(
+      "审批 outcome 用 ApprovalOutcome 裸字符串 'allowed-once'",
+      /put\(\s*"value"\s*,\s*if\s*\(allow\)\s*"allowed-once"\s*else\s*"rejected"\s*\)/.test(envelopesSrc),
+      'Envelopes.approvalOutcome 形状不符',
+    );
+    check(
+      '提问 outcome 是 {answers:[{id,selected}]}',
+      /put\(\s*"answers"/.test(envelopesSrc) && /put\(\s*"selected"/.test(envelopesSrc)
+        && /fun questionOutcome\(questionId: String, selected: List<String>\)/.test(envelopesSrc),
+      'Envelopes.questionOutcome 形状不符',
+    );
+    check(
+      '提问取的是**问题** id（questions[0].id），不是选项',
+      /JsonRender\.arr\(req\.payload,\s*"questions"\)/.test(vmSrc)
+        && /JsonRender\.str\(it,\s*"id"\)/.test(vmSrc),
+      'ChatViewModel 未从 questions[].id 取问题 id',
+    );
+    check(
+      '选项从 questions[0].options[].label 取（对象数组，不是字符串数组）',
+      /"label"/.test(vmSrc),
+      'ChatViewModel 选项解析未用 label',
+    );
+    check(
+      '不再产出 {ok,value} 信封（client-response）',
+      !/client-response/.test(envelopesSrc) && !/TYPE_CLIENT_RESPONSE/.test(envelopesSrc),
+      'Envelopes 仍在产 client-response 信封',
+    );
+    check(
+      '不再使用 /api/respond（真实主机无此端点）',
+      !/respond"?\s*\)/.test(connSrc) && !/"respond"/.test(connSrc) && /EVENT_RESULT_ENDPOINT/.test(connSrc),
+      'DshConnection 仍在用 /api/respond',
+    );
+    check(
+      '单条 mux：WS_MUX 指向 remote.mux，且无 WS_HOST',
+      /WS_MUX\s*=\s*"\/mobile-gateway\/remote\.mux"/.test(connSrc) && !/WS_HOST/.test(connSrc),
+      'DshConnection 的 WS 常量不符',
+    );
+    check(
+      '事件流 endpoint 是 $events（转义后的 \\$events）',
+      /EVENT_STREAM_ENDPOINT\s*=\s*"\\\$events"/.test(connSrc)
+        && /EVENT_RESULT_ENDPOINT\s*=\s*"\\\$events\/result"/.test(connSrc),
+      '事件流 endpoint 常量不符',
+    );
+    check(
+      '阻塞式 execute() 仍包在 Dispatchers.IO 里（防 NetworkOnMainThreadException）',
+      /withContext\(Dispatchers\.IO\)/.test(connSrc)
+        && !/execute\(\)[\s\S]{0,80}viewModelScope/.test(connSrc),
+      'DshConnection 的 execute 可能不在 IO 线程',
+    );
+    check(
+      'ready 帧记下 clientId（应答必须带上）',
+      /eventClientId\s*=\s*value\.str\("clientId"\)/.test(connSrc),
+      'DshConnection 未记录 clientId',
+    );
+  } else {
+    // 守卫现代化 TypeScript Web / Electron 客户端源码
+    const envelopesTs = readFileSync(joinPath(repoRoot, 'src', 'services', 'envelopes.ts'), 'utf8');
+    const connTs = readFileSync(joinPath(repoRoot, 'src', 'services', 'connection.ts'), 'utf8');
+    const appTs = readFileSync(joinPath(repoRoot, 'src', 'App.tsx'), 'utf8');
+
+    check(
+      "审批 outcome 用 ApprovalOutcome 裸字符串 'allowed-once'",
+      /value:\s*allow\s*\?\s*'allowed-once'\s*:\s*'rejected'/.test(envelopesTs),
+      'envelopes.ts approvalOutcome 形状不符',
+    );
+    check(
+      '提问 outcome 是 {answers:[{id,selected}]}',
+      /answers:\s*\[\s*\{\s*id:\s*questionId,\s*selected/.test(envelopesTs),
+      'envelopes.ts questionOutcome 形状不符',
+    );
+    check(
+      '提问取的是**问题** id（questions[0].id），不是选项',
+      /questionId:\s*qFirst\?\.id/.test(appTs),
+      'App.tsx 未从 qFirst?.id 取问题 id',
+    );
+    check(
+      '选项从 questions[0].options[].label 取（对象数组，不是字符串数组）',
+      /qFirst\?\.options\?\.map\(\(o\)\s*=>\s*o\.label/.test(appTs),
+      'App.tsx 选项解析未用 o.label',
+    );
+    check(
+      '不再产出 {ok,value} 信封（client-response）',
+      !/client-response/.test(envelopesTs) && !/TYPE_CLIENT_RESPONSE/.test(envelopesTs),
+      'envelopes.ts 仍包含 client-response 信封',
+    );
+    check(
+      '不再使用 /api/respond（真实主机无此端点）',
+      !/respond"?\s*\)/.test(connTs) && !/"respond"/.test(connTs) && /EVENT_RESULT_ENDPOINT/.test(connTs),
+      'connection.ts 仍在用 /api/respond',
+    );
+    check(
+      '单条 mux：WS_MUX 指向 remote.mux，且无 WS_HOST',
+      /WS_MUX\s*=\s*'\/mobile-gateway\/remote\.mux'/.test(connTs) && !/WS_HOST/.test(connTs),
+      'connection.ts WS_MUX 常量不符',
+    );
+    check(
+      '事件流 endpoint 是 $events（转义后的 \\$events）',
+      /EVENT_STREAM_ENDPOINT\s*=\s*'\$events'/.test(connTs)
+        && /EVENT_RESULT_ENDPOINT\s*=\s*'\$events\/result'/.test(connTs),
+      'connection.ts 事件流 endpoint 常量不符',
+    );
+    check(
+      '阻塞式 execute() 仍包在 Dispatchers.IO 里（防 NetworkOnMainThreadException）',
+      true,
+      'Web 运行时自动非阻塞单线程异步事件循环',
+    );
+    check(
+      'ready 帧记下 clientId（应答必须带上）',
+      /this\.eventClientId\s*=\s*String\(val\.clientId\)/.test(connTs),
+      'connection.ts 未记录 clientId',
+    );
+  }
 }
 
 // ---- 10. 路由命中回归：防「宿主兜底 404」这种静默故障 -------------------

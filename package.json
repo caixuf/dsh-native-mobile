@@ -11,6 +11,7 @@
     "test": "node --experimental-strip-types scripts/test-markdown.mjs && node --experimental-strip-types scripts/test-incremental.mjs",
     "test:markdown": "node --experimental-strip-types scripts/test-markdown.mjs",
     "test:incremental": "node --experimental-strip-types scripts/test-incremental.mjs",
+    "electron": "electron electron/main.cjs",
     "verify": "npm run test && npm run build"
   },
   "dependencies": {

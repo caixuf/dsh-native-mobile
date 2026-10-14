@@ -2,100 +2,131 @@
 
 @layer base {
   :root {
-    --color-primary: #3964fe;
-    --color-primary-active: #2b4ec9;
-    --color-primary-container: #edf2ff;
-    --color-bg-system: #f2f2f7;
-    --color-surface-card: #ffffff;
-    --color-surface-secondary: #f9f9fb;
-    --color-border-subtle: rgba(60, 60, 67, 0.12);
-    --color-border-hairline: rgba(60, 60, 67, 0.08);
-    --color-text-main: #000000;
-    --color-text-body: #1c1c1e;
-    --color-text-secondary: #8e8e93;
-    --color-text-tertiary: #aeaeb2;
-    --color-tool: #8b5cf6;
-    --color-success: #34c759;
-    --color-danger: #ff3b30;
-    --color-warning: #ff9500;
+    --bg-canvas: #090a0f;
+    --bg-surface: #0e1118;
+    --bg-surface-elevated: #151822;
+    --bg-surface-card: #12151f;
+    --color-primary: #3b82f6;
+    --color-primary-glow: rgba(59, 130, 246, 0.35);
+    --color-primary-active: #2563eb;
+    --color-border-subtle: rgba(255, 255, 255, 0.08);
+    --color-border-specular: rgba(255, 255, 255, 0.14);
+    --color-text-main: #f8fafc;
+    --color-text-muted: #94a3b8;
+    --color-text-dim: #64748b;
+    --color-tool: #a855f7;
+    --color-success: #10b981;
+    --color-danger: #f43f5e;
+    --color-warning: #f59e0b;
   }
 
   * {
     -webkit-tap-highlight-color: transparent;
+    box-sizing: border-box;
   }
 
   html, body {
     height: 100%;
     margin: 0;
     padding: 0;
-    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text", "Helvetica Neue", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text", "Inter", "Segoe UI", Roboto, sans-serif;
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
-    background-color: var(--color-bg-system);
-    color: var(--color-text-body);
+    background-color: #090a0f;
+    color: #f8fafc;
     overscroll-behavior-y: none;
     -webkit-overflow-scrolling: touch;
   }
 
-  /* Custom iOS-like slim scrollbar */
+  /* Sleek modern dark scrollbar */
   ::-webkit-scrollbar {
-    width: 4px;
-    height: 4px;
+    width: 5px;
+    height: 5px;
   }
   ::-webkit-scrollbar-track {
     background: transparent;
   }
   ::-webkit-scrollbar-thumb {
-    background: rgba(0, 0, 0, 0.16);
+    background: rgba(255, 255, 255, 0.12);
     border-radius: 9999px;
   }
   ::-webkit-scrollbar-thumb:hover {
-    background: rgba(0, 0, 0, 0.28);
+    background: rgba(255, 255, 255, 0.24);
   }
 }
 
-/* iOS frosted glass blur effects */
-.ios-glass {
-  background: rgba(255, 255, 255, 0.85);
-  backdrop-filter: blur(24px) saturate(180%);
-  -webkit-backdrop-filter: blur(24px) saturate(180%);
-}
-
-.ios-glass-card {
-  background: rgba(255, 255, 255, 0.95);
+/* Studio Obsidian Specular Card */
+.specular-card {
+  background: linear-gradient(180deg, rgba(25, 29, 41, 0.85) 0%, rgba(15, 18, 26, 0.85) 100%);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  box-shadow: inset 0 1px 0 0 rgba(255, 255, 255, 0.12), 0 8px 24px -4px rgba(0, 0, 0, 0.5);
   backdrop-filter: blur(16px);
   -webkit-backdrop-filter: blur(16px);
 }
 
-.ios-glass-dark {
-  background: rgba(28, 28, 30, 0.82);
+.specular-card-interactive {
+  background: linear-gradient(180deg, rgba(25, 29, 41, 0.75) 0%, rgba(15, 18, 26, 0.85) 100%);
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  box-shadow: inset 0 1px 0 0 rgba(255, 255, 255, 0.1), 0 4px 16px -2px rgba(0, 0, 0, 0.4);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+}
+.specular-card-interactive:hover {
+  background: linear-gradient(180deg, rgba(32, 38, 54, 0.85) 0%, rgba(19, 23, 34, 0.9) 100%);
+  border-color: rgba(59, 130, 246, 0.35);
+  box-shadow: inset 0 1px 0 0 rgba(255, 255, 255, 0.18), 0 8px 30px -4px rgba(59, 130, 246, 0.15);
+  transform: translateY(-1px);
+}
+
+/* Studio Frosted Glass */
+.studio-glass {
+  background: rgba(14, 17, 24, 0.82);
   backdrop-filter: blur(24px) saturate(180%);
   -webkit-backdrop-filter: blur(24px) saturate(180%);
 }
 
-/* iOS spring press feedback */
-.ios-spring-tap {
+.studio-glass-dock {
+  background: rgba(18, 22, 32, 0.85);
+  backdrop-filter: blur(28px) saturate(200%);
+  -webkit-backdrop-filter: blur(28px) saturate(200%);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  box-shadow: inset 0 1px 0 0 rgba(255, 255, 255, 0.15), 0 16px 40px -8px rgba(0, 0, 0, 0.65);
+}
+
+/* Raycast / Linear Mesh Background */
+.mesh-glow-bg {
+  background-image: 
+    radial-gradient(at 50% 0%, rgba(59, 130, 246, 0.15) 0px, transparent 55%),
+    radial-gradient(at 100% 25%, rgba(99, 102, 241, 0.08) 0px, transparent 45%),
+    radial-gradient(at 0% 75%, rgba(168, 85, 247, 0.06) 0px, transparent 40%);
+}
+
+/* Hardware Spring feedback */
+.studio-tap {
   transition: transform 0.16s cubic-bezier(0.34, 1.56, 0.64, 1), opacity 0.16s ease;
 }
-.ios-spring-tap:active {
+.studio-tap:active {
   transform: scale(0.97);
-  opacity: 0.88;
+  opacity: 0.9;
 }
 
-/* Animations for pulses & waves */
-@keyframes breathing {
+/* Animations */
+@keyframes breathingGlow {
   0%, 100% {
-    opacity: 1;
+    opacity: 0.8;
     transform: scale(1);
+    box-shadow: 0 0 12px rgba(59, 130, 246, 0.4);
   }
   50% {
-    opacity: 0.55;
-    transform: scale(1.2);
+    opacity: 1;
+    transform: scale(1.1);
+    box-shadow: 0 0 24px rgba(59, 130, 246, 0.8);
   }
 }
 
-.animate-breathing {
-  animation: breathing 2.4s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+.animate-glow {
+  animation: breathingGlow 2.5s cubic-bezier(0.4, 0, 0.6, 1) infinite;
 }
 
 @keyframes voiceWave {

@@ -447,7 +447,7 @@ export const App: React.FC = () => {
   const activeHost = hosts.find((h) => h.id === activeHostId);
 
   return (
-    <div className="flex h-screen w-screen overflow-hidden bg-[#f5f5f5] text-[#151517]">
+    <div className="flex h-screen w-screen overflow-hidden bg-[#090a0f] text-[#f8fafc] font-sans">
       {/* App Drawer */}
       <AppDrawer
         isOpen={drawerOpen}

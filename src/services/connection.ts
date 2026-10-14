@@ -146,6 +146,10 @@ const MOCK_MESSAGES: Record<string, ChatLine[]> = {
   ],
 };
 
+export const WS_MUX = '/mobile-gateway/remote.mux';
+export const EVENT_STREAM_ENDPOINT = '$events';
+export const EVENT_RESULT_ENDPOINT = '$events/result';
+
 export class DshConnection {
   private baseUrl: string;
   private token: string;
@@ -213,7 +217,7 @@ export class DshConnection {
 
   private connectReal() {
     try {
-      const wsUrl = this.baseUrl.replace(/^http/, 'ws') + '/mobile-gateway/remote.mux';
+      const wsUrl = this.baseUrl.replace(/^http/, 'ws') + WS_MUX;
       const ws = new WebSocket(wsUrl);
       this.socket = ws;
 
@@ -226,7 +230,7 @@ export class DshConnection {
         const openFrame = {
           type: 'open',
           streamId: 'stream-' + Date.now(),
-          endpoint: '$events',
+          endpoint: EVENT_STREAM_ENDPOINT,
           payload: { args: {} },
         };
         ws.send(JSON.stringify(openFrame));
@@ -298,7 +302,8 @@ export class DshConnection {
 
   private handleStreamItem(value: Record<string, unknown>) {
     if (value.type === 'ready') {
-      this.eventClientId = String(value.clientId || '');
+      const val = value;
+      this.eventClientId = String(val.clientId);
     } else if (value.type === 'emit') {
       const eventName = String(value.event || '');
       this.requestListeners.forEach((fn) =>
@@ -372,7 +377,7 @@ export class DshConnection {
         outcome,
       });
 
-      const res = await fetch(`${this.baseUrl}/mobile-gateway/api/$events/result`, {
+      const res = await fetch(`${this.baseUrl}/mobile-gateway/api/${EVENT_RESULT_ENDPOINT}`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',

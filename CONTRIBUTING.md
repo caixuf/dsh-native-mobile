@@ -6,8 +6,10 @@
 
 ```
 dsh-native-mobile/
+├─ src/                           React 19 + Tailwind CSS 4 + Vite 跨端移动与桌面前端
+├─ electron/                      Electron 主进程桌面伴侣
 ├─ packages/dsh-mobile-gateway/   DSH 宿主插件（Node ESM，cordis 插件，npm 包）
-├─ apps/android/                  Kotlin + Jetpack Compose 原生 App
+├─ dist-apk/                      历史构建归档 (v0.2.0 APK)
 ├─ docs/                          设计与实测文档（**改动协议前必读**）
 └─ scripts/                       安装与运维脚本
 ```
@@ -46,24 +48,20 @@ dsh-native-mobile/
 ## 开发环境
 
 - **Windows PowerShell 5.1**（本仓库脚本按它写；无 `pwsh`）
-- **JDK 17**（硬约束）
-- **Node**：用 DSH 自带的
-  `resources\runtime\primary-runtime\dependencies\node\bin\node.exe`
-- **Android SDK**：`apps/android/local.properties` 指向本机 SDK 路径（已 gitignore）
-
-细节见 `docs/BUILD.md`。
+- **Node.js**: v18+ / v20+ / v22+
+- **构建工具**: Vite 6, Tailwind CSS 4, React 19, Electron
 
 ## 构建与测试
 
 ```powershell
 # 网关端到端（真实 HTTP + WS，只打桩宿主）
 cd packages\dsh-mobile-gateway
-node test\e2e.mjs                 # 期望 81 通过 / 0 失败
+node test\e2e.mjs                 # 期望 83 通过 / 0 失败
 
-# App
-cd apps\android
-$env:JAVA_HOME="<你的 JDK17 路径>"
-.\gradlew.bat assembleDebug
+# 前端开发与构建
+npm run dev                      # 启动 Vite 开发服务器 (http://localhost:3000)
+npm run build                    # 生产环境编译 (tsc + vite build)
+npm run electron                 # 启动桌面端伴侣窗口
 ```
 
 **改 `.mjs` 后必须重启 DSH 才生效**（Node ESM 不热重载）。且安装副本有两处，

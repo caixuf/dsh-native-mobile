@@ -64,7 +64,7 @@ export const MarkdownView: React.FC<Props> = ({ content }) => {
   }, [content]);
 
   return (
-    <div className="space-y-2 text-[14.5px] leading-[22px] text-[#151517] break-words">
+    <div className="space-y-2 text-[14.5px] leading-[22px] text-[#e2e8f0] break-words">
       {blocks.map((block, idx) => (
         <BlockView key={idx} block={block} isFirst={idx === 0} />
       ))}
@@ -127,19 +127,19 @@ function renderInline(nodes: MdInline[]): React.ReactNode {
 
     if (style.code) {
       el = (
-        <code className="px-[5px] py-[2px] mx-[1px] bg-[#f0f1f5] text-[#b8285f] rounded-[5px] font-mono text-[12.5px] border border-[#e4e6eb] whitespace-nowrap">
+        <code className="px-[6px] py-[2px] mx-[1px] bg-[#1a2030] text-[#38bdf8] rounded-[6px] font-mono text-[12.5px] border border-white/10 whitespace-nowrap">
           {value}
         </code>
       );
     }
     if (style.strike) {
-      el = <s className="text-[#8e8e93] decoration-[#c7c7cc] decoration-[1.5px]">{el}</s>;
+      el = <s className="text-[#64748b] decoration-[#475569] decoration-[1.5px]">{el}</s>;
     }
     if (style.italic) {
-      el = <em className="italic">{el}</em>;
+      el = <em className="italic text-[#cbd5e1]">{el}</em>;
     }
     if (style.bold) {
-      el = <strong className="font-semibold text-[#0b0b0d]">{el}</strong>;
+      el = <strong className="font-semibold text-white">{el}</strong>;
     }
     if (style.link) {
       // 🔴 XSS 闸门：模型输出可以造出 `javascript:` / `data:` 链接，
@@ -152,12 +152,12 @@ function renderInline(nodes: MdInline[]): React.ReactNode {
           href={href}
           target="_blank"
           rel="noopener noreferrer"
-          className="text-[#3964fe] underline decoration-[#3964fe]/35 underline-offset-2 hover:decoration-[#3964fe] transition-colors inline-flex items-baseline gap-[2px]"
+          className="text-[#38bdf8] underline decoration-[#38bdf8]/40 underline-offset-2 hover:decoration-[#38bdf8] transition-colors inline-flex items-baseline gap-[2px]"
         >
           {el}
         </a>
       ) : (
-        <span className="text-[#8e8e93] line-through decoration-[#c7c7cc]">{el}</span>
+        <span className="text-[#64748b] line-through">{el}</span>
       );
     }
 
@@ -186,11 +186,11 @@ const HeadingBlock: React.FC<{ level: number; isFirst: boolean; children: MdInli
 
   return (
     <div className={`${size} ${mt} mb-1.5`}>
-      <div className="font-semibold text-[#0b0b0d] tracking-tight whitespace-pre-wrap [overflow-wrap:anywhere]">
+      <div className="font-semibold text-white tracking-tight whitespace-pre-wrap [overflow-wrap:anywhere]">
         <Inline nodes={children} />
       </div>
       {level === 1 && (
-        <div className="mt-1.5 mb-2 h-[1px] bg-gradient-to-r from-[#d8d8de] via-[#ececf1] to-transparent" />
+        <div className="mt-1.5 mb-2 h-[1px] bg-gradient-to-r from-white/20 via-white/10 to-transparent" />
       )}
       {level !== 1 && <div className="h-1.5" />}
     </div>
@@ -198,15 +198,13 @@ const HeadingBlock: React.FC<{ level: number; isFirst: boolean; children: MdInli
 };
 
 const DividerView: React.FC = () => (
-  <div className="my-3.5 h-[1px] bg-gradient-to-r from-transparent via-[#dcdce2] to-transparent" />
+  <div className="my-3.5 h-[1px] bg-gradient-to-r from-transparent via-white/15 to-transparent" />
 );
 
 // ── 引用 / Callout ──────────────────────────────────────────────────────────
 
 const QuoteView: React.FC<{ children: React.ReactNode }> = ({ children }) => (
-  // 对齐上游 `MarkdownText.module.css`：`border-left: 2px` + `padding-left: 14px`。
-  // 上游用 2px 而不是更粗的装饰条 —— 引用块是"次要内容"，不该比正文更抢眼。
-  <div className="my-3 pl-[14px] py-0.5 border-l-2 border-[#c7c7cc] text-[#4a4a52] whitespace-pre-wrap">
+  <div className="my-3 pl-[14px] py-1 border-l-2 border-[#3b82f6]/60 bg-white/[0.02] text-[#94a3b8] rounded-r-lg whitespace-pre-wrap">
     {children}
   </div>
 );
@@ -394,7 +392,7 @@ const TableView: React.FC<{ block: Extract<MdBlock, { type: 'table' }> }> = ({ b
   if (colCount === 0) return null;
 
   return (
-    <div className="my-2.5 rounded-xl border border-[#e4e4ea] overflow-hidden bg-white shadow-[0_1px_2px_rgba(0,0,0,0.04)]">
+    <div className="my-2.5 rounded-xl border border-white/10 overflow-hidden specular-card shadow-lg">
       <div className={needsScroll ? 'overflow-x-auto overscroll-x-contain' : 'overflow-hidden'}>
         <table className={`border-collapse ${needsScroll ? 'w-max min-w-full' : 'w-full'}`}>
           <thead className="sticky top-0 z-[1]">
@@ -407,7 +405,7 @@ const TableView: React.FC<{ block: Extract<MdBlock, { type: 'table' }> }> = ({ b
                       ? { minWidth: colWidths[i], width: colWidths[i], textAlign: alignOf(block.aligns[i]) }
                       : { minWidth: 100, textAlign: alignOf(block.aligns[i]) }
                   }
-                  className={`bg-[#f6f7f9] px-3 py-2 border-b border-[#e4e4ea] text-[12.5px] font-semibold text-[#1c1c1e] ${
+                  className={`bg-[#161a27] px-3 py-2 border-b border-white/10 text-[12.5px] font-semibold text-white ${
                     needsScroll ? 'whitespace-nowrap' : '[overflow-wrap:anywhere]'
                   }`}
                 >
@@ -418,7 +416,7 @@ const TableView: React.FC<{ block: Extract<MdBlock, { type: 'table' }> }> = ({ b
           </thead>
           <tbody>
             {block.rows.map((row, rIdx) => (
-              <tr key={rIdx} className={rIdx % 2 === 1 ? 'bg-[#fbfbfd]' : 'bg-white'}>
+              <tr key={rIdx} className={rIdx % 2 === 1 ? 'bg-white/[0.02]' : 'bg-transparent'}>
                 {Array.from({ length: colCount }, (_, c) => (
                   <td
                     key={c}
@@ -427,7 +425,7 @@ const TableView: React.FC<{ block: Extract<MdBlock, { type: 'table' }> }> = ({ b
                         ? { minWidth: colWidths[c], width: colWidths[c], textAlign: alignOf(block.aligns[c]) }
                         : { minWidth: 100, textAlign: alignOf(block.aligns[c]) }
                     }
-                    className="px-3 py-2 border-b border-[#f0f0f4] text-[13px] text-[#3d3d44] align-middle [overflow-wrap:anywhere]"
+                    className="px-3 py-2 border-b border-white/[0.06] text-[13px] text-[#cbd5e1] align-middle [overflow-wrap:anywhere]"
                   >
                     <Inline nodes={row[c] ?? []} />
                   </td>

@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { X, Send } from 'lucide-react';
+import { X, Send, Sparkles } from 'lucide-react';
 import { DeepSeekLogo } from '../common/DeepSeekLogo';
 
 interface Props {
@@ -89,26 +89,26 @@ export const VoiceRecordingOverlay: React.FC<Props> = ({ isOpen, onSend, onCance
   if (!isOpen) return null;
 
   return (
-    <div className="fixed inset-0 z-50 flex flex-col justify-end bg-black/40 backdrop-blur-md transition-opacity animate-in fade-in duration-200">
-      <div className="w-full max-w-md mx-auto ios-glass rounded-t-[32px] p-6 shadow-2xl flex flex-col items-center border-t border-[rgba(60,60,67,0.12)] animate-in slide-in-from-bottom-6 duration-250 ease-out">
-        {/* iOS Pull Handle Bar */}
-        <div className="w-10 h-1.5 bg-[#aeaeb2] rounded-full mb-4" />
+    <div className="fixed inset-0 z-50 flex flex-col justify-end bg-black/70 backdrop-blur-md transition-opacity animate-in fade-in duration-200">
+      <div className="w-full max-w-md mx-auto specular-card rounded-t-[32px] p-6 shadow-2xl flex flex-col items-center border-t border-white/10 animate-in slide-in-from-bottom-6 duration-250 ease-out">
+        {/* Pull Handle Bar */}
+        <div className="w-10 h-1 bg-white/20 rounded-full mb-4" />
 
         <div className="text-center mb-5">
-          <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-[#edf2ff] text-[#3964fe] text-[12px] font-semibold">
+          <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-[#3b82f6]/15 border border-[#3b82f6]/30 text-[#60a5fa] text-[12px] font-semibold">
             <DeepSeekLogo size={14} variant="brand" />
             <span>DeepSeek 语音遥控 · {seconds}s</span>
           </div>
-          <h3 className="text-[17px] font-bold text-[#000000] mt-2.5 tracking-tight">正在聆听你的指令…</h3>
-          <p className="text-[12px] text-[#8e8e93] mt-0.5">指令将通过加密隧道直接传输至工作电脑</p>
+          <h3 className="text-[17px] font-bold text-white mt-2.5 tracking-tight">正在聆听你的指令…</h3>
+          <p className="text-[12px] text-[#94a3b8] mt-0.5">指令将通过加密隧道直接传输至工作电脑</p>
         </div>
 
-        {/* Dynamic iOS Audio Waveform Bars */}
+        {/* Dynamic Audio Waveform Bars */}
         <div className="flex items-center justify-center gap-1.5 h-12 mb-6 w-full max-w-xs">
           {[35, 75, 100, 55, 90, 40, 85, 60, 95, 45, 70, 30].map((h, i) => (
             <div
               key={i}
-              className="w-1.5 bg-[#3964fe] rounded-full voice-bar"
+              className="w-1.5 bg-gradient-to-t from-[#2563eb] to-[#38bdf8] rounded-full voice-bar shadow-[0_0_8px_rgba(59,130,246,0.6)]"
               style={{
                 height: `${h}%`,
                 animationDelay: `${i * 0.08}s`,
@@ -117,12 +117,12 @@ export const VoiceRecordingOverlay: React.FC<Props> = ({ isOpen, onSend, onCance
           ))}
         </div>
 
-        {/* iOS Styled Transcript Box */}
-        <div className="w-full min-h-[76px] p-4 rounded-2xl bg-[#ffffff] border border-[rgba(60,60,67,0.08)] shadow-2xs text-[14px] leading-relaxed text-[#000000] text-center flex items-center justify-center mb-6">
+        {/* Transcript Box */}
+        <div className="w-full min-h-[76px] p-4 rounded-2xl bg-[#090c14] border border-white/10 shadow-inner text-[14px] leading-relaxed text-white text-center flex items-center justify-center mb-6">
           {transcript ? (
-            <span className="font-medium text-[#000000]">{transcript}</span>
+            <span className="font-medium text-[#60a5fa]">{transcript}</span>
           ) : (
-            <span className="text-[#8e8e93] text-[13px]">请说话，例如：“执行项目构建并运行测试”…</span>
+            <span className="text-[#64748b] text-[13px]">请说话，例如：“执行项目构建并运行测试”…</span>
           )}
         </div>
 
@@ -131,7 +131,7 @@ export const VoiceRecordingOverlay: React.FC<Props> = ({ isOpen, onSend, onCance
           <button
             type="button"
             onClick={onCancel}
-            className="flex items-center gap-1.5 px-5 py-2.5 rounded-full border border-[rgba(60,60,67,0.12)] bg-[#ffffff] text-[#8e8e93] hover:text-[#000000] text-[13px] font-medium cursor-pointer transition-colors ios-spring-tap"
+            className="flex items-center gap-1.5 px-5 py-2.5 rounded-xl border border-white/10 bg-white/[0.04] text-[#94a3b8] hover:text-white text-[13px] font-medium cursor-pointer transition-colors studio-tap"
           >
             <X size={16} />
             <span>取消</span>
@@ -146,7 +146,7 @@ export const VoiceRecordingOverlay: React.FC<Props> = ({ isOpen, onSend, onCance
                 onSend('检查当前工作区 git 状态并列出修改文件');
               }
             }}
-            className="flex items-center gap-2 px-6 py-2.5 rounded-full bg-[#3964fe] hover:bg-[#2b4ec9] text-white text-[13px] font-semibold shadow-md cursor-pointer transition-transform ios-spring-tap"
+            className="flex items-center gap-2 px-6 py-2.5 rounded-xl bg-gradient-to-r from-[#3b82f6] to-[#2563eb] text-white text-[13px] font-semibold shadow-[0_0_20px_rgba(59,130,246,0.4)] cursor-pointer transition-transform studio-tap"
           >
             <Send size={15} />
             <span>发送遥控</span>
