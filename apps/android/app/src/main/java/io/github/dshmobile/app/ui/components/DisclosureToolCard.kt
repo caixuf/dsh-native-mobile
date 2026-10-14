@@ -41,6 +41,11 @@ import io.github.dshmobile.app.render.CodeCard
 import io.github.dshmobile.app.ui.ChatLine
 import io.github.dshmobile.app.ui.DshTheme
 import io.github.dshmobile.app.ui.icons.DshIcons
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 
 /**
  * 工具调用与执行过程折叠卡片（对齐 DSH Web 端 `DisclosureRow` / `ToolCard` 规范）。
@@ -190,6 +195,8 @@ fun DisclosureToolCard(
                 Spacer(Modifier.height(8.dp))
 
                 // 1. 如果有输入参数
+                // 展示**解码后并美化过的 JSON**，而不是原始的转义串 ——
+                // 展开是为了看清楚，铺一屏 `\"` 反斜杠完全违背这个目的。
                 val argsContent = line.toolArgs
                 if (!argsContent.isNullOrBlank()) {
                     Text(
@@ -200,7 +207,7 @@ fun DisclosureToolCard(
                         modifier = Modifier.padding(bottom = 4.dp),
                     )
                     CodeCard(
-                        code = argsContent,
+                        code = prettyJson(argsContent),
                         language = guessLanguage(line.toolName, argsContent),
                         maxHeightLines = 25,
                     )
@@ -239,6 +246,28 @@ fun DisclosureToolCard(
     }
 }
 
+/**
+ * 复用的 JSON 实例：`Json { }` 每次构造都有成本，
+ * 而工具卡在长会话里会被频繁重组（流式输出时每来一个 token 就重画）。
+ */
+private val lenientJson = Json { isLenient = true; ignoreUnknownKeys = true }
+private val prettyJsonFormat = Json { prettyPrint = true; isLenient = true }
+
+/**
+ * 把工具入参美化输出。
+ *
+ * `arguments` 是 JSON 字符串，先解析再格式化；
+ * 解析失败（流式半截、非标准 JSON）就原样返回，绝不因为美化而丢内容。
+ */
+internal fun prettyJson(raw: String): String {
+    val trimmed = raw.trim()
+    if (!trimmed.startsWith("{") && !trimmed.startsWith("[")) return raw
+    return runCatching {
+        val el = lenientJson.parseToJsonElement(trimmed)
+        prettyJsonFormat.encodeToString(JsonElement.serializer(), el)
+    }.getOrDefault(raw)
+}
+
 /** 智能解析工具名称与关键目标 */
 private fun parseToolSummary(line: ChatLine): Triple<String, androidx.compose.ui.graphics.vector.ImageVector, String> {
     val name = line.toolName?.lowercase() ?: ""
@@ -274,14 +303,87 @@ private fun parseToolSummary(line: ChatLine): Triple<String, androidx.compose.ui
     }
 }
 
+/**
+ * 从工具入参里取某个字段的值。
+ *
+ * 🔴 必须**先按 JSON 解析**，正则只作兜底。
+ *
+ * 为什么：`arguments` 是 JSON 字符串，值里经常含转义引号和大段路径
+ * （例如 `{"command":"$adb=\"C:\\Users\\...\""}`）。
+ * 旧实现用 `"key"\s*:\s*"([^"]+)"` 直接正则匹配，遇到**值内含转义引号**时
+ * 会在第一个 `\"` 处截断，取到的是一段残缺的乱码；键名大小写不一致时也取不到。
+ * 现在先走真正的 JSON 解析（大小写不敏感查键），解析不出来再退回正则。
+ */
 private fun extractArgValue(jsonStr: String, vararg keys: String): String? {
     if (jsonStr.isBlank()) return null
+
+    // 1. 优先真正的 JSON 解析：能正确处理转义、嵌套、非字符串值
+    parseJsonObjectLeniently(jsonStr)?.let { obj ->
+        for (key in keys) {
+            val v = obj[key] ?: obj.entries.firstOrNull { it.key.equals(key, ignoreCase = true) }?.value
+            when (v) {
+                is JsonPrimitive -> {
+                    if (v.isString) return v.content
+                    if (v.content != "null") return v.content
+                }
+                is JsonArray -> return v.joinToString(" ") { (it as? JsonPrimitive)?.content ?: it.toString() }
+                is JsonObject -> return v.toString()
+                else -> Unit
+            }
+        }
+    }
+
+    // 2. 兜底：正则，但**允许转义引号**（[^"\\] 或 \\. 交替），避免在 \" 处截断
     for (key in keys) {
-        val pattern = Regex("\"$key\"\\s*:\\s*\"([^\"]+)\"")
+        val pattern = Regex("\"$key\"\\s*:\\s*\"((?:\\\\.|[^\"\\\\])*)\"", RegexOption.IGNORE_CASE)
         val match = pattern.find(jsonStr)
-        if (match != null) return match.groupValues[1]
+        if (match != null) {
+            return unescapeJsonString(match.groupValues[1])
+        }
     }
     return null
+}
+
+/** 宽松解析：解析失败返回 null，绝不抛异常（渲染路径上崩溃不可接受）。 */
+private fun parseJsonObjectLeniently(raw: String): JsonObject? = runCatching {
+    lenientJson.parseToJsonElement(raw.trim()) as? JsonObject
+}.getOrNull()
+
+/** 把 JSON 字符串里的转义序列还原成真实字符。 */
+private fun unescapeJsonString(s: String): String {
+    val sb = StringBuilder(s.length)
+    var i = 0
+    while (i < s.length) {
+        val c = s[i]
+        if (c == '\\' && i + 1 < s.length) {
+            when (val n = s[i + 1]) {
+                'n' -> sb.append('\n')
+                't' -> sb.append('\t')
+                'r' -> sb.append('\r')
+                '"' -> sb.append('"')
+                '\\' -> sb.append('\\')
+                '/' -> sb.append('/')
+                'b' -> sb.append('\b')
+                'f' -> sb.append('\u000C')
+                'u' -> {
+                    val hex = s.substring(i + 2, minOf(i + 6, s.length))
+                    val code = hex.toIntOrNull(16)
+                    if (code != null) {
+                        sb.append(code.toChar())
+                        i += 4
+                    } else {
+                        sb.append(n)
+                    }
+                }
+                else -> sb.append(n)
+            }
+            i += 2
+        } else {
+            sb.append(c)
+            i++
+        }
+    }
+    return sb.toString()
 }
 
 private fun shortFileName(fullPath: String): String {

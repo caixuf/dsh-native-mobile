@@ -14,6 +14,10 @@ apps/android/app/build/
 .idea/
 *.iml
 .vscode/
+
+# TypeScript 增量构建产物（本地缓存，不该进版本库）
+*.tsbuildinfo
+
 # 提交信息临时文件
 .git-commit-msg.txt
 

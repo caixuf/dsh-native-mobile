@@ -77,7 +77,6 @@ fun MarkdownText(
                 is MdNode.Callout -> CalloutView(block, color, onLinkClick)
                 is MdNode.Divider -> DividerView()
                 is MdNode.Table -> TableView(block, color)
-                is MdNode.TaskItem -> TaskItemView(block, color, onLinkClick)
                 is MdNode.Image -> ImagePlaceholder(block)
                 is MdNode.Text -> InlineText(
                     nodes = listOf(block),
@@ -108,51 +107,6 @@ private fun DividerView() {
                 ),
             ),
     )
-}
-
-// ── 任务列表 ────────────────────────────────────────────────────────────────
-
-@Composable
-private fun TaskItemView(
-    block: MdNode.TaskItem,
-    color: Color,
-    onLinkClick: ((String) -> Unit)?,
-) {
-    Row(
-        Modifier.padding(vertical = 3.dp),
-        verticalAlignment = Alignment.Top,
-    ) {
-        Box(
-            Modifier
-                .padding(top = 3.dp)
-                .size(16.dp)
-                .background(
-                    if (block.checked) DshTheme.online.copy(alpha = 0.18f) else Color.Transparent,
-                    RoundedCornerShape(4.dp),
-                )
-                .border(
-                    1.5.dp,
-                    if (block.checked) DshTheme.online else color.copy(alpha = 0.4f),
-                    RoundedCornerShape(4.dp),
-                ),
-            contentAlignment = Alignment.Center,
-        ) {
-            if (block.checked) {
-                DshIcon(
-                    DshIcons.Check,
-                    contentDescription = null,
-                    tint = DshTheme.online,
-                    size = 11.dp,
-                )
-            }
-        }
-        Spacer(Modifier.width(DshTheme.m.sm))
-        InlineText(
-            block.children,
-            if (block.checked) color.copy(alpha = 0.55f) else color,
-            onLinkClick,
-        )
-    }
 }
 
 // ── 图片 ────────────────────────────────────────────────────────────────────
@@ -205,15 +159,26 @@ private fun TableView(block: MdNode.Table, color: Color) {
     val dividerColor = if (isDark) Color(0xFF262837) else Color(0xFFEDF2F7)
 
     val cols = block.header.size
+
+    // 🔴 两个真实问题（2026-10-13 实机截图复现）：
+    //
+    //  1. **列宽用 `.length` 估算，不区分 CJK**：`"手机远程网页"` 是 6 个字符，
+    //     但中文实际显示宽度约等于 12 个半角字符 → 列被算窄，内容换行或被裁。
+    //     实测表格右列 `192.168.31.79:1…` 就是这样被切掉的。
+    //  2. **没有「窄表自适应填满」策略**：≤3 列的表格在手机上完全放得下，
+    //     却仍按内容宽度排布，右列被推到屏幕外，看着像"内容被切了"。
+    //     对齐 DSH 上游 `MarkdownText.module.css`：
+    //     <4 列用 `width:100%` 自适应，≥4 列才 `max-content` + 横向滚动。
+    val needsScroll = cols >= 4
     val colWidths = remember(block) {
         (0 until cols).map { col ->
-            val headerLen = plainOf(block.header.getOrElse(col) { emptyList() }).length
+            val headerLen = visualWidth(block.header.getOrElse(col) { emptyList() })
             val maxRowLen = block.rows.maxOfOrNull { row ->
-                plainOf(row.getOrElse(col) { emptyList() }).length
+                visualWidth(row.getOrElse(col) { emptyList() })
             } ?: 0
             val maxLen = maxOf(headerLen, maxRowLen)
-            // 动态计算列宽：最少 90.dp，按字符数加宽，最大 260.dp
-            (90 + (maxLen * 8.5)).toInt().coerceIn(90, 260).dp
+            // 上游规格：min-width 100px、max-width min(30vw, 320px)
+            (100 + (maxLen * 8.5)).toInt().coerceIn(100, 320).dp
         }
     }
 
@@ -226,13 +191,16 @@ private fun TableView(block: MdNode.Table, color: Color) {
     ) {
         val scrollState = rememberScrollState()
         Column(
+            // 窄表（≤3 列）不滚动：直接把可用宽度铺满，列宽用 weight 分配。
+            // 宽表（≥4 列）才横向滚动，列宽按内容估算。
             Modifier
                 .fillMaxWidth()
-                .horizontalScroll(scrollState),
+                .then(if (needsScroll) Modifier.horizontalScroll(scrollState) else Modifier),
         ) {
             // 表头行
             Row(
                 Modifier
+                    .fillMaxWidth()
                     .background(headerBg)
                     .padding(vertical = 10.dp),
                 verticalAlignment = Alignment.CenterVertically,
@@ -241,13 +209,15 @@ private fun TableView(block: MdNode.Table, color: Color) {
                     if (i > 0) {
                         Box(Modifier.width(1.dp).height(18.dp).background(borderColor.copy(alpha = 0.7f)))
                     }
-                    val w = colWidths.getOrElse(i) { 90.dp }
+                    val w = colWidths.getOrElse(i) { 100.dp }
                     CellText(
                         cell = cell,
                         color = if (isDark) Color(0xFFE2E8F0) else Color(0xFF1E293B),
                         align = block.aligns.getOrElse(i) { Align.Left },
                         header = true,
-                        width = w,
+                        // 窄表（≤3 列）：weight 平分可用宽度，真正铺满屏幕；
+                        // 宽表（≥4 列）：固定内容宽度 + 横向滚动。
+                        cellModifier = if (needsScroll) Modifier.width(w) else Modifier.weight(1f),
                     )
                 }
             }
@@ -261,6 +231,7 @@ private fun TableView(block: MdNode.Table, color: Color) {
                 }
                 Row(
                     Modifier
+                        .fillMaxWidth()
                         .background(if (rowIdx % 2 == 1) altRowBg else rowBg)
                         .padding(vertical = 8.dp),
                     verticalAlignment = Alignment.CenterVertically,
@@ -270,13 +241,13 @@ private fun TableView(block: MdNode.Table, color: Color) {
                             Box(Modifier.width(1.dp).height(16.dp).background(dividerColor))
                         }
                         val cell = rowCells.getOrElse(col) { emptyList() }
-                        val w = colWidths.getOrElse(col) { 90.dp }
+                        val w = colWidths.getOrElse(col) { 100.dp }
                         CellText(
                             cell = cell,
                             color = color,
                             align = block.aligns.getOrElse(col) { Align.Left },
                             header = false,
-                            width = w,
+                            cellModifier = if (needsScroll) Modifier.width(w) else Modifier.weight(1f),
                         )
                     }
                 }
@@ -292,12 +263,10 @@ private fun CellText(
     color: Color,
     align: Align,
     header: Boolean,
-    width: Dp,
+    cellModifier: Modifier,
 ) {
     Box(
-        Modifier
-            .width(width)
-            .padding(horizontal = 12.dp),
+        cellModifier.padding(horizontal = 12.dp),
         contentAlignment = when (align) {
             Align.Left -> Alignment.CenterStart
             Align.Center -> Alignment.Center
@@ -316,6 +285,41 @@ private fun CellText(
             },
         )
     }
+}
+
+/**
+ * 视觉宽度：CJK / emoji 按 2 个单位计。
+ *
+ * 🔴 旧实现用 `String.length` 估列宽，中文被算成 1 宽 ——
+ * 于是「手机远程网页」这种列被估窄，内容换行或被裁切。
+ * 与 Web 端 `visualLen` 保持同一套判据。
+ */
+private fun visualWidth(nodes: List<MdNode>): Int {
+    val text = plainOf(nodes)
+    var w = 0
+    for (ch in text) {
+        w += when {
+            ch == '\t' -> 4
+            // 零宽组合符（重音符等）不占栅格
+            ch.code in 0x0300..0x036F -> 0
+            isWideChar(ch) -> 2
+            else -> 1
+        }
+    }
+    return w
+}
+
+private fun isWideChar(ch: Char): Boolean {
+    val c = ch.code
+    return (c in 0x1100..0x115F) ||   // 韩文字母
+        (c in 0x2E80..0xA4CF) ||       // CJK 部首 / 汉字 / 注音
+        (c in 0xAC00..0xD7A3) ||       // 韩文音节
+        (c in 0xF900..0xFAFF) ||       // CJK 兼容汉字
+        (c in 0xFE30..0xFE6F) ||       // CJK 兼容形式
+        (c in 0xFF00..0xFF60) ||       // 全角形式
+        (c in 0xFFE0..0xFFE6) ||       // 全角符号
+        (c in 0x2600..0x27BF) ||       // 杂项符号 / Dingbats（✅ 等）
+        (c in 0x2B00..0x2BFF)          // 杂项符号与箭头
 }
 
 private fun plainOf(nodes: List<MdNode>): String = buildString {
@@ -401,15 +405,33 @@ private fun ListBlockView(
     color: Color,
     onLinkClick: ((String) -> Unit)?,
 ) {
+    // 过滤空项，但要**保留原始下标**，否则编号会错位：
+    // 过滤后重新 index 会让 `1.  2.  3.  7.  8.` 显示成 `1. 2. 3. 4. 5.`（实测踩到）。
     val validItems = remember(block.items) {
-        block.items.filter { plainOf(it).isNotBlank() }
+        block.items.withIndex()
+            .filter { (_, item) -> item.plain().isNotBlank() }
     }
     if (validItems.isEmpty()) return
 
     Column(Modifier.padding(vertical = DshTheme.m.xxs)) {
-        validItems.forEachIndexed { index, item ->
-            val indent = block.indents.getOrElse(index) { 0 }
-            val itemNumber = index + block.startNumber
+        validItems.forEach { (originalIndex, item) ->
+            val indent = block.indents.getOrElse(originalIndex) { 0 }
+            val itemNumber = originalIndex + block.startNumber
+
+            // 🔴 任务项走独立分支：它自带勾选框，不能再画 • / 1. 标记，
+            // 否则会出现「• ☐ 写文档」的双重标记。
+            if (item is MdListItem.Task) {
+                TaskRow(
+                    checked = item.checked,
+                    children = item.children,
+                    indent = indent,
+                    color = color,
+                    onLinkClick = onLinkClick,
+                )
+                return@forEach
+            }
+
+            val children = (item as MdListItem.Item).children
             Row(
                 Modifier
                     .fillMaxWidth()
@@ -419,16 +441,67 @@ private fun ListBlockView(
                 Text(
                     text = if (block.ordered) "$itemNumber." else "•",
                     style = MaterialTheme.typography.bodyMedium,
-                    color = color.copy(alpha = 0.55f),
+                    color = if (block.ordered) color.copy(alpha = 0.55f) else DshTheme.brand,
                     modifier = Modifier.width(if (block.ordered) (if (itemNumber >= 10) 26.dp else 20.dp) else 16.dp),
                 )
                 Box(Modifier.weight(1f)) {
-                    InlineText(item, color, onLinkClick)
+                    InlineText(children, color, onLinkClick)
                 }
             }
         }
     }
     Spacer(Modifier.height(DshTheme.m.sm))
+}
+
+/** 列表内的任务项行（勾选框 + 文本）。 */
+@Composable
+private fun TaskRow(
+    checked: Boolean,
+    children: List<MdNode>,
+    indent: Int,
+    color: Color,
+    onLinkClick: ((String) -> Unit)?,
+) {
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .padding(vertical = 2.dp)
+            .padding(start = (indent * 16).dp),
+        verticalAlignment = Alignment.Top,
+    ) {
+        Box(
+            Modifier
+                .padding(top = 3.dp)
+                .size(16.dp)
+                .background(
+                    if (checked) DshTheme.online.copy(alpha = 0.18f) else Color.Transparent,
+                    RoundedCornerShape(4.dp),
+                )
+                .border(
+                    1.5.dp,
+                    if (checked) DshTheme.online else color.copy(alpha = 0.4f),
+                    RoundedCornerShape(4.dp),
+                ),
+            contentAlignment = Alignment.Center,
+        ) {
+            if (checked) {
+                DshIcon(
+                    DshIcons.Check,
+                    contentDescription = null,
+                    tint = DshTheme.online,
+                    size = 11.dp,
+                )
+            }
+        }
+        Spacer(Modifier.width(DshTheme.m.sm))
+        Box(Modifier.weight(1f)) {
+            InlineText(
+                children,
+                if (checked) color.copy(alpha = 0.55f) else color,
+                onLinkClick,
+            )
+        }
+    }
 }
 
 // ── 引用 ────────────────────────────────────────────────────────────────────
@@ -622,6 +695,30 @@ private fun InlineText(
                             pop()
                         }
                     }
+
+                    // 🔴 图片必须在这里降级成**可读的文字占位**，不能 `else -> Unit`。
+                    //
+                    // 之前的 `else -> Unit` 让 `![alt](url)` 整条**静默消失** ——
+                    // 不报错、不崩溃，用户只看到那句话凭空少了一段。
+                    // 这和任务项那个 bug 是同一类「静默丢弃」，已一并修掉。
+                    //
+                    // ⚠️ 颜色必须是**调用方传进来的局部变量**，不能写 `DshTheme.xxx`：
+                    // 这段代码在 `remember {}` 里，不在 @Composable 上下文，
+                    // 读 `DshTheme` 会编译报错（Composable invocations can only happen...）。
+                    is MdNode.Image -> {
+                        pushStyle(
+                            SpanStyle(
+                                color = linkColor,
+                                fontWeight = FontWeight.Medium,
+                                textDecoration = TextDecoration.Underline,
+                            ),
+                        )
+                        append("[图] ")
+                        append(node.alt.ifBlank { node.url })
+                        pop()
+                    }
+
+                    // 其余块级节点不该流到行内渲染器（防御性分支）。
                     else -> Unit
                 }
             }

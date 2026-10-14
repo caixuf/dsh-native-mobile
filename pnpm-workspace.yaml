@@ -1,2 +1,11 @@
+# 本项目独立安装，不参与父目录的 pnpm workspace。
+#
+# 父目录 C:\Users\20247\Downloads\aiwork 下存在一个无关项目的 pnpm-lock.yaml，
+# 若不显式声明 workspace，pnpm 会把本项目误判为已满足的 workspace 包并
+# 永远输出 "Already up to date"（node_modules 根本不会被创建）。
+packages:
+  - .
+
+# vite 依赖 esbuild 的原生二进制，必须允许其构建脚本。
 allowBuilds:
-  esbuild: set this to true or false
+  esbuild: true

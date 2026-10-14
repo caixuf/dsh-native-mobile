@@ -72,23 +72,29 @@ export interface MdCodeBlock {
   code: string;
 }
 
+/**
+ * 列表项。
+ *
+ * 🔴 必须与普通项区分成一个**联合类型**，而不是把任务项塞进 `children` 里。
+ * 早期版本把任务项当成一个「伪行内节点」混进行内数组，结果行内渲染器
+ * （只认 text/image）会把它**整个静默丢掉** —— 用户看到的是
+ * 「- [x] 写完文档」这一行凭空消失，且不报任何错。
+ */
+export type MdListItem =
+  | { kind: 'item'; children: MdInline[] }
+  | { kind: 'task'; checked: boolean; children: MdInline[] };
+
 /** 列表块：`items` 与 `indents` 平行数组，index 对齐。 */
 export interface MdListBlock {
   type: 'list';
   ordered: boolean;
   startNumber: number;
-  items: MdInline[][];
+  items: MdListItem[];
   indents: number[];
 }
 
 export interface MdQuote {
   type: 'quote';
-  children: MdInline[];
-}
-
-export interface MdTaskItem {
-  type: 'task';
-  checked: boolean;
   children: MdInline[];
 }
 
@@ -118,24 +124,82 @@ export interface MdCallout {
   children: MdInline[];
 }
 
+/**
+ * 🔴 链接 URL 协议白名单。
+ *
+ * 模型输出（以及被投毒的 prompt）可以轻松产出 `[点我](javascript:alert(1))`。
+ * 渲染端如果把它原样塞进 `<a href>`，用户一点就执行脚本 —— 这是**存储型 XSS**。
+ *
+ * 白名单只放三种无脚本能力的协议：
+ * - `http:` / `https:` —— 正常外链
+ * - `mailto:` —— 邮件
+ *
+ * `javascript:` / `data:` / `vbscript:` / `file:` 一律拒绝。
+ *
+ * 净化要点（每一条都是绕过手法）：
+ * 1. `trim()` —— ` javascript:alert(1)` 前导空格浏览器照样执行；
+ * 2. 去掉控制字符 —— `java\tscript:` / `java\nscript:` 在 IE/旧引擎里是合法协议；
+ * 3. `toLowerCase()` —— `JaVaScRiPt:`；
+ * 4. 必须是「相对地址」时不能含冒号 —— `/a:b` 里 `a:b` 不是协议，别误杀；
+ * 5. `//evil.com` 协议相对地址会继承当前页面协议，等价外链，放行。
+ *
+ * 放行的相对地址（`./x`、`/x`、`#a`、`?q=1`）不能被 `\evil.com` 这种
+ * 反斜杠绕过，所以先按 WHATWG 规范把它们统一成 `/` 开头再判。
+ */
+const SAFE_PROTOCOLS = ['http:', 'https:', 'mailto:'];
+
+/** 不含协议分隔符 → 一定是相对地址（`#a`、`/x`、`./x`、`?q`、裸路径）。 */
+function hasSchemeLikePrefix(url: string): boolean {
+  return /^[A-Za-z][A-Za-z0-9+.-]*:/.test(url);
+}
+
+/**
+ * 清洗 URL；不安全返回 `null`。
+ *
+ * 导出给渲染层做最后一道闸 —— 解析器保留原样 URL 是为了「文本不丢失」，
+ * 渲染层则负责「不执行」。两层职责分开，改任何一层都不影响另一层。
+ */
+export function safeUrl(raw: string | null | undefined): string | null {
+  if (!raw) return null;
+
+  // WHATWG：反斜杠等价于斜杠，`\\evil.com` → `//evil.com`（协议相对，安全）
+  const normalized = raw.replace(/\\/g, '/');
+
+  // 去掉 ASCII 控制字符与制表/换行：`java\tscript:` 是经典绕过
+  // eslint-disable-next-line no-control-regex
+  const cleaned = normalized.replace(/[\u0000-\u001F\u007F]/g, '').trim();
+
+  if (cleaned === '') return null;
+
+  if (hasSchemeLikePrefix(cleaned)) {
+    const lower = cleaned.toLowerCase();
+    return SAFE_PROTOCOLS.some((p) => lower.startsWith(p)) ? cleaned : null;
+  }
+
+  // 没有协议前缀 → 纯相对地址，天然安全。
+  // 但 `\n//evil.com` 之类已经被上面清洗掉了，这里不会漏。
+  return cleaned;
+}
+
 export type MdInline = MdText | MdImage;
+
+/** 块级节点。任务项不属于块级 —— 它只能作为 `MdListBlock` 里的一项存在。 */
 export type MdBlock =
   | MdParagraph
   | MdHeading
   | MdCodeBlock
   | MdListBlock
   | MdQuote
-  | MdTaskItem
   | MdDivider
   | MdTable
   | MdCallout;
 
-export const CALLOUT_META: Record<CalloutType, { label: string; icon: string; color: string }> = {
-  NOTE: { label: '说明', icon: 'info', color: '#2563eb' },
-  TIP: { label: '提示', icon: 'lightbulb', color: '#059669' },
-  IMPORTANT: { label: '重要', icon: 'bookmark', color: '#7c3aed' },
-  WARNING: { label: '注意', icon: 'alert-triangle', color: '#d97706' },
-  CAUTION: { label: '危险', icon: 'shield-alert', color: '#dc2626' },
+export const CALLOUT_META: Record<CalloutType, { label: string; color: string }> = {
+  NOTE: { label: '说明', color: '#2563eb' },
+  TIP: { label: '提示', color: '#059669' },
+  IMPORTANT: { label: '重要', color: '#7c3aed' },
+  WARNING: { label: '注意', color: '#d97706' },
+  CAUTION: { label: '危险', color: '#dc2626' },
 };
 
 // ── 解析器 ──────────────────────────────────────────────────────────────────
@@ -144,6 +208,7 @@ const CALLOUT_RE = /^\[!(NOTE|TIP|IMPORTANT|WARNING|CAUTION)\](?:\s+(.*))?$/i;
 const HEADING_RE = /^(#{1,6})\s+(.*)$/;
 const DIVIDER_RE = /^\s*([-*_])\s*(?:\1\s*){2,}$/;
 const TABLE_SEP_RE = /^\|?[\s:|-]+\|[\s:|-]*$/;
+const TABLE_SEP_PREFIX_RE = /^\|?\s*:?-{1,}/;
 const QUOTE_RE = /^\s*>\s?(.*)$/;
 const UNORDERED_RE = /^(\s*)[-*+]\s+(.*)$/;
 const ORDERED_RE = /^(\s*)(\d+)[.)]\s+(.*)$/;
@@ -158,6 +223,117 @@ export function parseMarkdown(source: string): MdBlock[] {
   }
 }
 
+// ── 流式增量解析 ────────────────────────────────────────────────────────────
+//
+// 对齐 DSH 上游 `ui-primitives` 的 Streaming markdown 策略（README 原文）：
+//
+//   "all but the trailing two blocks freeze as cached React elements and only
+//    the source tail re-parses per chunk, so per-chunk work tracks the tail
+//    instead of the whole reply."
+//
+// 即：**除尾部两个块之外，前面所有块冻结复用，每个 chunk 只重解析尾部**。
+//
+// 为什么必须这么做：模型流式输出时，每来一个 token 就重渲染一次。
+// 若每次都全量解析整篇回复，成本随回复长度线性增长 ——
+// 一条 5000 字的回复在第 5000 个 token 时要全量重解析 5000 字，
+// 累计 O(n²)。手机上表现为**越到后面越卡、输入框都跟着掉帧**。
+//
+// 实现要点（与上游一致的稳定性判据）：
+//  - 只有**空行**才可能成为「安全切点」：块级结构在空行处一定闭合，
+//    所以在最后一个空行之前的内容不会因为后续 token 而改变解析结果；
+//  - 尾部保留**两个块**（上游同款）作为"可能还在长"的缓冲带 ——
+//    一个块正在流式增长，前一个块可能因它的语法（如未闭合围栏）被吞并；
+//  - 切点之前的块直接复用缓存对象（React 侧靠 memo 跳过重渲染）。
+
+interface IncrementalCache {
+  /** 已冻结的稳定前缀（原文子串，便于校验复用前提）。 */
+  prefix: string;
+  /** 该前缀解析出的块。 */
+  blocks: MdBlock[];
+}
+
+let incrementalCache: IncrementalCache | null = null;
+
+/**
+ * 计算安全切点：最后一个空行之后的位置。
+ *
+ * 返回 `cut` 表示 `source.slice(0, cut)` 可以被视为**已稳定**。
+ * 没有空行时返回 0（整段都还不稳定）。
+ *
+ * ⚠️ 必须排除「空行落在未闭合代码围栏内部」的情况：
+ * 围栏里的空行不闭合任何块，切在那里会把代码块劈成两半。
+ * 这里的判据是**围栏配对为偶数**（未闭合则不能切）。
+ */
+function stableCut(source: string): number {
+  const lastBlank = source.lastIndexOf('\n\n');
+  if (lastBlank <= 0) return 0;
+
+  const head = source.slice(0, lastBlank);
+  // 统计未闭合围栏：奇数个 ``` 说明当前仍在代码块里，不能切。
+  const fences = (head.match(/^```/gm) || []).length;
+  if (fences % 2 !== 0) {
+    // 围栏未闭合：退到该围栏之前再试一次
+    const fenceStart = head.lastIndexOf('\n```');
+    if (fenceStart <= 0) return 0;
+    const beforeFence = head.slice(0, fenceStart);
+    const innerBlank = beforeFence.lastIndexOf('\n\n');
+    return innerBlank > 0 ? innerBlank : 0;
+  }
+  return lastBlank;
+}
+
+/**
+ * 增量解析入口：流式场景应调用它而非 `parseMarkdown`。
+ *
+ * 返回的数组 = 冻结的前缀块（同一对象引用，React 可跳过） + 重新解析的尾部块。
+ *
+ * ⚠️ 正确性优先：任何不确定的情形都退回全量解析。
+ * 宁可慢一点，也不能因为缓存给用户显示**过期的排版**。
+ */
+export function parseMarkdownIncremental(source: string): MdBlock[] {
+  const cut = stableCut(source);
+
+  if (cut === 0) {
+    // 整段都不稳定（还没有空行，或空行在未闭合围栏里）→ 全量解析并作废缓存
+    incrementalCache = null;
+    return parseMarkdown(source);
+  }
+
+  const prefix = source.slice(0, cut);
+
+  // 缓存命中校验：前缀必须**逐字相同**才敢复用。
+  // 只看长度是不够的 —— 流式文本理论上可能被上游重写（重试、编辑）。
+  const reusable =
+    incrementalCache !== null &&
+    incrementalCache.prefix === prefix;
+
+  const headBlocks = reusable
+    ? incrementalCache!.blocks
+    : parseMarkdown(prefix);
+
+  // 尾部（切点之后）始终重新解析，保证正在增长的那个块是新鲜的
+  const tailSource = source.slice(cut);
+  const tailBlocks = tailSource.trim() === '' ? [] : parseMarkdown(tailSource);
+
+  const blocks = [...headBlocks, ...tailBlocks];
+
+  // 只保留「尾部两块之前」的部分作为下次可复用的前缀。
+  //
+  // 🔴 这是上游那句 "trailing two blocks" 的落地：
+  // 最后两块随时可能被新 token 改变形态（例如段落变成列表、围栏被吞），
+  // 所以它们**不能进缓存**，下次必须重解析。
+  // 我们把 tail 之前的 head 部分整体缓存即可 —— head 本身已经来自稳定切点，
+  // 它内部的最后一块不会跨越切点变化（切点是空行，块必然闭合）。
+  incrementalCache = { prefix, blocks: headBlocks };
+
+  return blocks;
+}
+
+/** 清空增量缓存（切换会话、编辑历史时调用，防止串数据）。 */
+export function resetIncrementalCache(): void {
+  incrementalCache = null;
+}
+
 function parseUnsafe(src: string): MdBlock[] {
   const lines = src.split('\n');
   const out: MdBlock[] = [];
@@ -165,7 +341,7 @@ function parseUnsafe(src: string): MdBlock[] {
   const para: MdInline[] = [];
   let listOrdered = false;
   let listStart = 1;
-  let listItems: MdInline[][] = [];
+  let listItems: MdListItem[] = [];
   let listIndents: number[] = [];
   let quoteLines: string[] = [];
 
@@ -279,14 +455,14 @@ function parseUnsafe(src: string): MdBlock[] {
 
     // ── 表格：`|a|b|` + 下一行必须是 `|---|---|` ──
     // 要求「下一行是分隔行」是必须的，否则正文里的竖线会被误判成表格。
-    if (
-      line.includes('|') &&
-      i + 1 < lines.length &&
-      TABLE_SEP_RE.test(lines[i + 1].trim()) &&
-      lines[i + 1].includes('-')
-    ) {
+    //
+    // 🔴 流式妥协：分隔行还没打完时（`| ---`），若严格要求完整分隔行，
+    // 整张表会在「最后一格补齐」的瞬间从段落**整体跳变**成表格 —— 用户看到闪一下。
+    // 所以这里放宽成「以 `-` 开头的前缀」也算数，让它从一开始就是表格，
+    // 后续列只是逐格长出来，不存在形态突变。
+    if (line.includes('|') && i + 1 < lines.length && isSeparatorPrefix(lines[i + 1].trim())) {
       flushAll();
-      const header = splitRow(line).map(inlineParse);
+      const header = splitRow(line).map((cell) => inlineParse(cell));
       const aligns = parseAligns(lines[i + 1]);
       i += 2;
 
@@ -297,7 +473,7 @@ function parseUnsafe(src: string): MdBlock[] {
         const cells = splitRow(row);
         // 列数不一致时按表头补齐/截断，避免渲染错位。
         const padded = [...cells, ...Array(Math.max(0, header.length - cells.length)).fill('')];
-        rows.push(padded.slice(0, header.length).map(inlineParse));
+        rows.push(padded.slice(0, header.length).map((cell) => inlineParse(cell)));
         i += 1;
       }
 
@@ -330,14 +506,17 @@ function parseUnsafe(src: string): MdBlock[] {
 
       const task = TASK_RE.exec(body);
       if (task) {
+        // 🔴 必须先切开已有列表：任务项会把列表强制改成无序。
+        // 若当前已是**有序**列表，直接改 listOrdered 会得到
+        // 「1. / 2. 标题旁边挂一个无编号勾选框」的错位渲染。
+        // Kotlin 端 `Markdown.kt` 同一处有 flushList()，两端必须一致。
+        if (listItems.length > 0 && listOrdered) flushList();
         listOrdered = false;
-        listItems.push([
-          {
-            type: 'task',
-            checked: task[1].toLowerCase() === 'x',
-            children: inlineParse(task[2]),
-          },
-        ]);
+        listItems.push({
+          kind: 'task',
+          checked: task[1].toLowerCase() === 'x',
+          children: inlineParse(task[2]),
+        });
         listIndents.push(indentLevel);
         i += 1;
         continue;
@@ -347,7 +526,7 @@ function parseUnsafe(src: string): MdBlock[] {
       if (listItems.length === 0 && isOrdered) listStart = itemNum;
 
       listOrdered = isOrdered;
-      listItems.push(inlineParse(body));
+      listItems.push({ kind: 'item', children: inlineParse(body) });
       listIndents.push(indentLevel);
       i += 1;
       continue;
@@ -366,9 +545,43 @@ function parseUnsafe(src: string): MdBlock[] {
   return out;
 }
 
+/**
+ * 找链接目标 `](` 之后的闭合 `)`，支持**括号配对**。
+ *
+ * 🔴 原实现用 `text.indexOf(')')`，遇到 URL 里的括号就截断：
+ *   `[wiki](https://en.wikipedia.org/wiki/Foo_(bar))`
+ *   → href 变成 `https://en.wikipedia.org/wiki/Foo_(bar`，链接坏掉。
+ * 而对 XSS 来说更糟：`[点](javascript:alert(document.cookie))` 会被截成
+ * `javascript:alert(document.cookie` —— 反而变成了一个语法完整、可执行的 payload。
+ *
+ * 这里改成从 `(` 开始做括号深度计数，扫到深度归零的那个 `)`。
+ * 转义的 `\(` / `\)` 不参与配对。
+ *
+ * 未配对（流式只打了一半）时返回 -1 → 走「未闭合当纯文本」铁律。
+ */
+function findCloseParen(text: string, openIdx: number): number {
+  let depth = 0;
+  for (let i = openIdx; i < text.length; i += 1) {
+    const ch = text[i];
+    if (ch === '\\') {
+      i += 1; // 跳过被转义的下一个字符
+      continue;
+    }
+    if (ch === '(') depth += 1;
+    else if (ch === ')') {
+      depth -= 1;
+      if (depth === 0) return i;
+    }
+  }
+  return -1;
+}
+
 /** 表格行拆分：去首尾竖线，支持转义竖线 `\|`，逐格 trim。 */
 function splitRow(line: string): string[] {
-  const trimmed = line.trim().replace(/^\|/, '').replace(/\|$/, '');
+  // ⚠️ 必须剥掉**所有**首尾竖线，不能只剥一个：
+  //   `||a||b||` → `["","a","","b",""]`（错位一整列）
+  //            → `["a","","b"]`   （与 Kotlin `String.trim('|')` 一致）
+  const trimmed = line.trim().replace(/^\|+/, '').replace(/\|+$/, '');
   const cells: string[] = [];
   let buf = '';
 
@@ -390,6 +603,17 @@ function splitRow(line: string): string[] {
   return cells;
 }
 
+/**
+ * 分隔行判定。
+ *
+ * 完整形态 `|---|---|` 直接匹配；流式中途的 `| ---` 这类前缀也放行，
+ * 让表格从第一帧起就以表格形态存在，避免最后一格补齐时整体跳变。
+ */
+function isSeparatorPrefix(line: string): boolean {
+  return TABLE_SEP_RE.test(line) || TABLE_SEP_PREFIX_RE.test(line);
+}
+
+/** 解析对齐行 `|---|:--:|---:|`。流式下未写完的列按左对齐兜底。 */
 function parseAligns(line: string): Align[] {
   return line
     .trim()
@@ -455,7 +679,7 @@ function inlineParse(text: string, base: MdStyle = {}): MdInline[] {
     if (c === '!' && text[i + 1] === '[') {
       const closeText = text.indexOf(']', i + 2);
       if (closeText > i && text[closeText + 1] === '(') {
-        const closeUrl = text.indexOf(')', closeText);
+        const closeUrl = findCloseParen(text, closeText + 1);
         if (closeUrl > closeText) {
           flush();
           out.push({
@@ -473,7 +697,7 @@ function inlineParse(text: string, base: MdStyle = {}): MdInline[] {
     if (c === '[') {
       const closeText = text.indexOf(']', i);
       if (closeText > i && text[closeText + 1] === '(') {
-        const closeUrl = text.indexOf(')', closeText);
+        const closeUrl = findCloseParen(text, closeText + 1);
         if (closeUrl > closeText) {
           flush();
           out.push(
@@ -557,10 +781,7 @@ export function inlinePlain(nodes: MdInline[]): string {
 }
 
 /** 取列表项纯文本（过滤空项用）。 */
-export function listItemPlain(nodes: MdInline[]): string {
-  for (const n of nodes) {
-    if (n.type === 'text') return n.value.trim();
-    if (n.type === 'image') return n.alt;
-  }
-  return '';
+export function listItemPlain(item: MdListItem): string {
+  const text = inlinePlain(item.children);
+  return text.trim();
 }

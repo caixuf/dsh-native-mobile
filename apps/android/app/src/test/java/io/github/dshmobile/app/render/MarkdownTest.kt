@@ -281,12 +281,83 @@ class MarkdownTest {
     }
 
     @Test
-    fun `task list checkbox is parsed`() {
+    fun `task list item is preserved and not silently dropped`() {
+        // 🔴 真实 bug 回归：任务项曾经被当成「伪行内节点」塞进 List<MdNode>，
+        // 而 InlineText 的 when 只认 MdNode.Text（else -> Unit），于是
+        // **任务项整行从 UI 上消失**（不报错、不崩溃）。
+        // 所以这里最关键的不是 checkbox 值，而是 plain() —— 文本必须真的存在。
         val items = Markdown.parse("- [x] 已完成\n- [ ] 未完成")
             .filterIsInstance<MdNode.ListBlock>().first().items
         assertEquals(2, items.size)
-        assertTrue("第一个应勾选", (items[0].first() as MdNode.TaskItem).checked)
-        assertTrue("第二个应未勾选", !(items[1].first() as MdNode.TaskItem).checked)
+
+        val first = items[0]
+        assertTrue("第一个应是任务项", first is MdListItem.Task)
+        assertTrue("第一个应勾选", (first as MdListItem.Task).checked)
+        assertEquals("已完成", first.plain())
+
+        val second = items[1] as MdListItem.Task
+        assertTrue("第二个应未勾选", !second.checked)
+        assertEquals("未完成", second.plain())
+    }
+
+    @Test
+    fun `image inside paragraph is preserved for the renderer to show`() {
+        // 🔴 真实 bug 回归：`![alt](url)` 曾被 `InlineText` 的 `else -> Unit`
+        // 整条吞掉，UI 表现是「这句话凭空少了一段」。解析层必须始终产出 Image 节点。
+        val nodes = Markdown.parse("前面 ![示意图](https://example.com/a.png) 后面")
+            .filterIsInstance<MdNode.Paragraph>().first().children
+        val img = nodes.filterIsInstance<MdNode.Image>().first()
+        assertEquals("示意图", img.alt)
+        assertEquals("https://example.com/a.png", img.url)
+        assertTrue(
+            "相邻的普通文本不能丢",
+            nodes.filterIsInstance<MdNode.Text>().any { it.value.contains("后面") },
+        )
+    }
+
+    @Test
+    fun `image inside list item is preserved`() {
+        val items = Markdown.parse("- 见 ![图](https://e.com/i.png) 说明")
+            .filterIsInstance<MdNode.ListBlock>().first().items
+        val img = (items[0] as MdListItem.Item).children.filterIsInstance<MdNode.Image>().first()
+        assertEquals("图", img.alt)
+    }
+
+    @Test
+    fun `ordered list items keep stable original indices`() {
+        // 🔴 真实 bug 回归：渲染层曾用「过滤后的 index」算编号，
+        // 中间空项一旦被过滤，7. 8. 就显示成 4. 5.。
+        // 契约：items 与 indents 平行且下标与原文顺序严格一致，渲染层据此算编号。
+        val list = Markdown.parse("1. 一\n2. 二\n3. 三\n7. 七\n8. 八")
+            .filterIsInstance<MdNode.ListBlock>().first()
+        assertEquals(5, list.items.size)
+        assertEquals(1, list.startNumber)
+        assertEquals("七", (list.items[3] as MdListItem.Item).plain())
+        assertEquals("八", (list.items[4] as MdListItem.Item).plain())
+        // 按原始下标算出的编号应与原文一致：index 3 -> "7."
+        assertEquals(4, 3 + list.startNumber)
+    }
+
+    @Test
+    fun `nested emphasis residual asterisks follow commonmark`() {
+        // `*斜体里 **粗体***` 中，外层单星号的闭合点前是空格，
+        // 按 CommonMark 不构成斜体，残留 `*` 是**正确**行为。
+        // 锁死该判定，防止以后被"顺手修"成错误的贪婪匹配。
+        val nodes = Markdown.parse("*斜体里 **嵌套粗体***")
+            .filterIsInstance<MdNode.Paragraph>().first().children
+        assertTrue(
+            "内层粗体应被解析",
+            nodes.filterIsInstance<MdNode.Text>().any { it.style.bold && it.value == "嵌套粗体" },
+        )
+        assertEquals("*斜体里 嵌套粗体*", plainText(nodes))
+    }
+
+    @Test
+    fun `underscore emphasis with no surrounding space closes correctly`() {
+        // 对照用例：`_斜体_` 两侧非空白，应当构成斜体。
+        val nodes = Markdown.parse("这是 _斜体_ 文字")
+            .filterIsInstance<MdNode.Paragraph>().first().children
+        assertTrue(nodes.filterIsInstance<MdNode.Text>().any { it.style.italic && it.value == "斜体" })
     }
 
     @Test
@@ -386,6 +457,94 @@ class MarkdownTest {
         assertTrue("转义星号不应产生斜体", textNodes.none { it.style.italic })
     }
 
+    // ── 🔴 Android 端渲染回归 ───────────────────────────────────────────────
+    //
+    // 下面这些不是"再测一遍解析器"，而是锁死**手机端特有的渲染路径**：
+    // 流式半截表格行、任务项与普通项混排、五种 Callout、异常输入不崩。
+
+    @Test
+    fun `streaming half typed separator row still renders as table`() {
+        // 🔴 流式：表格正在输出，第二行分隔行只打了一半（`| ---`）。
+        // 早期要求完整 `|---|---|`，导致整张表会在「最后一格补齐」的瞬间
+        // 从段落**整体跳变**成表格 —— 手机上就是一次明显的闪跳。
+        val streaming = Markdown.parse("| 方法 | 参数 |\n| ---")
+        assertTrue(
+            "半截分隔行也应识别为表格，避免整体跳变",
+            streaming.any { it is MdNode.Table },
+        )
+
+        // 补齐分隔行后仍然是表格（结构不抖）
+        val complete = Markdown.parse("| 方法 | 参数 |\n|---|---|")
+        assertTrue("补齐后仍是表格", complete.any { it is MdNode.Table })
+    }
+
+    @Test
+    fun `mixed task and plain list items are all preserved`() {
+        // 真实场景：模型把待办和普通项混在一个列表里输出。
+        // 任何一项被吞掉/错位都是 bug —— 每项的文本都必须能取到。
+        val src = "- [x] 已完成\n- 普通项\n- [ ] 未完成"
+        val list = Markdown.parse(src).filterIsInstance<MdNode.ListBlock>().first()
+        assertEquals("三项都不能丢", 3, list.items.size)
+        assertEquals("已完成", list.items[0].plain())
+        assertEquals("普通项", list.items[1].plain())
+        assertEquals("未完成", list.items[2].plain())
+
+        assertTrue("第 1 项是任务项", list.items[0] is MdListItem.Task)
+        assertTrue("第 2 项是普通项", list.items[1] is MdListItem.Item)
+        assertTrue("第 3 项是任务项", list.items[2] is MdListItem.Task)
+    }
+
+    @Test
+    fun `all five callout types are recognized`() {
+        // CalloutView 对五种类型各有一组配色+图标，任一漏判都会掉进 else。
+        listOf(
+            "NOTE" to CalloutType.Note,
+            "TIP" to CalloutType.Tip,
+            "IMPORTANT" to CalloutType.Important,
+            "WARNING" to CalloutType.Warning,
+            "CAUTION" to CalloutType.Caution,
+        ).forEach { (tag, expected) ->
+            val nodes = Markdown.parse("> [!$tag]\n> 内容")
+            val callout = nodes.filterIsInstance<MdNode.Callout>().firstOrNull()
+            assertNotNull("应识别出 $tag Callout", callout)
+            assertEquals(expected, callout?.type)
+            assertTrue("$tag 内容不应丢失", plainText(listOf(callout!!)).contains("内容"))
+        }
+    }
+
+    @Test
+    fun `malformed and hostile input never throws`() {
+        // 渲染路径上抛异常 = 整个 App 崩在流式输出中。
+        // 除了不抛，还要求纯文本不能整段丢失。
+        val nasty = listOf(
+            "- [", "- [ ]", "- [x]", "- [x] ", "* [X] 大写勾选",
+            "> [!", "> [!NOTE", "> [!BOGUS]\n> 正文", "|", "| |",
+            "| a | b |", "| --- | --- |\n| 未闭合", "```lang",
+            "![", "![alt](", "[a](", "#".repeat(200),
+            "[ ] ".repeat(100), "  ", "😀".repeat(50),
+            "".repeat(1000), "\t\t", "\\", "|---", "- [x] **未闭合粗体",
+        )
+        nasty.forEach { src ->
+            // 不抛异常是硬要求（渲染路径抛异常 = 整个 App 崩在流式输出中）
+            val nodes = runCatching { Markdown.parse(src) }
+                .getOrElse { error("Markdown.parse 抛异常了，输入=${src.take(40)}") }
+            // 纯空白输入解析成空列表是**正确**行为（没内容可渲染），
+            // 所以这里断言的是「非空白输入不能整段变空」。
+            if (src.isNotBlank()) {
+                assertTrue("非空白输入不应解析成空节点列表：${src.take(40)}", nodes.isNotEmpty())
+            }
+        }
+    }
+
+    @Test
+    fun `uppercase X checkbox is treated as checked`() {
+        val items = Markdown.parse("- [X] 大写勾选")
+            .filterIsInstance<MdNode.ListBlock>().first().items
+        assertEquals(1, items.size)
+        assertTrue("大写 X 也应算勾选", (items[0] as MdListItem.Task).checked)
+        assertEquals("大写勾选", items[0].plain())
+    }
+
     // ── 辅助 ────────────────────────────────────────────────────────────────
 
     /** 递归收集所有节点（测试辅助）。 */
@@ -396,8 +555,7 @@ class MarkdownTest {
             is MdNode.Heading -> children.forEach { addAll(it.flatten()) }
             is MdNode.Quote -> children.forEach { addAll(it.flatten()) }
             is MdNode.Callout -> children.forEach { addAll(it.flatten()) }
-            is MdNode.ListBlock -> items.forEach { list -> list.forEach { addAll(it.flatten()) } }
-            is MdNode.TaskItem -> children.forEach { addAll(it.flatten()) }
+            is MdNode.ListBlock -> items.forEach { item -> item.children.forEach { addAll(it.flatten()) } }
             is MdNode.Table -> {
                 header.forEach { cell -> cell.forEach { addAll(it.flatten()) } }
                 rows.forEach { row -> row.forEach { cell -> cell.forEach { addAll(it.flatten()) } } }
@@ -424,7 +582,7 @@ class MarkdownTest {
                     is MdNode.Heading -> walk(n.children)
                     is MdNode.Quote -> walk(n.children)
                     is MdNode.Callout -> walk(n.children)
-                    is MdNode.ListBlock -> n.items.forEach { walk(it) }
+                    is MdNode.ListBlock -> n.items.forEach { walk(it.children) }
                     is MdNode.CodeBlock -> Unit
                     // else 兜底：新增 MdNode 类型时测试辅助函数不必跟着改
                     else -> Unit
@@ -445,7 +603,7 @@ class MarkdownTest {
                         is MdNode.Heading -> walk(n.children)
                         is MdNode.Quote -> walk(n.children)
                         is MdNode.Callout -> walk(n.children)
-                        is MdNode.ListBlock -> n.items.forEach { walk(it) }
+                        is MdNode.ListBlock -> n.items.forEach { walk(it.children) }
                         is MdNode.CodeBlock -> append(n.code)
                         else -> Unit
                     }

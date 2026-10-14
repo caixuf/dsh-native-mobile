@@ -525,16 +525,27 @@ class ChatViewModel(private val connProvider: () -> DshConnection?) : ViewModel(
                     null -> null
                     else -> rawArgs.toString()
                 }
-                if (rawArgs == null) "调用 $toolName" else "调用 $toolName · ${JsonRender.compact(rawArgs, 200)}"
+                // 🔴 text 只放**人类可读的动作名**，绝不放原始 JSON。
+                //
+                // 工具调用的可读细节由 DisclosureToolCard 负责呈现（摘要 + 可展开的
+                // 结构化入参）。早期这里塞的是 `调用 bash · {"command":"…"}`，
+                // 一旦这条 line 以正文形式出现，屏幕上就是一坨未解码的 JSON；
+                // 而且和内嵌在 assistant/message 里的同一调用**重复显示两遍**。
+                toolName
             }
             "tool/result" -> {
                 val message = data?.get("message") as? JsonObject
                 toolCallId = JsonRender.str(message ?: data, "toolCallId", "callId")
                 isError = JsonRender.bool(message ?: data, "isError", "error") ?: false
                 val content = message?.get("content") ?: data?.get("content") ?: data?.get("result")
+                // 工具输出的兜底：优先取可读文本。
+                // 🔴 只有 content 确实取不到时才退回 compact，且 compact 只对
+                // **真正的输出载荷**（字符串原语 / 数组）有意义 ——
+                // 对 message 形状的对象整体 dump 会把内部 JSON 铺满屏幕
+                // （同类事故：会话流里出现 `{"role":"assistant","content":[...`）。
                 val res = JsonRender.contentToText(content)
                     ?: JsonRender.textOf(content)
-                    ?: (data ?: entry)?.let { JsonRender.compact(it, 500) }
+                    ?: content?.let { JsonRender.compact(it, 500) }
                     ?: ""
                 toolResult = res
                 res
@@ -542,6 +553,9 @@ class ChatViewModel(private val connProvider: () -> DshConnection?) : ViewModel(
             else -> {
                 val content = (data?.get("message") as? JsonObject)?.get("content")
                     ?: data?.get("content")
+                // 先走 contentToText（它会跳过内嵌的工具调用块）。
+                // 只有在它**完全取不到内容**时才退到 textOf；
+                // textOf 内部同样跳过工具调用块，两条路都不会把工具调用渲染成正文。
                 val extracted = JsonRender.contentToText(content)
                     ?: JsonRender.textOf(data)
                     ?: JsonRender.textOf(entry["message"])

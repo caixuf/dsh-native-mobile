@@ -36,7 +36,6 @@ import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import io.github.dshmobile.app.ui.DshTheme
@@ -46,6 +45,14 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 /**
+ * 代码块默认折叠行数。
+ *
+ * 对齐 DSH 上游 `ui-primitives/lib/markdown/CodeBlock.module.css` 的
+ * `maxLines` 默认值 **16**：超过这个高度就必须给展开入口，
+ * 否则长代码会把整条会话流冲散。
+ */
+internal const val DEFAULT_FOLD_LINES = 16
+/**
  * 生产级代码卡片组件（对齐 DSH Web `CodeCard.module.css` 规范）。
  *
  * ## 视觉设计细节：
@@ -54,17 +61,19 @@ import kotlinx.coroutines.launch
  *   - 左侧：编程语言微徽标（如 `KOTLIN`, `SHELL`, `JSON`），等宽大写字；
  *   - 右侧：一键复制代码按钮，点击瞬间切为绿色勾选态并显示「已复制」，2 秒后自动恢复；
  * - 头部与代码区以细微 1px 分割线分离；
- * - 代码正文：内置轻量语法高亮，横向平滑滚动，保留缩进与换行，不硬性折行。
+ * - 代码正文：内置轻量语法高亮，横向平滑滚动，保留缩进与换行，不硬性折行；
+ * - 超过 [DEFAULT_FOLD_LINES] 行时折叠，底部给出「展开全部 N 行 / 收起」入口。
  */
 @Composable
 fun CodeCard(
     code: String,
     language: String? = null,
     modifier: Modifier = Modifier,
-    maxHeightLines: Int = 50,
+    maxHeightLines: Int = DEFAULT_FOLD_LINES,
 ) {
     val clipboardManager = LocalClipboardManager.current
     var copied by remember { mutableStateOf(false) }
+    var expanded by remember(code, language) { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
 
     val copyBgColor by animateColorAsState(
@@ -81,8 +90,27 @@ fun CodeCard(
     val cleanLang = language?.trim()?.takeIf { it.isNotBlank() && it.length <= 20 }
     val displayLang = cleanLang?.uppercase() ?: "CODE"
 
-    val highlightedText = remember(code, language) {
-        CodeHighlighter.highlight(code, cleanLang)
+    // 🔴 折叠策略（对齐 DSH 上游 `CodeBlock.module.css` 的 maxLines 默认 16）。
+    //
+    // 旧实现有两个真问题：
+    //  1. 默认 50 行 —— 30 行的代码块在手机上要滑好几屏，把会话流冲散；
+    //  2. 超限时用 `maxLines + TextOverflow.Visible` 直接**静默截断**：
+    //     既没有"还有更多"的提示，也没有展开入口，用户根本不知道下面还有内容。
+    //     更糟的是行号列只画 `minOf(size, maxLines)` 行，与代码区可能错位。
+    //
+    // 现在：超过阈值给「展开全部 N 行 / 收起」按钮，且行号与可见行严格同源。
+    val codeLines = remember(code) { code.split('\n') }
+    val totalLines = codeLines.size
+    val collapsible = totalLines > maxHeightLines
+    val visibleLines = if (collapsible && !expanded) maxHeightLines else totalLines
+    val showLineNumbers = totalLines > 1
+
+    // 折叠时只渲染前 visibleLines 行，避免为看不见的内容做高亮与布局。
+    val visibleCode = remember(code, visibleLines) {
+        if (visibleLines >= totalLines) code else codeLines.take(visibleLines).joinToString("\n")
+    }
+    val highlightedText = remember(visibleCode, language) {
+        CodeHighlighter.highlight(visibleCode, cleanLang)
     }
 
     Column(
@@ -92,8 +120,6 @@ fun CodeCard(
             .background(Color(0xFF16161E))
             .border(1.dp, Color(0xFF2E303E), RoundedCornerShape(12.dp)),
     ) {
-        val codeLines = remember(code) { code.split('\n') }
-        val showLineNumbers = codeLines.size > 1
 
         // ── 头部栏 ──
         Row(
@@ -181,7 +207,7 @@ fun CodeCard(
         ) {
             if (showLineNumbers) {
                 // 行号列（固定在左侧，不随代码横向滚动）
-                val count = minOf(codeLines.size, maxHeightLines)
+                // 🔴 必须与可见代码行严格同源，否则行号会和代码错位。
                 Column(
                     modifier = Modifier
                         .padding(start = 12.dp)
@@ -196,7 +222,7 @@ fun CodeCard(
                         .padding(end = 10.dp),
                     horizontalAlignment = Alignment.End,
                 ) {
-                    for (i in 1..count) {
+                    for (i in 1..visibleLines) {
                         Text(
                             text = "$i",
                             fontFamily = FontFamily.Monospace,
@@ -223,8 +249,39 @@ fun CodeCard(
                         lineHeight = 20.sp,
                     ),
                     softWrap = false,
-                    maxLines = maxHeightLines,
-                    overflow = TextOverflow.Visible,
+                )
+            }
+        }
+
+        // ── 折叠条：仅在代码超长时出现 ──
+        if (collapsible) {
+            Box(
+                Modifier
+                    .fillMaxWidth()
+                    .height(1.dp)
+                    .background(Color(0xFF232534)),
+            )
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable { expanded = !expanded }
+                    .padding(horizontal = 14.dp, vertical = 9.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.Center,
+            ) {
+                DshIcon(
+                    imageVector = if (expanded) DshIcons.ChevronUp else DshIcons.ChevronDown,
+                    contentDescription = null,
+                    tint = Color(0xFF7AA2F7),
+                    size = 14.dp,
+                )
+                Spacer(Modifier.width(6.dp))
+                Text(
+                    text = if (expanded) "收起" else "展开全部 $totalLines 行",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = Color(0xFF7AA2F7),
+                    fontWeight = FontWeight.Medium,
+                    fontSize = 11.5.sp,
                 )
             }
         }

@@ -47,10 +47,18 @@ sealed interface MdNode {
     /** 代码块 */
     data class CodeBlock(val language: String?, val code: String) : MdNode
 
-    /** 列表项序列 */
+    /**
+     * 列表项序列。
+     *
+     * 🔴 每个元素是 `MdListItem` 而不是 `List<MdNode>`，因为**列表项有两种形态**：
+     * 普通文本项与任务项（`- [x]`）。早期把任务项当成「伪行内节点」塞进
+     * `List<MdNode>`，而 `InlineText` 的 `when` 只认 `MdNode.Text`
+     * （`else -> Unit`），于是 **列表里的任务项整行静默消失**，
+     * 不报错、不崩溃 —— 用户只看到「- [x] 写完文档」凭空不见了。
+     */
     data class ListBlock(
         val ordered: Boolean,
-        val items: List<List<MdNode>>,
+        val items: List<MdListItem>,
         val startNumber: Int = 1,
         val indents: List<Int> = emptyList(),
     ) : MdNode
@@ -77,9 +85,6 @@ sealed interface MdNode {
     /** 分隔线 `---` / `***` / `___` */
     data object Divider : MdNode
 
-    /** 任务列表项（`- [ ]` / `- [x]`） */
-    data class TaskItem(val checked: Boolean, val children: List<MdNode>) : MdNode
-
     /**
      * 图片 `![alt](url)`。
      *
@@ -95,6 +100,46 @@ sealed interface MdNode {
         val customTitle: String? = null,
         val children: List<MdNode>,
     ) : MdNode
+}
+
+/**
+ * 列表项：普通项 or 任务项。
+ *
+ * 🔴 为什么不用 `List<MdNode>`：列表项有两种形态，而 `InlineText` 的 `when` 只认
+ * `MdNode.Text`（`else -> Unit`）。早期把任务项当成「伪行内节点」塞进 `List<MdNode>`，
+ * 结果**列表里的任务项整行静默消失** —— 不报错、不崩溃，用户只看到
+ * 「- [x] 写完文档」凭空不见了。
+ *
+ * 用密封类而非 `data class` + `kind` 字段，让编译器强制所有 `when` 都覆盖两种形态。
+ */
+sealed interface MdListItem {
+    val children: List<MdNode>
+
+    data class Item(override val children: List<MdNode>) : MdListItem
+
+    data class Task(
+        val checked: Boolean,
+        override val children: List<MdNode>,
+    ) : MdListItem
+
+    /** 取纯文本（过滤空项用）。 */
+    fun plain(): String = buildString { appendChildren(children, this) }
+}
+
+/** 递归把节点里的字面文本拼进 [sink]（列表项 / Callout / 表格列宽共用）。 */
+internal fun appendChildren(nodes: List<MdNode>, sink: StringBuilder) {
+    nodes.forEach { node ->
+        when (node) {
+            is MdNode.Text -> sink.append(node.value)
+            is MdNode.Paragraph -> appendChildren(node.children, sink)
+            is MdNode.Heading -> appendChildren(node.children, sink)
+            is MdNode.Quote -> appendChildren(node.children, sink)
+            is MdNode.Callout -> appendChildren(node.children, sink)
+            is MdNode.CodeBlock -> sink.append(node.code)
+            is MdNode.Image -> sink.append(node.alt)
+            else -> Unit
+        }
+    }
 }
 
 /** 行内样式（可叠加）。 */
@@ -143,7 +188,7 @@ object Markdown {
         val para = mutableListOf<MdNode>()
         var listOrdered = false
         var listStartNumber = 1
-        val listItems = mutableListOf<List<MdNode>>()
+        val listItems = mutableListOf<MdListItem>()
         val listIndents = mutableListOf<Int>()
         val quoteRawLines = mutableListOf<String>()
 
@@ -254,28 +299,36 @@ object Markdown {
             // 要求"下一行是分隔行"是必须的，否则正文里出现的竖线会被误判成表格。
             // ⚠️ 正则用 raw string：普通字符串里的 `\$` 是「转义的美元符号」，
             // 不是正则锚点（同一个坑，踩第二次）。
+            //
+            // 🔴 流式妥协：分隔行还没打完时（`| ---`）也放行，让表格从第一帧起
+            // 就是表格。否则整张表会在「最后一格补齐」的瞬间从段落**整体跳变**
+            // 成表格 —— 手机上就是一次明显的闪跳。
             val tableSepRe = Regex("""^\|?[\s:|-]+\|[\s:|-]*$""")
-            if (line.contains('|') && i + 1 < lines.size &&
-                tableSepRe.matches(lines[i + 1].trim()) &&
-                lines[i + 1].contains('-')
-            ) {
-                flushAll()
-                val header = splitRow(line)
-                val aligns = parseAligns(lines[i + 1])
-                i += 2
-                val rows = mutableListOf<List<List<MdNode>>>()
-                while (i < lines.size) {
-                    val r = lines[i]
-                    if (!r.contains('|') || r.isBlank()) break
-                    val cells = splitRow(r)
-                    // 列数不一致时按表头补齐/截断，避免渲染错位
-                    val padded = (cells + List(header.size - cells.size.coerceAtMost(header.size)) { "" })
-                        .take(header.size)
-                    rows += padded.map { inline(it) }
-                    i++
+            val tableSepPrefixRe = Regex("""^\|?\s*:?-{1,}""")
+            if (line.contains('|') && i + 1 < lines.size) {
+                val sep = lines[i + 1].trim()
+                val isSep = tableSepRe.matches(sep) || tableSepPrefixRe.matches(sep)
+                if (!isSep) {
+                    // 不是表格 → 落回普通正文处理
+                } else {
+                    flushAll()
+                    val header = splitRow(line)
+                    val aligns = parseAligns(sep)
+                    i += 2
+                    val rows = mutableListOf<List<List<MdNode>>>()
+                    while (i < lines.size) {
+                        val r = lines[i]
+                        if (!r.contains('|') || r.isBlank()) break
+                        val cells = splitRow(r)
+                        // 列数不一致时按表头补齐/截断，避免渲染错位
+                        val padded = (cells + List(header.size - cells.size.coerceAtMost(header.size)) { "" })
+                            .take(header.size)
+                        rows += padded.map { inline(it) }
+                        i++
+                    }
+                    out += MdNode.Table(header.map { inline(it) }, rows, aligns)
+                    continue
                 }
-                out += MdNode.Table(header.map { inline(it) }, rows, aligns)
-                continue
             }
 
             // ── 引用 ──
@@ -302,9 +355,12 @@ object Markdown {
                 val task = Regex("^\\[([ xX])\\]\\s+(.*)$").find(body)
                 if (task != null) {
                     val isChecked = task.groupValues[1].lowercase() == "x"
+                    // 任务项让当前列表变成无序（不再画 1. / • 标记，勾选框自带）
+                    if (listItems.isNotEmpty() && listOrdered) flushList()
                     listOrdered = false
-                    listItems += listOf(
-                        MdNode.TaskItem(isChecked, inline(task.groupValues[2])),
+                    listItems += MdListItem.Task(
+                        checked = isChecked,
+                        children = inline(task.groupValues[2]),
                     )
                     listIndents += indentLevel
                     i++
@@ -316,7 +372,7 @@ object Markdown {
                     listStartNumber = itemNum
                 }
                 listOrdered = isOrdered
-                listItems += inline(body)
+                listItems += MdListItem.Item(inline(body))
                 listIndents += indentLevel
                 i++
                 continue
