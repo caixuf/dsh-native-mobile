@@ -1,4 +1,5 @@
-import { HostRecord } from '../types';
+// `import type`：`../types` 无运行时导出，值导入会让 Node 直跑 src/ 的测试在链接期失败
+import type { HostRecord } from '../types';
 import { DEMO_MODE } from './demo';
 
 export interface PairingTarget {

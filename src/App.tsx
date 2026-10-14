@@ -1,8 +1,10 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { HostRecord, LinkState, SessionRow, ChatLine, PendingPrompt } from './types';
+import type { HostRecord, LinkState, SessionRow, ChatLine, PendingPrompt } from './types';
 import { HostStore } from './services/store';
-import { DshConnection, HostRequestItem } from './services/connection';
+import { DshConnection } from './services/connection';
+import type { HostRequestItem } from './services/connection';
 import { PairingClient } from './services/pairing';
+import { Envelopes } from './services/envelopes';
 import { HostsScreen } from './components/screens/HostsScreen';
 import { PairScreen } from './components/screens/PairScreen';
 import { SessionsScreen } from './components/screens/SessionsScreen';
@@ -422,25 +424,39 @@ export const App: React.FC = () => {
     }
   };
 
+  /**
+   * 审批作答。
+   *
+   * 🔴 **`outcome` 只允许由 `Envelopes` 构造，不许在这里手写字面量。**
+   * 主机的审批词表只有四个裸字符串（`allowed-once | rejected | cancelled | unavailable`），
+   * 词表外的值**不报错、日志干净，而是被静默归一化成 `unavailable`（= 拒绝）** ——
+   * 现象就是「用户点了允许，工具却被拒绝」，极难排查。
+   * 这条约束由 `scripts/test-approval-contract.mjs` 钉死（含源码级扫描）。
+   */
   const handleApprove = async (allow: boolean) => {
     if (!pendingPrompt || !connRef.current) return;
-    await connRef.current.respond(
+    const ok = await connRef.current.respond(
       pendingPrompt.rpcId,
-      allow
-        ? { kind: 'result', value: 'allowed-once' }
-        : { kind: 'result', value: 'rejected' },
+      Envelopes.approvalOutcome(allow),
     );
+    if (!ok) {
+      // 没送达却关掉弹窗 = 用户以为批了、主机还在等。保持弹窗可重试，并如实报错。
+      setError(allow ? '「允许」未送达电脑，请重试' : '「拒绝」未送达电脑，请重试');
+      return;
+    }
+    setError(null);
     setPendingPrompt(null);
   };
 
   const handleAnswerOption = async (text: string) => {
     if (!pendingPrompt || !connRef.current) return;
-    await connRef.current.respond(pendingPrompt.rpcId, {
-      kind: 'result',
-      value: {
-        answers: [{ id: pendingPrompt.questionId || 'q1', selected: [text] }],
-      },
-    });
+    const outcome = Envelopes.questionOutcome(pendingPrompt.questionId || 'q1', [text]);
+    const ok = await connRef.current.respond(pendingPrompt.rpcId, outcome);
+    if (!ok) {
+      setError('回答未送达电脑，请重试');
+      return;
+    }
+    setError(null);
     setPendingPrompt(null);
   };
 

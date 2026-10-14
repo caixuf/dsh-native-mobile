@@ -1,4 +1,8 @@
-import { LinkState, PendingPrompt, SessionRow, ChatLine } from '../types';
+// ⚠️ 必须是 `import type`：`../types` 只有类型、没有任何运行时导出。
+// 写成值导入时，打包器（esbuild）会保留这条语句，于是**任何 Node 直跑 `src/` 的
+// 回归测试**都会在链接期炸掉 —— `SyntaxError: does not provide an export named`。
+// 这正是契约测试长期缺席的结构性原因，见 scripts/ts-resolve-hook.mjs。
+import type { LinkState, PendingPrompt, SessionRow, ChatLine } from '../types';
 import { Envelopes } from './envelopes';
 import { DEMO_MODE } from './demo';
 

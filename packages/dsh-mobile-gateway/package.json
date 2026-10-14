@@ -32,7 +32,7 @@
                     "node":  "\u003e=20"
                 },
     "scripts":  {
-                    "test":  "node test/e2e.mjs",
+                    "test":  "node test/e2e.mjs \u0026\u0026 node test/store-roundtrip.mjs",
                     "check":  "node --check index.mjs \u0026\u0026 node --check lib/util.mjs \u0026\u0026 node --check lib/store.mjs \u0026\u0026 node --check lib/http.mjs \u0026\u0026 node --check lib/bridge.mjs \u0026\u0026 node --check lib/manage.mjs",
                     "check:methods":  "node scripts/check-app-methods.mjs",
                     "check:contract":  "node scripts/audit-contract.mjs",

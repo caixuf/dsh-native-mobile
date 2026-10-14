@@ -1144,15 +1144,33 @@ console.log('\n[9c] App 源码静态守护（应答形状 + 旧通道不得回�
         && /EVENT_RESULT_ENDPOINT\s*=\s*'\$events\/result'/.test(connTs),
       'connection.ts 事件流 endpoint 常量不符',
     );
+    // ⚠️ 这一行原来是**硬编码 `true`** 的占位断言（Kotlin 侧那条 `Dispatchers.IO`
+    // 检查在 Web 栈没有一一对应物）。**恒真的断言等于没有断言** —— 它只会让这一行
+    // 看起来是绿的，正是本项目一路在打的「假成功」。现在换成真能红的等价守护：
+    // Web 栈的对应风险是同步阻塞式 XHR 卡死渲染线程。
     check(
-      '阻塞式 execute() 仍包在 Dispatchers.IO 里（防 NetworkOnMainThreadException）',
-      true,
-      'Web 运行时自动非阻塞单线程异步事件循环',
+      'RPC 走异步 fetch，且不存在同步阻塞式 XHR（Web 栈的等价守护）',
+      /await fetch\(/.test(connTs) && !/async\s*=\s*false/.test(connTs),
+      'connection.ts 出现同步阻塞调用，会卡住渲染线程',
     );
     check(
       'ready 帧记下 clientId（应答必须带上）',
       /this\.eventClientId\s*=\s*String\(val\.clientId\)/.test(connTs),
       'connection.ts 未记录 clientId',
+    );
+    // 🔴 上面几条只检查了 envelopes.ts 的**定义**。如果调用侧（组件）又手写一份
+    // 字面量，定义再正确也保护不到真实链路 —— 所以必须同时断言**调用侧**走构造器。
+    // 这是 2026-10-14 补的：此前 App.tsx 手写 `{kind:'result',value:'allowed-once'}`，
+    // 本组 83 条断言全绿，却完全没覆盖它。
+    check(
+      'App.tsx 的审批/提问作答走 Envelopes 构造器（不得手写字面量）',
+      /Envelopes\.approvalOutcome\s*\(/.test(appTs) && /Envelopes\.questionOutcome\s*\(/.test(appTs),
+      'App.tsx 绕过了 Envelopes —— 契约测试将无法覆盖真实发出的值',
+    );
+    check(
+      'App.tsx 检查了 respond() 的返回值（应答失败不得静默丢弃）',
+      /const\s+ok\s*=\s*await\s+connRef\.current\.respond/.test(appTs),
+      'App.tsx 丢弃了 respond() 的返回值：没送达也会清掉待审批弹窗',
     );
   }
 }
