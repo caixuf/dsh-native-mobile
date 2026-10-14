@@ -1,11 +1,54 @@
 # DSH 移动端 · 设计文档
 
-> 版本：2026-10-14 · 面向 Electron 重构
+> 版本：2026-10-14 · 面向 Electron / 跨端重构
 >
-> **这份文档的定位**：Android 端（Kotlin/Compose）是**参考实现**，Electron 端是重构。
-> 换语言不会改变协议 —— **网关契约和客户端必须自己扛的责任，是这份文档要固化的东西**。
+> **这份文档的定位**：把**网关契约**与**客户端必须自己扛的责任**固化下来。
+> 换语言、换框架都不改变协议 —— 这些结论是跨实现有效的。
 >
 > 凡是标注「实测」的结论，都是在真实主机上跑出来的；标注「未验证」的，**不要当成事实**。
+
+---
+
+## ⚠️ 架构变更通知（2026-10-14 更新）
+
+**Android Kotlin/Compose 参考实现已被删除**（commit `c3c0bf9`
+"remove legacy Android Kotlin codebase in favor of modern cross-platform
+Electron/Web stack"）。
+
+现在的形态是 **一套 Web 代码 + 两端壳**：
+
+```
+src/（React + Vite）
+  ├── Electron 桌面壳   electron/main.cjs
+  └── Android WebView 壳 android/（assets/web）
+```
+
+**本文档中所有引用 `apps/android/...` 的路径、Kotlin 代码片段、
+以及 .kt 测试文件，都已失效** —— 保留它们只为说明「当时为什么这么做」
+（设计理由不会因为代码被删而失效）。
+
+### 🔴 被删掉又补回来的回归网（重要）
+
+被删掉的 150 条单测里，有 11 条 `ApprovalContractTest` 专门钉死
+**协议中最危险的静默失败**：
+
+> 审批应答的 `outcome.value` 词表外的值**不报错**，而是被静默归一化成
+> `unavailable`（= 拒绝）。表现是「用户点了允许，工具却被拒绝」，日志干净、极难排查。
+
+**这组断言已经迁回新栈**：`scripts/test-approval-contract.mjs`
+（`npm run test:contract`，27 条，已并入 `npm test`）。迁移时补了三层守护：
+
+1. 构造器产出的值必须在词表内、且是**裸字符串**；
+2. 应答真的以正确的 URL / 信封 / 鉴权头发出，且非 2xx、无 clientId、网络异常都必须
+   返回 `false`（不得谎报成功）；
+3. **全仓库只有 `envelopes.ts` 能写这些字面量**（源码扫描）——
+   没有第 3 层，组件里再手写一遍就等于绕过第 1 层。
+   迁移时 `App.tsx` 正是手写的，已改为调用 `Envelopes.approvalOutcome()`
+   / `questionOutcome()`，并开始检查 `respond()` 的返回值。
+
+它做的事在 §2.4 节有完整描述。仍**未**迁回的：`WorkspaceKeyTest`（20 条，路径归一化）
+与 `MessageQueueTest`（10 条，运行中可输入 + 排队）—— 后者对应的「运行中排队」UI
+在 Web 栈里**根本没有被实现**（见 `docs/v0.2-handover.md` §3）。
 
 ---
 
@@ -251,8 +294,8 @@ ws = new WebSocket(`${base}/mobile-gateway/remote.mux?token=${token}`)   // ① 
 | ② **主进程持有连接** | 无泄漏面；渲染进程经 IPC 订阅事件 |
 
 > **推荐 ②**，理由不只是安全：它与 §4.1「连接必须是进程级的」是**同一件事**。
-> 参考实现（Kotlin/OkHttp）能带头，所以从未遇到这个问题 ——
-> **Electron 端不能照抄这个假设**。
+> 参考实现（Kotlin/OkHttp，原 `net/DshConnection.kt`，已随 `c3c0bf9` 删除）能带头，
+> 所以从未遇到这个问题 —— **Electron 端不能照抄这个假设**。
 
 ⚠️ 现有 `src/services/connection.ts` 用的是 `new WebSocket(wsUrl)`，
 **既无头也无 query** → 网关 `handleUpgrade` 拿不到 token → **401 拒绝**。
@@ -307,7 +350,8 @@ POST /mobile-gateway/api/$events/result
 >
 > **词表外的值不报错、不崩、日志干净 —— 而是被归一化成 `unavailable`（= 拒绝）。**
 > 表现是「用户点了允许，工具却被拒绝」，极难排查。
-> 参考实现里有 11 条契约测试专门钉死这一点（`ApprovalContractTest.kt`）。
+> 参考实现里有 11 条契约测试专门钉死这一点（原 `ApprovalContractTest.kt`，已随 `c3c0bf9` 删除）；
+> 这组断言现在跑在新栈的 `scripts/test-approval-contract.mjs` 里。
 
 **协议违规语义**：重复 `streamId` 的 `open` → 关 socket 1008；非法帧 → 1008；
 二进制帧 → 1003；**未知 streamId 的 `item`/`end`/`cancel` 静默丢弃**。
@@ -496,7 +540,7 @@ POST /mobile-gateway/api/$events/result
 
 ### 6.1 常驻进程不要在断线时自杀
 
-参考实现原文：
+参考实现原文（Kotlin 前台服务，已随 `c3c0bf9` 删除）：
 
 ```kotlin
 LinkState.Disconnected -> stopServiceIfNeeded()   // ❌ 逻辑反转
@@ -627,10 +671,11 @@ LinkState.Disconnected -> stopServiceIfNeeded()   // ❌ 逻辑反转
 2. **§3 的客户端责任单独成模块**（就绪判定/重连/去重），这些是纯逻辑，**最容易写单元测试**
 3. **§6.1 和 §6.2 必须在第一版就做对** —— 它们不是优化项，是架构正确性问题
 4. **审批通知要在托盘进程里实现**，不要等窗口打开才处理
-5. 参考实现的 **150 条单测**里，最有迁移价值的是：
+5. 参考实现的 **150 条单测**（已随 `c3c0bf9` 删除）里，最有迁移价值的是：
    - `ApprovalContractTest`（11 条）—— 钉死静默归一化陷阱
-   - `WorkspaceKeyTest`（20 条）—— 路径归一化
-   - `MessageQueueTest`（10 条）—— 运行中可输入 + 排队
+     （原 `.../notify/ApprovalContractTest.kt`；断言集已迁移到 `scripts/test-approval-contract.mjs`）
+   - `WorkspaceKeyTest`（20 条）—— 路径归一化（原 `.../ui/WorkspaceKeyTest.kt`，已删除）
+   - `MessageQueueTest`（10 条）—— 运行中可输入 + 排队（原 `.../ui/MessageQueueTest.kt`，已删除）
 
 ---
 

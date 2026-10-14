@@ -53,9 +53,12 @@ Invoke-WebRequest -Uri 'https://services.gradle.org/distributions/gradle-8.11.1-
 Expand-Archive "$root\gradle.zip" "$root\gradle-tmp"
 Move-Item (Get-ChildItem "$root\gradle-tmp" -Directory)[0].FullName "$root\gradle-8.11.1"
 
-cd apps\android
+cd android
 & "$root\gradle-8.11.1\bin\gradle.bat" wrapper --gradle-version 8.11.1 --distribution-type bin
 ```
+
+> 这一步现在**可以跳过**：`android/` 里没有 `gradlew.bat`，
+> `scripts/build-apk.mjs` 直接调用本地这份 `gradle.bat` 打包。
 
 > **坑**：`gradle.bat` 会报 `JAVA_HOME is not set and no 'java' command could be found`。
 > 同理，DSH 自带的 `node.cmd` 不能通过 PowerShell 的 `&` 传参，要直接用
@@ -72,8 +75,13 @@ sdk.dir=C\:\\Users\\<你>\\Downloads\\android-toolchain\\android-sdk
 ## 5. 编
 
 ```powershell
-cd apps\android
-.\gradlew.bat assembleDebug
+# 推荐：一条命令（前端构建 → 拷 dist/ 进 WebView 壳 → Gradle 打包 → 收产物）
+pnpm build:apk           # 无 pnpm 时等价于 npm run build:apk
+# 产物：dist-apk\dsh-mobile-v0.3.0.apk
+
+# 等价的纯 Gradle 路径（在 android\ 下用本地 Gradle；仓库里没有 gradlew.bat）
+cd android
+& "$root\gradle-8.11.1\bin\gradle.bat" assembleDebug
 # app\build\outputs\apk\debug\app-debug.apk
 ```
 
@@ -83,12 +91,19 @@ cd apps\android
 
 | 组件 | 版本 | 说明 |
 |---|---|---|
-| Gradle | 8.11.1 | |
+| Gradle | 8.11.1 | `scripts/build-apk.mjs` 调的就是本地这份 |
 | AGP | 8.7.3 | 官方支持 compileSdk 35 |
-| Kotlin | 2.0.21 | Compose 编译器插件随 Kotlin 2.0 内置 |
+| Kotlin | 2.0.21 | 仅 `androidx.core.ktx` 与壳；Compose 已随旧实现删除 |
+| JDK | 17 | Gradle/AGP 要求（`build-apk.mjs` 里写死了 `JAVA_HOME`） |
 | compileSdk / targetSdk | 35 | 需要 `platforms;android-35` |
-| Compose BOM | 2024.12.01 | |
-| minSdk | 26 | `EncryptedSharedPreferences` 需要 |
+| minSdk | 26 | 见 `android/app/build.gradle.kts` |
+| versionName / versionCode | 0.3.0 / 6 | `build-apk.mjs` 的产物名跟着 versionName |
+| Android 壳 | WebView | 源码只有 `android/app/src/main/java/io/github/dshmobile/app/MainActivity.kt`，加载 `file:///android_asset/web/index.html` |
+| 一键构建 | `pnpm build:apk` | `tsc -b && vite build && node scripts/build-apk.mjs` → `dist-apk/dsh-mobile-v0.3.0.apk` |
+
+> 旧的 Kotlin/Compose 客户端（`apps/android/...`）已在 commit `c3c0bf9` 删除，
+> 上表只描述现在仍在用的 `android/` WebView 壳（资产由 `scripts/build-apk.mjs`
+> 从 `dist/` 拷进 `android/app/src/main/assets/web/`，该目录随仓库入库）。
 
 `android-36` / `build-tools;36.0.0` 也装了，但本项目用的是 35；
 若要升 compileSdk 请同步升 AGP，否则只是拿到一条「unsupported compileSdk」警告。
