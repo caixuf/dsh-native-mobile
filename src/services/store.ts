@@ -1,5 +1,6 @@
 // `import type`：`../types` 无运行时导出，值导入会让 Node 直跑 src/ 的测试在链接期失败
 import type { HostRecord } from '../types';
+import type { StorageLike } from './device';
 import { DEMO_MODE } from './demo';
 
 const STORAGE_KEY = 'dsh_hosts_v1';
@@ -111,3 +112,168 @@ export const HostStore = {
     }
   },
 };
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 已应答审批事件的落盘账本
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * ## 为什么必须落盘（2026-10-14）
+ *
+ * 去重此前只用 `DshConnection` 里的一个内存 `Set`（`answeredEventIds`）。
+ * 内存态在 App 重启 / WebView 被系统回收 / 用户下拉刷新后**全部丢失**，
+ * 于是网关重放的同一条 `waterfall` 审批事件会被**再弹一次** ——
+ * 用户刚刚点过"允许"，重启后又被问一遍，自然怀疑"到底批没批"。
+ *
+ * 这里把「已应答的 eventId」写进 localStorage（带版本号 key），
+ * 重启后读回，已经处理过的事件不再进 `onRequest`。
+ *
+ * ⚠️ 语义边界：只记录**应答成功**的事件（`respond()` 返回 true 之后）。
+ * 只在"收到"时记录会让一次失败/崩溃永久吞掉用户的审批；
+ * 只在"收到"时记忆（内存）则用于同一会话内防止重复弹窗 —— 两者在
+ * `connection.ts` 里分别对应 `answered`（落盘）与 `inflightEventIds`（内存）。
+ */
+export const ANSWERED_LEDGER_VERSION = 1;
+
+/** 落盘键。带版本号：格式升级时可并存读取，旧数据不会把新代码炸掉。 */
+export const ANSWERED_LEDGER_KEY = `dsh_answered_events_v${ANSWERED_LEDGER_VERSION}`;
+
+/** 容量上限。超出后按 FIFO 淘汰最旧的记录（审批是低频事件，500 足够）。 */
+export const ANSWERED_LEDGER_CAPACITY = 500;
+
+export interface AnsweredLedger {
+  /** 是否已应答过（O(1)）。 */
+  has(eventId: string): boolean;
+  /** 记录为已应答；**返回 true 表示这是新写入**（此前没有）。 */
+  remember(eventId: string): boolean;
+  /** 删除一条（应答失败需要允许重试时使用）。 */
+  forget(eventId: string): void;
+  /** 当前记录条数。 */
+  size(): number;
+  /** 快照（从旧到新）。 */
+  ids(): string[];
+  clear(): void;
+}
+
+interface LedgerFile {
+  v: number;
+  ids: string[];
+}
+
+/** 自动探测 localStorage；不可用时返回 null（只用内存）。 */
+function detectLedgerStorage(): StorageLike | null {
+  try {
+    if (typeof localStorage !== 'undefined' && localStorage) return localStorage;
+  } catch {
+    // 隐私模式访问会抛
+  }
+  return null;
+}
+
+/** 从任意历史形状中解析出 id 列表：支持 `{v,ids}` 与裸数组两种格式。 */
+function parseLedgerFile(raw: string | null): string[] {
+  if (!raw) return [];
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    const list = Array.isArray(parsed)
+      ? parsed
+      : Array.isArray((parsed as LedgerFile)?.ids)
+        ? (parsed as LedgerFile).ids
+        : null;
+    if (!list) return [];
+    const seen = new Set<string>();
+    const out: string[] = [];
+    for (const item of list) {
+      if (typeof item !== 'string') continue;
+      const id = item.trim();
+      if (!id || seen.has(id)) continue;
+      seen.add(id);
+      out.push(id);
+    }
+    return out;
+  } catch {
+    // 损坏的 JSON 不能变成崩溃；如实告警后从空账本开始
+    console.warn('[AnsweredLedger] 账本解析失败，已忽略损坏数据');
+    return [];
+  }
+}
+
+/**
+ * 创建（或读回）一个已应答事件账本。
+ *
+ * @param storage `undefined` = 自动探测 localStorage；`null` = 纯内存（测试/SSR）。
+ * @param capacity 容量上限，超出按 FIFO 淘汰。
+ */
+export function createAnsweredLedger(
+  storage: StorageLike | null | undefined = undefined,
+  capacity: number = ANSWERED_LEDGER_CAPACITY,
+): AnsweredLedger {
+  const store = storage === undefined ? detectLedgerStorage() : storage;
+  const limit = Number.isFinite(capacity) && capacity > 0 ? Math.floor(capacity) : ANSWERED_LEDGER_CAPACITY;
+
+  const read = (): Set<string> => {
+    if (!store) return new Set();
+    try {
+      return new Set(parseLedgerFile(store.getItem(ANSWERED_LEDGER_KEY)).slice(-limit));
+    } catch {
+      return new Set();
+    }
+  };
+
+  const ids = read();
+
+  const persist = (): void => {
+    if (!store) return;
+    const file: LedgerFile = { v: ANSWERED_LEDGER_VERSION, ids: [...ids] };
+    try {
+      store.setItem(ANSWERED_LEDGER_KEY, JSON.stringify(file));
+    } catch {
+      // 配额/隐私模式写失败：本次运行仍以内存为准，不抛（审批流程不能被账本拖死）
+    }
+  };
+
+  return {
+    has(eventId: string): boolean {
+      const id = String(eventId ?? '').trim();
+      return !!id && ids.has(id);
+    },
+
+    remember(eventId: string): boolean {
+      const id = String(eventId ?? '').trim();
+      if (!id || ids.has(id)) return false;
+      ids.add(id);
+      while (ids.size > limit) {
+        const oldest = ids.values().next();
+        if (oldest.done) break;
+        ids.delete(oldest.value);
+      }
+      persist();
+      return true;
+    },
+
+    forget(eventId: string): void {
+      const id = String(eventId ?? '').trim();
+      if (!id || !ids.delete(id)) return;
+      persist();
+    },
+
+    size(): number {
+      return ids.size;
+    },
+
+    ids(): string[] {
+      return [...ids];
+    },
+
+    clear(): void {
+      ids.clear();
+      if (!store) return;
+      try {
+        if (typeof store.removeItem === 'function') store.removeItem(ANSWERED_LEDGER_KEY);
+        else store.setItem(ANSWERED_LEDGER_KEY, JSON.stringify({ v: ANSWERED_LEDGER_VERSION, ids: [] }));
+      } catch {
+        // 同上：清理失败不影响内存态
+      }
+    },
+  };
+}

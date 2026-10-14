@@ -1,12 +1,29 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { ArrowLeft, Menu, Send, Mic, Square, Folder, AlertTriangle, HelpCircle, Loader2, Sparkles, Terminal } from 'lucide-react';
+import {
+  ArrowLeft,
+  Menu,
+  Send,
+  Mic,
+  Square,
+  Folder,
+  AlertTriangle,
+  HelpCircle,
+  Loader2,
+  Sparkles,
+  Terminal,
+  RefreshCw,
+  X,
+} from 'lucide-react';
 import { ChatLine, PendingPrompt, TaskStep } from '../../types';
 import { MarkdownView } from '../common/MarkdownView';
 import { DisclosureToolCard } from '../chat/DisclosureToolCard';
 import { TaskProgressCard } from '../chat/TaskProgressCard';
 import { VoiceRecordingOverlay } from '../chat/VoiceRecordingOverlay';
+import { QueuedMessagesBar } from '../chat/QueuedMessagesBar';
+import { clearDraft, loadDraft, saveDraft } from '../chat/draft-store';
 import { ConnectionDot } from '../common/ConnectionDot';
 import { DeepSeekLogo } from '../common/DeepSeekLogo';
+import type { QueuedMessage } from '../../lib/message-queue';
 
 interface Props {
   sessionId: string;
@@ -19,8 +36,19 @@ interface Props {
   preparingStep: number;
   hostName?: string;
   workspace?: string | null;
+  /** 待发队列投影（App 维护；只给 id/text/createdAt 也能工作）。 */
+  queued?: QueuedMessage[];
+  onRemoveQueued?: (id: string) => void;
+  /** 失败重试；缺省时 ChatScreen 用该项原文重新调用 onSend。 */
+  onRetryQueued?: (id: string) => void;
+  /** 实时事件流是否连着（断开时提示"会入队、结果可能延迟"）。 */
+  liveConnected?: boolean;
   onBack: () => void;
-  onSend: (text: string) => void;
+  /**
+   * 返回 `false` = **上层未接收**（发送失败）→ ChatScreen 必须保留草稿原文。
+   * `true` / `void` 视为已接收（向后兼容旧实现）。
+   */
+  onSend: (text: string) => Promise<boolean> | boolean | void;
   onCancel: () => void;
   onApprove: (allow: boolean) => void;
   onAnswerOption: (text: string) => void;
@@ -38,6 +66,10 @@ export const ChatScreen: React.FC<Props> = ({
   preparingStep,
   hostName,
   workspace,
+  queued,
+  onRemoveQueued,
+  onRetryQueued,
+  liveConnected,
   onBack,
   onSend,
   onCancel,
@@ -47,7 +79,13 @@ export const ChatScreen: React.FC<Props> = ({
 }) => {
   const [inputText, setInputText] = useState('');
   const [voiceOpen, setVoiceOpen] = useState(false);
+  const [sendError, setSendError] = useState<string | null>(null);
+  const [draftNotice, setDraftNotice] = useState<string | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  // 当前会话 + 当前输入的最新值（用于 await 期间切会话 / 卸载时的正确处理）
+  const activeSessionRef = useRef(sessionId);
+  const inputRef = useRef(inputText);
+  inputRef.current = inputText;
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -56,6 +94,87 @@ export const ChatScreen: React.FC<Props> = ({
   useEffect(() => {
     scrollToBottom();
   }, [lines, running, preparing]);
+
+  // 切会话：恢复该会话的草稿，并给出**可见**提示（静默恢复 = 没恢复）
+  useEffect(() => {
+    activeSessionRef.current = sessionId;
+    const restored = loadDraft(sessionId);
+    setInputText(restored.text);
+    inputRef.current = restored.text;
+    setDraftNotice(restored.restored ? '已恢复上次未发送的草稿' : null);
+    setSendError(null);
+  }, [sessionId]);
+
+  // 离开会话 / 卸载：把当前输入落盘（"退出不丢"）
+  useEffect(() => {
+    return () => {
+      saveDraft(sessionId, inputRef.current);
+    };
+  }, [sessionId]);
+
+  const handleInputChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
+    const value = e.target.value;
+    inputRef.current = value;
+    setInputText(value);
+    setSendError(null);
+    if (draftNotice) setDraftNotice(null);
+    saveDraft(sessionId, value);
+  };
+
+  /**
+   * 发送 / 入队 —— 三个缺陷的核心修复点：
+   *  - 不再用 `sending` 或 `running` 拦输入（运行中也能补话，App 侧入队）；
+   *  - **先 await onSend 再决定是否清空草稿**（不是先清空后调用）；
+   *  - 上游返回 `false`（含抛异常）时把原文写回输入框 + 落盘，一条都不丢。
+   */
+  const handleSendText = async (raw: string) => {
+    const text = raw.trim();
+    if (!text) return;
+    const targetSession = sessionId;
+    setSendError(null);
+    setDraftNotice(null);
+
+    let accepted: boolean | void = true;
+    try {
+      accepted = await Promise.resolve(onSend(text));
+    } catch (error) {
+      accepted = false;
+      setSendError(`发送异常：${error instanceof Error ? error.message : String(error)}`);
+    }
+
+    // 🔴 只有明确"未接收"才走保留分支；true / undefined 视为已接收（向后兼容）。
+    if (accepted === false) {
+      if (activeSessionRef.current !== targetSession) return;
+      const current = inputRef.current;
+      // 用户在等待期间又打了新字 → 不覆盖；否则把原文原样放回输入框。
+      const kept = current.trim() === '' ? text : current;
+      inputRef.current = kept;
+      setInputText(kept);
+      saveDraft(targetSession, kept);
+      setSendError((prev) => prev || '消息未发送成功，草稿已保留，可直接重试');
+      return;
+    }
+
+    // 已接收：清空。若期间切了会话，只清那条会话的持久化草稿，不动新会话输入框。
+    if (activeSessionRef.current !== targetSession) {
+      clearDraft(targetSession);
+      return;
+    }
+    inputRef.current = '';
+    setInputText('');
+    clearDraft(targetSession);
+  };
+
+  const handleSend = () => {
+    void handleSendText(inputText);
+  };
+
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      handleSend();
+    }
+  };
 
   // Extract task steps from current round of lines
   const extractSteps = (): TaskStep[] => {
@@ -86,18 +205,22 @@ export const ChatScreen: React.FC<Props> = ({
 
   const steps = extractSteps();
 
-  const handleSend = () => {
-    if (inputText.trim() && !sending) {
-      onSend(inputText.trim());
-      setInputText('');
+  // 工具结果配对：桌面端行为是"结果并回对应调用卡片"；
+  // 配不上 callId 的独立结果单独成卡（kind='tool/result'，与调用视觉可区分）。
+  const resultByCallId = new Map<string, ChatLine>();
+  for (const line of lines) {
+    if (line.kind === 'tool/result' && line.toolCallId && !resultByCallId.has(line.toolCallId)) {
+      resultByCallId.set(line.toolCallId, line);
     }
-  };
+  }
 
-  const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-    if (e.key === 'Enter' && !e.shiftKey) {
-      e.preventDefault();
-      handleSend();
+  const handleRetryQueued = (id: string) => {
+    if (onRetryQueued) {
+      onRetryQueued(id);
+      return;
     }
+    const item = (queued || []).find((entry) => entry.id === id);
+    if (item) void handleSendText(item.text);
   };
 
   const preparingStages = [
@@ -123,7 +246,8 @@ export const ChatScreen: React.FC<Props> = ({
             <button
               onClick={onBack}
               type="button"
-              className="w-8 h-8 rounded-xl bg-white/[0.06] hover:bg-white/[0.12] border border-white/[0.08] flex items-center justify-center text-[#e2e8f0] cursor-pointer studio-tap shrink-0"
+              aria-label="返回会话列表"
+              className="w-11 h-11 rounded-xl bg-white/[0.06] hover:bg-white/[0.12] border border-white/[0.08] flex items-center justify-center text-[#e2e8f0] cursor-pointer studio-tap shrink-0"
             >
               <ArrowLeft size={17} />
             </button>
@@ -162,7 +286,8 @@ export const ChatScreen: React.FC<Props> = ({
             <button
               onClick={onOpenDrawer}
               type="button"
-              className="w-8 h-8 rounded-xl bg-white/[0.06] hover:bg-white/[0.12] border border-white/[0.08] flex items-center justify-center text-[#e2e8f0] transition-colors cursor-pointer studio-tap"
+              aria-label="打开会话菜单"
+              className="w-11 h-11 rounded-xl bg-white/[0.06] hover:bg-white/[0.12] border border-white/[0.08] flex items-center justify-center text-[#e2e8f0] transition-colors cursor-pointer studio-tap"
             >
               <Menu size={16} />
             </button>
@@ -178,20 +303,39 @@ export const ChatScreen: React.FC<Props> = ({
         {/* Messages */}
         {lines.map((line, idx) => {
           if (line.kind === 'tool/call') {
+            // 结果可能在后续的 tool/result 事件里（App 按 seq 逐条映射），这里配对回来
+            const paired = line.toolCallId ? resultByCallId.get(line.toolCallId) : undefined;
+            const result = line.toolResult ?? paired?.toolResult ?? paired?.text ?? undefined;
             return (
               <div key={line.key || idx} className="my-1.5">
                 <DisclosureToolCard
                   toolName={line.toolName}
                   toolArgs={line.toolArgs}
-                  toolResult={line.toolResult}
-                  isError={line.isError}
+                  toolResult={result}
+                  isError={Boolean(line.isError || paired?.isError)}
+                  kind="tool/call"
                 />
               </div>
             );
           }
 
           if (line.kind === 'tool/result') {
-            return null; // Merged into DisclosureToolCard
+            // 已并回对应 call 卡片的结果不再重复成卡；独立结果单独展示（原来这里直接 return null → 结果全丢）
+            if (line.toolCallId && resultByCallId.get(line.toolCallId) === line) {
+              const callLine = lines.find((l) => l.kind === 'tool/call' && l.toolCallId === line.toolCallId);
+              if (callLine) return null;
+            }
+            return (
+              <div key={line.key || idx} className="my-1.5">
+                <DisclosureToolCard
+                  toolName={line.toolName ?? '工具结果'}
+                  toolArgs={line.toolArgs}
+                  toolResult={line.toolResult ?? line.text}
+                  isError={line.isError}
+                  kind="tool/result"
+                />
+              </div>
+            );
           }
 
           if (line.role === 'user') {
@@ -242,8 +386,8 @@ export const ChatScreen: React.FC<Props> = ({
                 <button
                   key={idx}
                   type="button"
-                  onClick={() => onSend(p)}
-                  className="px-3.5 py-2 rounded-xl bg-[#141824] hover:bg-[#1e2538] hover:border-[#3b82f6]/40 text-[#cbd5e1] hover:text-white border border-white/10 text-[12.5px] font-medium shadow-sm transition-all cursor-pointer studio-tap"
+                  onClick={() => void handleSendText(p)}
+                  className="px-3.5 py-2 min-h-[44px] rounded-xl bg-[#141824] hover:bg-[#1e2538] hover:border-[#3b82f6]/40 text-[#cbd5e1] hover:text-white border border-white/10 text-[12.5px] font-medium shadow-sm transition-all cursor-pointer studio-tap"
                 >
                   {p}
                 </button>
@@ -292,14 +436,16 @@ export const ChatScreen: React.FC<Props> = ({
                 <button
                   type="button"
                   onClick={() => onApprove(false)}
-                  className="px-4 py-2 rounded-xl border border-[#f43f5e]/30 text-[13px] font-medium text-[#fb7185] bg-[#f43f5e]/10 hover:bg-[#f43f5e]/20 transition-colors cursor-pointer studio-tap"
+                  aria-label="拒绝本次操作"
+                  className="min-h-[44px] px-4 py-2 rounded-xl border border-[#f43f5e]/30 text-[13px] font-medium text-[#fb7185] bg-[#f43f5e]/10 hover:bg-[#f43f5e]/20 transition-colors cursor-pointer studio-tap"
                 >
                   拒绝 (Reject)
                 </button>
                 <button
                   type="button"
                   onClick={() => onApprove(true)}
-                  className="px-5 py-2 rounded-xl bg-gradient-to-r from-[#3b82f6] to-[#2563eb] text-white text-[13px] font-semibold shadow-[0_0_20px_rgba(59,130,246,0.4)] transition-transform cursor-pointer studio-tap"
+                  aria-label="允许一次"
+                  className="min-h-[44px] px-5 py-2 rounded-xl bg-gradient-to-r from-[#3b82f6] to-[#2563eb] text-white text-[13px] font-semibold shadow-[0_0_20px_rgba(59,130,246,0.4)] transition-transform cursor-pointer studio-tap"
                 >
                   允许一次 (Allow Once)
                 </button>
@@ -311,7 +457,7 @@ export const ChatScreen: React.FC<Props> = ({
                     key={i}
                     type="button"
                     onClick={() => onAnswerOption(opt)}
-                    className="px-3.5 py-2 rounded-xl bg-[#141824] hover:bg-[#3b82f6] hover:text-white text-[13px] font-medium text-[#cbd5e1] transition-all cursor-pointer border border-white/10 studio-tap"
+                    className="min-h-[44px] px-3.5 py-2 rounded-xl bg-[#141824] hover:bg-[#3b82f6] hover:text-white text-[13px] font-medium text-[#cbd5e1] transition-all cursor-pointer border border-white/10 studio-tap"
                   >
                     {opt}
                   </button>
@@ -327,13 +473,80 @@ export const ChatScreen: React.FC<Props> = ({
       {/* 3. Floating Composer Dock */}
       <div className="fixed bottom-0 left-0 right-0 z-20 bg-gradient-to-t from-[#090a0f] via-[#090a0f]/95 to-transparent pt-6 pb-5 px-4">
         <div className="max-w-2xl mx-auto">
+          {/* Live event stream status: 断开时明说，不静默假装正常 */}
+          {liveConnected === false && (
+            <div
+              role="status"
+              className="flex items-center gap-1.5 mb-2 px-3 py-1.5 rounded-xl bg-[#f59e0b]/10 border border-[#f59e0b]/30 text-[11.5px] text-[#fcd34d]"
+            >
+              <AlertTriangle size={12} className="shrink-0" />
+              <span>实时事件流未连接：消息会先入队，恢复后按序补发，结果可能延迟</span>
+            </div>
+          )}
+
+          {/* 发送失败：明确告知"字没丢"，并给一键重试 */}
+          {sendError && (
+            <div
+              role="alert"
+              aria-live="polite"
+              className="flex items-center gap-2 mb-2 px-3 py-2 rounded-xl bg-[#f43f5e]/12 border border-[#f43f5e]/35 text-[11.5px] text-[#fda4af]"
+            >
+              <AlertTriangle size={13} className="shrink-0" />
+              <span className="flex-1">{sendError}</span>
+              <button
+                type="button"
+                onClick={() => void handleSendText(inputText)}
+                aria-label="重试发送当前草稿"
+                className="min-h-[44px] px-3 rounded-xl flex items-center gap-1.5 text-[11.5px] font-semibold text-[#fb7185] bg-[#f43f5e]/15 hover:bg-[#f43f5e]/25 border border-[#f43f5e]/35 cursor-pointer studio-tap"
+              >
+                <RefreshCw size={13} />
+                <span>重试</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setSendError(null)}
+                aria-label="关闭发送失败提示"
+                className="w-11 h-11 rounded-xl flex items-center justify-center text-[#fda4af] hover:text-white bg-white/[0.05] hover:bg-white/[0.12] border border-white/[0.08] cursor-pointer studio-tap"
+              >
+                <X size={15} />
+              </button>
+            </div>
+          )}
+
+          {/* 草稿恢复提示：恢复必须是可见的 */}
+          {draftNotice && !sendError && (
+            <div
+              role="status"
+              className="flex items-center gap-2 mb-2 px-3 py-1.5 rounded-xl bg-[#3b82f6]/10 border border-[#3b82f6]/30 text-[11.5px] text-[#93c5fd]"
+            >
+              <Sparkles size={12} className="shrink-0" />
+              <span className="flex-1">{draftNotice}</span>
+              <button
+                type="button"
+                onClick={() => setDraftNotice(null)}
+                aria-label="关闭草稿恢复提示"
+                className="w-11 h-11 rounded-xl flex items-center justify-center text-[#93c5fd] hover:text-white bg-white/[0.05] hover:bg-white/[0.12] border border-white/[0.08] cursor-pointer studio-tap"
+              >
+                <X size={15} />
+              </button>
+            </div>
+          )}
+
+          {/* 待发队列（运行中补的话都在这里，可展开/删除/重试） */}
+          <QueuedMessagesBar
+            queued={queued || []}
+            running={running}
+            onRemove={onRemoveQueued}
+            onRetry={handleRetryQueued}
+          />
+
           {/* Running cancel button */}
           {running && (
             <div className="flex justify-center mb-2.5">
               <button
                 type="button"
                 onClick={onCancel}
-                className="flex items-center gap-1.5 px-4 py-1.5 rounded-full bg-[#1e131d] border border-[#f43f5e]/40 text-[#fb7185] text-[12px] font-medium shadow-lg hover:bg-[#2b1725] transition-transform cursor-pointer studio-tap"
+                className="flex items-center gap-1.5 min-h-[44px] px-4 rounded-full bg-[#1e131d] border border-[#f43f5e]/40 text-[#fb7185] text-[12px] font-medium shadow-lg hover:bg-[#2b1725] transition-transform cursor-pointer studio-tap"
               >
                 <Square size={11} fill="currentColor" />
                 <span>停止当前任务</span>
@@ -342,35 +555,54 @@ export const ChatScreen: React.FC<Props> = ({
           )}
 
           <div className="flex items-end gap-2.5 studio-glass-dock p-2 rounded-3xl transition-all focus-within:border-[#3b82f6]/50 focus-within:ring-2 focus-within:ring-[#3b82f6]/30">
+            {/* 🔴 运行中/发送中**都不禁用**：继续输入即入队（历史缺陷：Composer(enabled = !running)） */}
             <textarea
               rows={1}
               value={inputText}
-              onChange={(e) => setInputText(e.target.value)}
+              onChange={handleInputChange}
               onKeyDown={handleKeyDown}
-              placeholder="发送遥控指令，例如：检查 git 状态、运行测试…"
-              className="flex-1 max-h-32 min-h-[38px] py-2 px-3 text-[14px] leading-relaxed resize-none focus:outline-hidden bg-transparent text-white placeholder:text-[#64748b]"
+              aria-label="输入遥控指令"
+              aria-describedby="composer-hint"
+              enterKeyHint="send"
+              autoComplete="off"
+              placeholder={
+                running
+                  ? '任务执行中，继续输入会进入待发队列…'
+                  : '发送遥控指令，例如：检查 git 状态、运行测试…'
+              }
+              className="flex-1 max-h-32 min-h-[44px] py-2 px-3 text-[14px] leading-relaxed resize-none focus:outline-hidden bg-transparent text-white placeholder:text-[#64748b]"
             />
 
             {/* Voice Dictation Button */}
             <button
               type="button"
               onClick={() => setVoiceOpen(true)}
-              className="w-9 h-9 rounded-xl bg-white/[0.06] text-[#94a3b8] hover:text-[#38bdf8] hover:bg-white/[0.1] border border-white/[0.08] flex items-center justify-center transition-colors cursor-pointer studio-tap shrink-0"
+              aria-label="语音遥控"
+              className="w-11 h-11 rounded-xl bg-white/[0.06] text-[#94a3b8] hover:text-[#38bdf8] hover:bg-white/[0.1] border border-white/[0.08] flex items-center justify-center transition-colors cursor-pointer studio-tap shrink-0"
               title="语音遥控"
             >
               <Mic size={18} />
             </button>
 
-            {/* Send Arrow Button */}
+            {/* Send Arrow Button：只按"有没有内容"禁用，不再看 sending/running */}
             <button
               type="button"
-              disabled={!inputText.trim() || sending}
+              disabled={!inputText.trim()}
               onClick={handleSend}
-              className="w-9 h-9 rounded-xl bg-gradient-to-r from-[#3b82f6] to-[#2563eb] text-white disabled:opacity-30 flex items-center justify-center transition-all shadow-[0_0_15px_rgba(59,130,246,0.5)] cursor-pointer studio-tap shrink-0"
+              aria-label={running || sending ? '加入待发队列' : '发送'}
+              className="w-11 h-11 rounded-xl bg-gradient-to-r from-[#3b82f6] to-[#2563eb] text-white disabled:opacity-30 flex items-center justify-center transition-all shadow-[0_0_15px_rgba(59,130,246,0.5)] cursor-pointer studio-tap shrink-0"
             >
               <Send size={16} />
             </button>
           </div>
+
+          <p id="composer-hint" className="mt-1.5 px-2 text-[10.5px] text-[#64748b]">
+            {running
+              ? '任务执行中：Enter 发送即入队，不会被丢弃'
+              : sending
+                ? '正在发送：继续输入会排队，按序发出'
+                : 'Enter 发送 · Shift+Enter 换行 · 草稿自动保存（切会话/退出不丢）'}
+          </p>
         </div>
       </div>
 
@@ -379,7 +611,7 @@ export const ChatScreen: React.FC<Props> = ({
         isOpen={voiceOpen}
         onSend={(text) => {
           setVoiceOpen(false);
-          onSend(text);
+          void handleSendText(text);
         }}
         onCancel={() => setVoiceOpen(false)}
       />

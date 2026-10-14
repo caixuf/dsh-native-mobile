@@ -1,9 +1,48 @@
-import React, { useState } from 'react';
-import { Menu, Search, X, RefreshCw, Plus, Folder, MessageSquare, ChevronRight, Monitor, Cpu, Sparkles, Terminal } from 'lucide-react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { Menu, Search, X, RefreshCw, Plus, Monitor, Cpu, Sparkles, ChevronsDownUp, ChevronsUpDown } from 'lucide-react';
 import { SessionRow, LinkState } from '../../types';
 import { StatusPill } from '../common/StatusPill';
 import { DeepSeekLogo } from '../common/DeepSeekLogo';
 import { ConnectionDot } from '../common/ConnectionDot';
+import { SessionGroupSection } from '../sessions/SessionGroupSection';
+import { ArchivedSection } from '../sessions/ArchivedSection';
+import {
+  type CollapseState,
+  type StorageLike,
+  filterSessionsByQuery,
+  groupSessions,
+  readArchivedIds,
+  readCollapseState,
+  resolveCollapseState,
+  setArchivedId,
+  subagentSectionKey,
+  writeArchivedIds,
+  writeCollapseState,
+} from '../../lib/session-groups';
+
+/**
+ * 会话列表：**按工作区分组 + 可折叠 + 本机归档**。
+ *
+ * 改造动机（用户原话）：「会话全部列出来，给人翻累死了，而且没有桌面的归档什么的，
+ * 就像管理文件夹一样啊」。所以形态对齐 DSH 桌面侧边栏：顶层按工作区（cwd）分组，
+ * 组可折叠，组内挂会话；子代理收进组内的「子代理 (N)」子节；归档项沉到底部。
+ *
+ * 分组 / 排序 / 折叠 / 归档的全部判定都在 `src/lib/session-groups.ts`（纯函数、可测），
+ * 本文件只负责：把 props 喂进去 → 渲染 → 把用户选择写回 localStorage。
+ *
+ * props 契约：
+ *  - 已有 props 语义不变（linkState/sessions/…/onOpenDrawer）。
+ *  - `archivedIds` 传入 = **受控**（组件不再自持该状态，由调用方回写）；
+ *    不传 = 非受控，组件自己从 localStorage 读写。
+ *  - `onArchive` / `onUnarchive` 是「用户点了归档/恢复」的通知回调（可选）。
+ *  - `searchResults` 传入远端 session.search 的原始结果时，会在顶部单独成
+ *    「搜索结果」组，并与本地列表去重；不传则只做本地即时过滤。
+ */
+
+/** 归档区自己的折叠 key（和分组共用一份持久化记录）。 */
+const ARCHIVE_SECTION_KEY = '::archived-section::';
+
+const ALL_EXPANDED = false;
 
 interface Props {
   linkState: LinkState;
@@ -15,6 +54,12 @@ interface Props {
   onSearch: (q: string) => void;
   onCreate: (cwd?: string) => void;
   onOpenDrawer: () => void;
+  /** 已归档会话 id（传入即受控：组件只通知，不回写内部状态）。 */
+  archivedIds?: string[];
+  onArchive?: (s: SessionRow) => void;
+  onUnarchive?: (s: SessionRow) => void;
+  /** 远端搜索结果（session.search 原始 items），单独成组。 */
+  searchResults?: SessionRow[];
 }
 
 export const SessionsScreen: React.FC<Props> = ({
@@ -27,28 +72,106 @@ export const SessionsScreen: React.FC<Props> = ({
   onSearch,
   onCreate,
   onOpenDrawer,
+  archivedIds,
+  onArchive,
+  onUnarchive,
+  searchResults,
 }) => {
   const [searchOpen, setSearchOpen] = useState(false);
   const [query, setQuery] = useState('');
-  const [showSubagents, setShowSubagents] = useState(false);
   const [createDialogOpen, setCreateDialogOpen] = useState(false);
   const [customCwd, setCustomCwd] = useState('~/Developer/workspaces/nexus-ecommerce');
 
-  const handleSearchChange = (val: string) => {
-    setQuery(val);
-    onSearch(val);
+  // localStorage 在隐私模式 / SSR 下可能直接抛异常 —— 这里一次性兜住。
+  const storage = useMemo<StorageLike | null>(() => {
+    try {
+      return typeof window === 'undefined' ? null : window.localStorage;
+    } catch {
+      return null;
+    }
+  }, []);
+
+  const [storedCollapse, setStoredCollapse] = useState<CollapseState>(() => readCollapseState(storage));
+  const [internalArchived, setInternalArchived] = useState<string[]>(() => readArchivedIds(storage));
+
+  const archiveControlled = Array.isArray(archivedIds);
+  const archivedList = archiveControlled ? (archivedIds as string[]) : internalArchived;
+
+  const persistCollapse = (next: CollapseState) => {
+    setStoredCollapse(next);
+    writeCollapseState(next, storage);
   };
 
-  const formatTime = (ts: number) => {
-    if (!ts) return '';
-    const diff = Math.floor((Date.now() - ts) / 1000);
-    if (diff < 60) return '刚刚';
-    if (diff < 3600) return `${Math.floor(diff / 60)} 分钟前`;
-    if (diff < 86400) return `${Math.floor(diff / 3600)} 小时前`;
-    return new Date(ts).toLocaleDateString('zh-CN', { month: 'short', day: 'numeric' });
+  // ── 搜索：本地即时过滤 + 远端结果合并 ──
+  const searchTimer = useRef<number | null>(null);
+  useEffect(
+    () => () => {
+      if (searchTimer.current !== null) window.clearTimeout(searchTimer.current);
+    },
+    [],
+  );
+
+  const handleSearchChange = (value: string) => {
+    setQuery(value);
+    if (searchTimer.current !== null) window.clearTimeout(searchTimer.current);
+    if (!value.trim()) {
+      onSearch('');
+      return;
+    }
+    // 防抖：别每敲一个字就打一次主机的 session.search。
+    searchTimer.current = window.setTimeout(() => onSearch(value), 250);
   };
 
-  const displayedSessions = showSubagents ? [...sessions, ...subagentSessions] : sessions;
+  // ── 分组（memo 化：会话多时绝不在每次 render 重算）──
+  const localMain = useMemo(() => filterSessionsByQuery(sessions, query), [sessions, query]);
+  const localSubagents = useMemo(() => filterSessionsByQuery(subagentSessions, query), [subagentSessions, query]);
+
+  const grouping = useMemo(
+    () =>
+      groupSessions(localMain, localSubagents, {
+        archivedIds: archivedList,
+        searchResults,
+        searchQuery: query,
+      }),
+    [localMain, localSubagents, archivedList, searchResults, query],
+  );
+
+  const collapsed = useMemo(
+    () => resolveCollapseState(grouping.groups, storedCollapse),
+    [grouping.groups, storedCollapse],
+  );
+
+  const archiveCollapsed = storedCollapse[ARCHIVE_SECTION_KEY] ?? true;
+  const isCollapsed = (key: string) => collapsed[key] === true;
+
+  const setSectionCollapsed = (key: string, value: boolean) => {
+    persistCollapse({ ...storedCollapse, ...collapsed, [key]: value });
+  };
+
+  const toggleSection = (key: string) => setSectionCollapsed(key, !isCollapsed(key));
+
+  const setAllSections = (collapseAll: boolean) => {
+    const next: CollapseState = { ...storedCollapse };
+    for (const group of grouping.groups) {
+      // 搜索组是当前动作的上下文，永远保持展开
+      next[group.key] = collapseAll ? group.kind === 'workspace' : ALL_EXPANDED;
+      if (group.subagents.length > 0) next[subagentSectionKey(group.key)] = collapseAll;
+    }
+    next[ARCHIVE_SECTION_KEY] = collapseAll;
+    persistCollapse(next);
+  };
+
+  // ── 归档（仅本机）──
+  const applyArchive = (session: SessionRow, archived: boolean) => {
+    const next = setArchivedId(archivedList, session.sessionId, archived);
+    if (!archiveControlled) setInternalArchived(next);
+    writeArchivedIds(next, storage);
+    if (archived) onArchive?.(session);
+    else onUnarchive?.(session);
+  };
+
+  const hasContent = grouping.groups.length > 0 || grouping.archivedCount > 0;
+  const showEmptyState = !hasContent && !loading;
 
   return (
     <div className="flex flex-col h-full bg-[#090a0f] text-[#f8fafc] mesh-glow-bg select-none">
@@ -59,6 +182,7 @@ export const SessionsScreen: React.FC<Props> = ({
             <button
               onClick={onOpenDrawer}
               type="button"
+              aria-label="打开菜单"
               className="w-9 h-9 rounded-xl bg-white/[0.06] hover:bg-white/[0.12] border border-white/[0.08] flex items-center justify-center text-[#e2e8f0] transition-colors cursor-pointer studio-tap"
             >
               <Menu size={18} />
@@ -85,6 +209,7 @@ export const SessionsScreen: React.FC<Props> = ({
                 if (searchOpen) handleSearchChange('');
               }}
               type="button"
+              aria-label={searchOpen ? '关闭搜索' : '搜索会话'}
               className="w-9 h-9 rounded-xl bg-white/[0.06] hover:bg-white/[0.12] border border-white/[0.08] flex items-center justify-center text-[#94a3b8] hover:text-white transition-colors cursor-pointer studio-tap"
             >
               {searchOpen ? <X size={17} /> : <Search size={17} />}
@@ -92,6 +217,7 @@ export const SessionsScreen: React.FC<Props> = ({
             <button
               onClick={onRefresh}
               type="button"
+              aria-label="刷新会话列表"
               className="w-9 h-9 rounded-xl bg-white/[0.06] hover:bg-white/[0.12] border border-white/[0.08] flex items-center justify-center text-[#94a3b8] hover:text-white transition-colors cursor-pointer studio-tap"
             >
               <RefreshCw size={16} className={loading ? 'animate-spin text-[#3b82f6]' : ''} />
@@ -109,7 +235,8 @@ export const SessionsScreen: React.FC<Props> = ({
                 autoFocus
                 value={query}
                 onChange={(e) => handleSearchChange(e.target.value)}
-                placeholder="搜索会话指令、工作区或摘要…"
+                placeholder="搜索会话标题、摘要或工作区…"
+                aria-label="搜索会话"
                 className="w-full pl-10 pr-3 py-2 text-[13px] bg-[#141824] border border-white/10 rounded-xl focus:outline-hidden focus:border-[#3b82f6] focus:ring-1 focus:ring-[#3b82f6]/40 text-white placeholder:text-[#64748b] transition-all"
               />
             </div>
@@ -130,7 +257,7 @@ export const SessionsScreen: React.FC<Props> = ({
               <div>
                 <div className="flex items-center gap-2">
                   <span className="text-[14px] font-bold text-white">
-                    {linkState.type === 'ready' ? (linkState.hostName || '远程工作站') : '远程工作站'}
+                    {linkState.type === 'ready' ? linkState.hostName || '远程工作站' : '远程工作站'}
                   </span>
                   <span className="flex items-center gap-1 text-[11px] font-medium text-[#10b981] bg-[#10b981]/10 px-2 py-0.5 rounded-md border border-[#10b981]/20">
                     <ConnectionDot status={linkState.type === 'ready' ? 'online' : 'offline'} size={5} pulse={false} />
@@ -155,45 +282,59 @@ export const SessionsScreen: React.FC<Props> = ({
           </div>
         </div>
 
-        {/* Subagent Segmented Switcher */}
-        {subagentSessions.length > 0 && (
-          <div className="flex justify-center my-1">
-            <div className="p-1 bg-[#141824] border border-white/[0.08] rounded-xl flex items-center text-[12px] font-medium text-[#94a3b8]">
-              <button
-                type="button"
-                onClick={() => setShowSubagents(false)}
-                className={`px-3 py-1 rounded-lg transition-all cursor-pointer ${
-                  !showSubagents
-                    ? 'bg-[#1e2538] text-white border border-white/10 font-semibold shadow-xs'
-                    : 'hover:text-white'
-                }`}
-              >
-                主会话 ({sessions.length})
-              </button>
-              <button
-                type="button"
-                onClick={() => setShowSubagents(true)}
-                className={`px-3 py-1 rounded-lg transition-all cursor-pointer ${
-                  showSubagents
-                    ? 'bg-[#1e2538] text-white border border-white/10 font-semibold shadow-xs'
-                    : 'hover:text-white'
-                }`}
-              >
-                含子代理 ({sessions.length + subagentSessions.length})
-              </button>
-            </div>
+        {/* 分组概览 + 全展开/全折叠 */}
+        {hasContent && (
+          <div className="flex items-center justify-between gap-2 px-1">
+            <p className="min-w-0 truncate text-[12px] text-[#94a3b8]">
+              <span className="font-semibold text-[#cbd5e1]">{grouping.workspaceCount}</span> 个工作区 ·{' '}
+              <span className="font-semibold text-[#cbd5e1]">{grouping.visibleCount}</span> 个会话
+              {grouping.runningCount > 0 && (
+                <span className="text-[#38bdf8]"> · {grouping.runningCount} 个执行中</span>
+              )}
+              {grouping.archivedCount > 0 && (
+                <span className="text-[#64748b]"> · {grouping.archivedCount} 个已归档</span>
+              )}
+            </p>
+            {grouping.groups.length > 1 && (
+              <div className="flex shrink-0 items-center gap-1">
+                <button
+                  type="button"
+                  onClick={() => setAllSections(false)}
+                  title="展开全部"
+                  aria-label="展开全部工作区"
+                  className="flex items-center gap-1 px-2 py-1 rounded-lg bg-white/[0.04] hover:bg-white/[0.10] border border-white/[0.08] text-[11px] text-[#94a3b8] hover:text-white transition-colors cursor-pointer studio-tap"
+                >
+                  <ChevronsUpDown size={13} />
+                  展开
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setAllSections(true)}
+                  title="折叠全部"
+                  aria-label="折叠全部工作区"
+                  className="flex items-center gap-1 px-2 py-1 rounded-lg bg-white/[0.04] hover:bg-white/[0.10] border border-white/[0.08] text-[11px] text-[#94a3b8] hover:text-white transition-colors cursor-pointer studio-tap"
+                >
+                  <ChevronsDownUp size={13} />
+                  折叠
+                </button>
+              </div>
+            )}
           </div>
         )}
 
         {/* Empty State */}
-        {displayedSessions.length === 0 && !loading && (
+        {showEmptyState && (
           <div className="flex flex-col items-center justify-center p-8 mt-8 text-center specular-card rounded-3xl">
             <div className="w-14 h-14 rounded-2xl bg-[#1e2538] border border-white/10 text-[#3b82f6] flex items-center justify-center mb-3 p-2.5 shadow-inner">
               <DeepSeekLogo size={32} variant="brand" />
             </div>
-            <h3 className="text-[16px] font-bold text-white">暂无匹配的遥控会话</h3>
+            <h3 className="text-[16px] font-bold text-white">
+              {query.trim() ? '没有匹配的会话' : '暂无匹配的遥控会话'}
+            </h3>
             <p className="text-[13px] text-[#94a3b8] mt-1.5 max-w-xs leading-relaxed">
-              随时发起指令，通过端到端加密双向流遥控你的远程开发电脑。
+              {query.trim()
+                ? '换个关键词，或清空搜索看看全部工作区。'
+                : '随时发起指令，通过端到端加密双向流遥控你的远程开发电脑。'}
             </p>
             <button
               onClick={() => setCreateDialogOpen(true)}
@@ -205,58 +346,43 @@ export const SessionsScreen: React.FC<Props> = ({
           </div>
         )}
 
-        {/* Specular Session Cards */}
+        {/* 全部会话都被归档时，别让首屏看起来是空的 */}
+        {!showEmptyState && grouping.groups.length === 0 && grouping.archivedCount > 0 && (
+          <p className="px-1 py-2 text-[12px] text-[#64748b]">
+            当前没有活跃会话，{grouping.archivedCount} 个已归档的会话在列表底部（仅本机归档）。
+          </p>
+        )}
+
+        {/* 分组列表 */}
         <div className="space-y-2.5">
-          {displayedSessions.map((session) => (
-            <div
-              key={session.sessionId}
-              onClick={() => onOpen(session)}
-              className="p-4 rounded-2xl specular-card-interactive cursor-pointer group relative overflow-hidden"
-            >
-              <div className="flex items-start justify-between gap-3">
-                <div className="min-w-0 flex-1">
-                  <div className="flex items-center gap-2">
-                    <h3 className="text-[15px] font-semibold tracking-tight text-white group-hover:text-[#60a5fa] transition-colors truncate">
-                      {session.title}
-                    </h3>
-                    {session.isSubagent && (
-                      <span className="text-[10.5px] font-medium px-2 py-0.5 rounded-md bg-[#a855f7]/15 text-[#c084fc] border border-[#a855f7]/25">
-                        子代理
-                      </span>
-                    )}
-                    {session.running && (
-                      <span className="flex items-center gap-1.5 text-[11px] font-semibold text-[#38bdf8] bg-[#38bdf8]/15 px-2.5 py-0.5 rounded-full border border-[#38bdf8]/30">
-                        <span className="w-1.5 h-1.5 rounded-full bg-[#38bdf8] animate-ping" />
-                        电脑执行中
-                      </span>
-                    )}
-                  </div>
-
-                  <p className="text-[13px] text-[#94a3b8] line-clamp-2 mt-1.5 leading-relaxed font-normal">
-                    {session.preview || '暂无消息摘要'}
-                  </p>
-
-                  <div className="flex items-center gap-2 mt-3 text-[11.5px] text-[#64748b]">
-                    {session.workspace && (
-                      <>
-                        <div className="flex items-center gap-1 font-mono text-[#cbd5e1] truncate max-w-[260px] bg-white/[0.04] px-2 py-0.5 rounded-md border border-white/[0.06]">
-                          <Folder size={11} className="text-[#3b82f6]" />
-                          <span className="truncate">{session.workspace}</span>
-                        </div>
-                        <span>·</span>
-                      </>
-                    )}
-                    <span>{formatTime(session.updatedAt)}</span>
-                  </div>
-                </div>
-
-                <div className="pt-1 text-[#475569] group-hover:text-[#60a5fa] group-hover:translate-x-0.5 transition-all">
-                  <ChevronRight size={17} />
-                </div>
-              </div>
-            </div>
+          {grouping.groups.map((group) => (
+            <SessionGroupSection
+              key={group.key}
+              group={group}
+              collapsed={isCollapsed(group.key)}
+              onToggleGroup={() => toggleSection(group.key)}
+              subagentsCollapsed={storedCollapse[subagentSectionKey(group.key)] ?? true}
+              onToggleSubagents={() =>
+                setSectionCollapsed(
+                  subagentSectionKey(group.key),
+                  !(storedCollapse[subagentSectionKey(group.key)] ?? true),
+                )
+              }
+              onOpen={onOpen}
+              onArchive={onArchive}
+              onUnarchive={onUnarchive}
+            />
           ))}
         </div>
+
+        {/* 本机归档区 */}
+        <ArchivedSection
+          items={grouping.archived}
+          collapsed={archiveCollapsed}
+          onToggle={() => setSectionCollapsed(ARCHIVE_SECTION_KEY, !archiveCollapsed)}
+          onOpen={onOpen}
+          onUnarchive={onUnarchive}
+        />
       </div>
 
       {/* Floating Action Button (Raycast Glowing Pill) */}

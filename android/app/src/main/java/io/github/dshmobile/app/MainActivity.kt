@@ -29,6 +29,16 @@ class MainActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
+        // debug 构建开 WebView 远程调试。**这不是开发便利，是验收基础设施**：
+        // WebView 的 DOM 不对 uiautomator 暴露（dump 出来是空树），
+        // 只能靠坐标点击截图比对 —— 那样的"端到端验收"天天误报。
+        // 打开后可以 `adb forward tcp:9222 localabstract:webview_devtools_remote_<pid>`
+        // 用 CDP 精确驱动与断言（见 scripts/e2e-app-ui.mjs）。
+        // release 构建不开，避免把调试端口暴露给外部工具。
+        if (isDebuggable()) {
+            WebView.setWebContentsDebuggingEnabled(true)
+        }
+
         // 沉浸式透明状态栏与导航栏
         window.statusBarColor = Color.parseColor("#090A0F")
         window.navigationBarColor = Color.parseColor("#090A0F")

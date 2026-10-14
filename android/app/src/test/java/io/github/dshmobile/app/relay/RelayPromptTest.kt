@@ -43,6 +43,50 @@ class RelayPromptTest {
         assertTrue("没有任何说明时至少要显示工具名", toolOnly.body.contains("shell"))
     }
 
+    /**
+     * 🔴 真主机的 `displayReason` 是**多语言对象** `{en, zh}`（docs/device-test.md 实测记录）。
+     *
+     * 旧实现按字符串取 → 取不到 → 回落到只显示工具名：用户在通知栏**看不到为什么**要批准，
+     * 只能盲点。这条测试把这个形状钉死。
+     */
+    @Test
+    fun `localized displayReason object is rendered as text not dropped`() {
+        val prompt = PromptClassifier.classify(
+            "approval/request",
+            "ev-l10n",
+            mapOf(
+                "toolName" to "pwsh",
+                "displayReason" to mapOf("en" to "Approve danger-full-access", "zh" to "允许本次操作使用 danger-full-access 权限"),
+            ),
+        )!!
+        assertTrue("必须取到中文文案，而不是回落成工具名", prompt.body.contains("danger-full-access 权限"))
+        assertFalse("不能把整个对象塞进正文", prompt.body.contains("{"))
+
+        // 只有 en 时也要能用
+        val enOnly = PromptClassifier.classify(
+            "approval/request",
+            "ev-en",
+            mapOf("displayReason" to mapOf("en" to "Approve this call")),
+        )!!
+        assertEquals("Approve this call", enOnly.body)
+
+        // 纯字符串仍然兼容
+        val plain = PromptClassifier.classify(
+            "approval/request",
+            "ev-plain",
+            mapOf("displayReason" to "plain reason"),
+        )!!
+        assertEquals("plain reason", plain.body)
+
+        // 空对象 → 回落到工具名，不留空正文
+        val emptyObj = PromptClassifier.classify(
+            "approval/request",
+            "ev-empty",
+            mapOf("toolName" to "shell", "displayReason" to emptyMap<String, Any?>()),
+        )!!
+        assertTrue(emptyObj.body.contains("shell"))
+    }
+
     @Test
     fun `approval detection matches any event name containing approval`() {
         for (name in listOf("approval", "tool/approval", "tool/approval.request", "x/approvals")) {

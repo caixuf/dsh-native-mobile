@@ -21,8 +21,23 @@ export const PairingClient = {
   },
 
   async probe(baseUrl: string): Promise<string | null> {
+    // 🔴 先确认输入是**完整的绝对地址**再探测。
+    //
+    // 用户在输入框里逐字删除默认值时，会经过 `http`、`http:` 这类中间态；
+    // 旧写法直接 `${baseUrl}/mobile-gateway/health` 拼接，于是产生相对路径，
+    // 在 WebView（页面来自 file:///android_asset/web/）里被解析成
+    // `file:///android_asset/web/http/mobile-gateway/health`，
+    // 每敲一个字就发一条必然失败的请求（真机实测的 console 噪音）。
+    let parsed: URL;
     try {
-      const url = baseUrl.replace(/\/+$/, '') + '/mobile-gateway/health';
+      parsed = new URL(baseUrl.trim());
+    } catch {
+      return null;
+    }
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return null;
+
+    try {
+      const url = parsed.toString().replace(/\/+$/, '') + '/mobile-gateway/health';
       const res = await fetch(url, { method: 'GET' });
       if (!res.ok) return null;
       const data = await res.json();

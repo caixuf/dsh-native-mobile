@@ -7,6 +7,8 @@ import { PairingClient } from './services/pairing';
 import { Envelopes } from './services/envelopes';
 import { NativeBridge } from './services/native-bridge';
 import type { NativeRelayStatus } from './services/native-bridge';
+import { fetchChatPage } from './lib/session-page';
+import { currentDeviceName, getOrCreateDeviceId, uniqueDeviceName } from './services/device';
 import { HostsScreen } from './components/screens/HostsScreen';
 import { PairScreen } from './components/screens/PairScreen';
 import { SessionsScreen } from './components/screens/SessionsScreen';
@@ -14,6 +16,88 @@ import { ChatScreen } from './components/screens/ChatScreen';
 import { AppDrawer } from './components/drawer/AppDrawer';
 
 type Route = 'hosts' | 'pair' | 'sessions' | 'chat';
+
+/** 排队等待发送的指令（任务运行中时用户仍可继续输入）。 */
+interface QueuedPrompt {
+  id: string;
+  text: string;
+  createdAt: number;
+  status?: 'pending' | 'failed';
+  error?: string;
+  attempts?: number;
+}
+
+/** 连续失败到这个次数就停止自动重试，留在队列里等用户手动处理。 */
+const MAX_QUEUE_ATTEMPTS = 5;
+
+/**
+ * 设备唯一名。
+ *
+ * 网关按 `platform + name` 合并设备记录 —— 如果每台手机都叫 "Web Remote Client"，
+ * 两台手机会**互相顶下线**（用户实测过）。用一个持久化的短 id 做后缀，天然区分，
+ * 且不需要改网关（改网关要重启 DSH，会杀掉当前会话）。
+ */
+const DEVICE_NAME = (() => {
+  try {
+    return currentDeviceName('Web Remote Client');
+  } catch {
+    // localStorage 不可用（隐私模式/SSR）时退回默认名，绝不让 App 起不来。
+    return 'Web Remote Client';
+  }
+})();
+
+/** 用户可能在输入框里改设备名；无论如何都补上唯一后缀，避免覆盖成同名。 */
+const withDeviceSuffix = (name: string): string => {
+  try {
+    return uniqueDeviceName(name || 'Web Remote Client', getOrCreateDeviceId());
+  } catch {
+    return name || 'Web Remote Client';
+  }
+};
+
+/** `session.page` 的一条记录（真主机返回形状，见 docs/api-contract.md）。 */
+interface ChatPageRecord {
+  seq?: number;
+  event?: {
+    type?: string;
+    seq?: number;
+    data?: {
+      name?: string;
+      callId?: string;
+      arguments?: string;
+      result?: string;
+      isError?: boolean;
+      message?: { content?: Array<{ text?: string }> };
+    };
+  };
+}
+
+interface ChatPageResponse {
+  records?: ChatPageRecord[];
+}
+
+/**
+ * 真主机下发的文案字段可能是**多语言对象** `{en, zh}`（实测：`displayReason`）。
+ *
+ * 旧写法 `String(payload.displayReason)` 会把对象变成字面量 `"[object Object]"`
+ * 直接怼到用户脸上 —— 审批卡片最重要的一行说明就成了乱码。
+ * 这里按「当前语言 → 英文 → 纯字符串 → 空」依次取。
+ */
+function localizedText(value: unknown): string {
+  if (typeof value === 'string') return value;
+  if (value && typeof value === 'object') {
+    const record = value as Record<string, unknown>;
+    const zh = record.zh;
+    const en = record.en;
+    if (typeof zh === 'string' && zh.trim()) return zh;
+    if (typeof en === 'string' && en.trim()) return en;
+    // 其它语言的兜底：取第一个非空字符串值
+    for (const candidate of Object.values(record)) {
+      if (typeof candidate === 'string' && candidate.trim()) return candidate;
+    }
+  }
+  return '';
+}
 
 export const App: React.FC = () => {
   const [route, setRoute] = useState<Route>('sessions');
@@ -26,6 +110,8 @@ export const App: React.FC = () => {
   // Sessions state
   const [sessions, setSessions] = useState<SessionRow[]>([]);
   const [subagentSessions, setSubagentSessions] = useState<SessionRow[]>([]);
+  /** 远端搜索结果：独立于 sessions，避免覆盖本地列表（见 handleSearchSessions）。 */
+  const [searchResults, setSearchResults] = useState<SessionRow[]>([]);
   const [currentSession, setCurrentSession] = useState<SessionRow | null>(null);
   const [sessionsLoading, setSessionsLoading] = useState(false);
 
@@ -43,8 +129,30 @@ export const App: React.FC = () => {
   // 原生后台审批通道的状态（Android 中继服务 / Electron 主进程）
   const [relayStatus, setRelayStatus] = useState<NativeRelayStatus | null>(null);
 
+  /** 待处理审批所属的会话（真主机审批载荷里带 sessionId，用于"跳过去处理"）。 */
+  const [promptSessionId, setPromptSessionId] = useState<string | null>(null);
+
+  /** 网页端的鉴权失效（401/403 分流后的状态，见 connection.ts）。 */
+  const [authFailure, setAuthFailure] = useState<{ status: number; message: string } | null>(null);
+
+  /** 运行中排队的指令（发送失败会退回队首并计数）。 */
+  const [queued, setQueued] = useState<QueuedPrompt[]>([]);
+
   const connRef = useRef<DshConnection | null>(null);
   const advanceTimerRef = useRef<number | null>(null);
+  /** 流事件防抖定时器（见 handleStreamTick）。 */
+  const streamReloadRef = useRef<number | null>(null);
+  /** 事件回调只在连接时注册一次，必须用 ref 读"当前"的会话与路由，避免闭包过期。 */
+  const currentSessionRef = useRef<SessionRow | null>(null);
+  const routeRef = useRef<Route>('sessions');
+
+  useEffect(() => {
+    currentSessionRef.current = currentSession;
+  }, [currentSession]);
+
+  useEffect(() => {
+    routeRef.current = route;
+  }, [route]);
 
   // Load hosts on initial mount
   useEffect(() => {
@@ -86,7 +194,24 @@ export const App: React.FC = () => {
     });
 
     conn.onRequest((req: HostRequestItem) => {
-      handleHostRequest(req);
+      if (req.answerable) {
+        handleHostRequest(req);
+        return;
+      }
+      // 非应答事件 = 主机在推流（emit）。长任务的实时进度就靠它。
+      handleStreamTick();
+    });
+
+    // 401/403 与"网络抖动"必须分开：前者重试一万次也不会成功。
+    // 这里把状态交给顶部横幅，并提示用户重新配对（不静默、不无限重试）。
+    conn.onAuthFailure((info) => {
+      setAuthFailure({ status: info.status, message: info.message });
+    });
+
+    // 应答没送达要能看见 —— 否则用户以为批了、主机还在等。
+    conn.onRespondFailure((info) => {
+      console.warn('应答未送达', info);
+      setError(`审批应答未送达：${info.message}`);
     });
 
     conn.start();
@@ -107,11 +232,24 @@ export const App: React.FC = () => {
       ? '工具调用需要批准'
       : qFirst?.header || qFirst?.question || '需要你确认';
 
+    // 🔴 displayReason 是多语言对象 {en, zh}（真主机实测），不是字符串。
+    // 旧写法 String(...) 会渲染成 "[object Object]"。
+    const reason = isApproval
+      ? localizedText(req.payload.displayReason) || localizedText(req.payload.reason)
+      : '';
     const body = isApproval
-      ? String(req.payload.displayReason || req.payload.reason || `工具调用: ${req.payload.toolName || ''}`)
+      ? reason || `工具调用: ${String(req.payload.toolName || '未知工具')}`
       : qFirst?.question || JSON.stringify(req.payload, null, 2);
 
     const options = qFirst?.options?.map((o) => o.label || '').filter(Boolean) || [];
+
+    // 审批载荷里带 sessionId（真主机字段：sessionId / approvalId / toolName / callId / reason），
+    // 有了它，用户不在聊天页时也能直接跳到**出事的那个会话**去处理。
+    const sessionId =
+      (typeof req.payload.sessionId === 'string' && req.payload.sessionId) ||
+      (typeof (req.payload.address as { sessionId?: string } | undefined)?.sessionId === 'string'
+        ? (req.payload.address as { sessionId: string }).sessionId
+        : null);
 
     setPendingPrompt({
       rpcId: req.rpcId,
@@ -122,6 +260,7 @@ export const App: React.FC = () => {
       questionId: qFirst?.id,
       approval: isApproval,
     });
+    setPromptSessionId(sessionId);
 
     // 桌面壳：窗口可能正藏在托盘里，网页根本不在看 —— 由主进程发系统通知。
     // （Android 由前台服务自己发带按钮的通知，不经这里。）
@@ -130,7 +269,25 @@ export const App: React.FC = () => {
       title,
       body,
       kind: isApproval ? 'approval' : 'question',
+      // 桌面壳靠 sessionId 把窗口跳到出事的会话；Android 侧不需要（通知按钮直接回执）。
+      sessionId,
     });
+  };
+
+  /**
+   * 主机推来的**非应答**事件（`emit`）=「还在干活」的唯一实时信号。
+   *
+   * 旧实现只在上屏后轮询 3 次（0 / 1.5s / 3s）就停 —— 超过 3 秒的活儿
+   * 界面**永远不再更新**，用户只能退出重进。这里改成：事件到达即防抖重取当前会话。
+   */
+  const handleStreamTick = () => {
+    if (streamReloadRef.current !== null) return; // 已在防抖窗口内
+    streamReloadRef.current = window.setTimeout(() => {
+      streamReloadRef.current = null;
+      if (routeRef.current !== 'chat') return;
+      const session = currentSessionRef.current;
+      if (session) void loadChatPage(session);
+    }, 800);
   };
 
   const loadSessions = async (conn = connRef.current) => {
@@ -190,35 +347,15 @@ export const App: React.FC = () => {
     }
   };
 
-  const loadChatPage = async (sessionId: string, conn = connRef.current) => {
-    if (!conn) return;
+  const loadChatPage = async (session: SessionRow | null, conn = connRef.current) => {
+    if (!conn || !session) return;
     try {
-      const res = (await conn.call('session.page', {
-        request: {
-          address: { sessionId },
-          throughSeq: 1000000,
-          maxMessages: 50,
-        },
-      })) as {
-        records?: Array<{
-          seq?: number;
-          event?: {
-            type?: string;
-            seq?: number;
-            data?: {
-              name?: string;
-              callId?: string;
-              arguments?: string;
-              result?: string;
-              isError?: boolean;
-              message?: {
-                content?: Array<{ text?: string }>;
-              };
-            };
-          };
-        }>;
-      };
-
+      // 🔴 读会话记录有两个坑，都会造成「能打开会话、记录永远空白」且不报错到用户眼前：
+      //     ① address 必须带 kind（否则 boundary validation）
+      //     ② throughSeq 不能写死大值（主机报 "past cursor N"，要拿它重试）
+      // 两者的请求构造/错误处理抽在 lib/session-page.ts，由
+      // scripts/test-session-page.mjs 钉死（含真主机原文报文）。
+      const res = await fetchChatPage((method, args) => conn.call(method, args), session);
       const records = res?.records || [];
       const lines: ChatLine[] = [];
 
@@ -295,7 +432,7 @@ export const App: React.FC = () => {
     setBusy(true);
     setError(null);
     try {
-      const record = await PairingClient.login(baseUrl, user, pass, name);
+      const record = await PairingClient.login(baseUrl, user, pass, withDeviceSuffix(name));
       HostStore.upsert(record);
       setHosts(HostStore.all());
       setActiveHostId(record.id);
@@ -312,7 +449,7 @@ export const App: React.FC = () => {
     setBusy(true);
     setError(null);
     try {
-      const record = await PairingClient.pair(baseUrl, code, name);
+      const record = await PairingClient.pair(baseUrl, code, withDeviceSuffix(name));
       HostStore.upsert(record);
       setHosts(HostStore.all());
       setActiveHostId(record.id);
@@ -328,7 +465,7 @@ export const App: React.FC = () => {
   const handleOpenSession = (session: SessionRow) => {
     setCurrentSession(session);
     setRoute('chat');
-    loadChatPage(session.sessionId);
+    loadChatPage(session);
   };
 
   const handleCreateSession = async (cwd?: string) => {
@@ -373,7 +510,10 @@ export const App: React.FC = () => {
       };
 
       if (res?.items) {
-        setSessions(
+        // 🔴 不能再 setSessions(...)：那会把本地全量列表**覆盖**成搜索结果，
+        // 于是远端结果被当成普通会话落进"未知工作区"组，而用户原本的会话全没了。
+        // 搜索结果走独立 prop，由 SessionsScreen 单独成组置顶展示。
+        setSearchResults(
           res.items.map((i) => ({
             sessionId: i.sessionId || '',
             title: i.title || '搜索结果',
@@ -389,8 +529,13 @@ export const App: React.FC = () => {
     }
   };
 
-  const handleSendPrompt = async (text: string) => {
-    if (!currentSession || !connRef.current) return;
+  /**
+   * 真正把一条指令发出去。
+   *
+   * @returns true=主机已接收；**false=没送到，调用方必须保留用户输入**。
+   */
+  const sendPromptNow = async (text: string): Promise<boolean> => {
+    if (!currentSession || !connRef.current) return false;
     const sid = currentSession.sessionId;
 
     setSending(true);
@@ -423,18 +568,94 @@ export const App: React.FC = () => {
       setRunning(true);
       setSending(false);
 
-      // Refresh chat
-      loadChatPage(sid);
-      setTimeout(() => loadChatPage(sid), 1500);
-      setTimeout(() => {
-        loadChatPage(sid);
-        setRunning(false);
-      }, 3000);
+      // Refresh chat；真正的实时更新靠事件流（见 handleStreamTick），
+      // 这里几次兜底轮询只是为了首屏尽快有反馈。
+      loadChatPage(currentSession);
+      setTimeout(() => loadChatPage(currentSession), 1500);
+      // 目前没有可靠的"本轮结束"信号（事件流里的终态事件尚未定名），
+      // 先沿用既有的 3s 复位；队列发送失败会退回队首并计数，不会静默丢。
+      window.setTimeout(() => setRunning(false), 3000);
+      return true;
     } catch (err) {
       setPreparing(false);
       setSending(false);
-      console.warn('Prompt send error', err);
+      setError(`指令未送达：${(err as Error)?.message ?? '未知错误'}`);
+      // 🔴 返回 false：ChatScreen 据此**保留草稿**。
+      // 旧实现这里只 console.warn，而输入框早被清空 —— 用户丢字。
+      return false;
     }
+  };
+
+  /**
+   * 发送入口（ChatScreen 的 onSend）。
+   *
+   * 任务运行中时**不再禁用输入框**，而是排队 —— 这是 Kotlin 版修过、
+   * 迁移到 Web 后丢掉的能力（见 docs/v0.2-handover.md §3）。
+   */
+  const handleSendPrompt = async (text: string): Promise<boolean> => {
+    const trimmed = text.trim();
+    if (!trimmed) return true; // 空消息不算失败，不该卡住草稿
+    if (!currentSession || !connRef.current) return false;
+
+    if (running) {
+      setQueued((prev) => [
+        ...prev,
+        {
+          id: `q-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+          text: trimmed,
+          createdAt: Date.now(),
+        },
+      ]);
+      return true;
+    }
+
+    return sendPromptNow(trimmed);
+  };
+
+  /** 上一轮跑完就自动把队首发出去；失败退回队首并计数，绝不静默丢弃。 */
+  useEffect(() => {
+    if (running || sending || queued.length === 0) return;
+    const [next, ...rest] = queued;
+    // 已连续失败到上限：留在队列里标成 failed，等用户手动重试/删除，
+    // 不要无限自动重试（那是在主机忙时刷请求）。
+    if ((next.attempts ?? 0) >= MAX_QUEUE_ATTEMPTS) {
+      if (next.status !== 'failed') {
+        setQueued([{ ...next, status: 'failed', error: `连续 ${MAX_QUEUE_ATTEMPTS} 次发送失败` }, ...rest]);
+      }
+      return;
+    }
+    const timer = window.setTimeout(() => {
+      setQueued(rest);
+      void sendPromptNow(next.text).then((ok) => {
+        if (!ok) {
+          const attempts = (next.attempts ?? 0) + 1;
+          setQueued((prev) => [
+            attempts >= MAX_QUEUE_ATTEMPTS
+              ? { ...next, attempts, status: 'failed' as const, error: `连续 ${attempts} 次发送失败` }
+              : { ...next, attempts, status: 'pending' as const },
+            ...prev,
+          ]);
+        }
+      });
+    }, 1500);
+    return () => window.clearTimeout(timer);
+    // sendPromptNow 每次渲染都会重建，但它只依赖 ref 与 state，不必进依赖数组
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [running, sending, queued]);
+
+  /** 删除队列项。 */
+  const handleRemoveQueued = (id: string) => {
+    setQueued((prev) => prev.filter((q) => q.id !== id));
+  };
+
+  /** 手动重试失败项：清零计数并置回队首（让上面那个 effect 立刻接手）。 */
+  const handleRetryQueued = (id: string) => {
+    setQueued((prev) => {
+      const target = prev.find((q) => q.id === id);
+      if (!target) return prev;
+      const rest = prev.filter((q) => q.id !== id);
+      return [{ ...target, attempts: 0, status: 'pending' as const, error: undefined }, ...rest];
+    });
   };
 
   const handleCancelPrompt = async () => {
@@ -524,26 +745,56 @@ export const App: React.FC = () => {
    * 产品的核心承诺是「电脑端等你授权 → 手机立刻收到」。在普通浏览器里打开时
    * 这条承诺**不成立**（切后台就断连），静默地不成立比明说更糟。
    */
-  const backgroundAlertWarning = (() => {
+  const alertBanner: { text: string; onPress?: () => void } | null = (() => {
+    // 鉴权失效优先级最高：连接本身都没了，后面的提醒都无意义。
+    if (authFailure) {
+      return {
+        text: `登录状态已失效（HTTP ${authFailure.status}）：请在"我的电脑"里重新配对。`,
+        onPress: () => setRoute('hosts'),
+      };
+    }
     if (hosts.length === 0) return null;
     const platform = NativeBridge.platform();
     if (platform === 'web') {
-      return '当前在浏览器中打开：锁屏或切到后台后收不到审批提醒。要随时收到请在手机上安装 App。';
+      return {
+        text: '当前在浏览器中打开：锁屏或切到后台后收不到审批提醒。要随时收到请在手机上安装 App。',
+      };
     }
     if (!relayStatus) return null;
     if (relayStatus.state === 'auth-failed') {
-      return '后台审批通道已停止：设备令牌失效，请重新配对，否则电脑端等待授权时手机不会有任何提示。';
+      return {
+        text: '后台审批通道已停止：设备令牌失效，请重新配对，否则电脑端等待授权时手机不会有任何提示。',
+        onPress: () => setRoute('hosts'),
+      };
     }
     if (relayStatus.configured && !relayStatus.notificationsEnabled) {
-      return '通知权限未开启：审批到了手机也不会提醒你。请在系统设置里允许本应用发送通知。';
+      return {
+        text: '通知权限未开启：审批到了手机也不会提醒你。请在系统设置里允许本应用发送通知。',
+      };
     }
     if (relayStatus.lastError) {
-      return `后台审批通道异常：${relayStatus.lastError}`;
+      return { text: `后台审批通道异常：${relayStatus.lastError}` };
     }
     return null;
   })();
 
   const activeHost = hosts.find((h) => h.id === activeHostId);
+
+  /** 把连接状态上报给桌面壳：托盘 tooltip 与菜单据此显示。 */
+  useEffect(() => {
+    NativeBridge.reportRelayStatus({
+      connected: linkState.type === 'ready',
+      host: linkState.hostName || activeHost?.label,
+      pending: pendingPrompt ? 1 : 0,
+    });
+  }, [linkState, activeHost?.label, pendingPrompt]);
+
+  /** 桌面托盘菜单点了「重新连接」。 */
+  useEffect(() => {
+    return NativeBridge.onReconnectRequest(() => {
+      if (activeHostId) startHostConnection(activeHostId);
+    });
+  }, [activeHostId]);
 
   return (
     <div className="flex h-screen w-screen overflow-hidden bg-[#090a0f] text-[#f8fafc] font-sans">
@@ -571,12 +822,53 @@ export const App: React.FC = () => {
 
       {/* Main Screen Router */}
       <main className="flex-1 h-full overflow-hidden relative">
-        {/* 「锁屏收不到提醒」必须明说，不能静默 */}
-        {backgroundAlertWarning && (
-          <div className="absolute top-0 inset-x-0 z-50 bg-amber-500/15 text-amber-200 border-b border-amber-500/30 px-3 py-2 text-[11px] leading-snug backdrop-blur-sm">
-            ⚠️ {backgroundAlertWarning}
-          </div>
-        )}
+        {/* 顶部横幅栈：待审批优先级最高（它有时效），其次才是环境警示 */}
+        <div className="absolute top-0 inset-x-0 z-50 flex flex-col">
+          {/*
+            用户在会话列表/主机页时，待审批项原本**完全看不见** —— 只有进到聊天页才渲染。
+            真主机的审批载荷带 sessionId，所以这里可以直接跳到出事的那个会话。
+          */}
+          {pendingPrompt && route !== 'chat' && (
+            <button
+              type="button"
+              onClick={() => {
+                const target = promptSessionId
+                  ? [...sessions, ...subagentSessions].find((s) => s.sessionId === promptSessionId)
+                  : currentSession;
+                if (target) {
+                  handleOpenSession(target);
+                } else {
+                  // 找不到对应会话（比如它还没出现在列表里）：至少把列表打开，
+                  // 不要给一个点了没反应的横幅。
+                  setDrawerOpen(true);
+                }
+              }}
+              className="w-full flex items-center gap-2 px-3 py-2.5 text-left bg-violet-500/20 border-b border-violet-400/40 text-violet-100 backdrop-blur-sm active:bg-violet-500/30"
+            >
+              <span className="shrink-0 w-2 h-2 rounded-full bg-violet-300 animate-pulse" />
+              <span className="flex-1 min-w-0 truncate text-xs">
+                有 1 项待你处理：{pendingPrompt.title}
+              </span>
+              <span className="shrink-0 text-xs underline">去处理</span>
+            </button>
+          )}
+
+          {/* 环境/鉴权警示必须明说，不能静默 */}
+          {alertBanner &&
+            (alertBanner.onPress ? (
+              <button
+                type="button"
+                onClick={alertBanner.onPress}
+                className="w-full text-left bg-amber-500/15 text-amber-200 border-b border-amber-500/30 px-3 py-2 text-[11px] leading-snug backdrop-blur-sm active:bg-amber-500/25"
+              >
+                ⚠️ {alertBanner.text} <span className="underline">去处理</span>
+              </button>
+            ) : (
+              <div className="bg-amber-500/15 text-amber-200 border-b border-amber-500/30 px-3 py-2 text-[11px] leading-snug backdrop-blur-sm">
+                ⚠️ {alertBanner.text}
+              </div>
+            ))}
+        </div>
         {route === 'hosts' && (
           <HostsScreen
             hosts={hosts}
@@ -597,7 +889,7 @@ export const App: React.FC = () => {
             onBack={hosts.length > 0 ? () => setRoute('hosts') : null}
             onLogin={handleLogin}
             onPair={handlePair}
-            deviceName="Web Remote Client"
+            deviceName={DEVICE_NAME}
           />
         )}
 
@@ -606,6 +898,7 @@ export const App: React.FC = () => {
             linkState={linkState}
             sessions={sessions}
             subagentSessions={subagentSessions}
+            searchResults={searchResults}
             loading={sessionsLoading}
             onOpen={handleOpenSession}
             onRefresh={() => loadSessions()}
@@ -627,6 +920,10 @@ export const App: React.FC = () => {
             preparingStep={preparingStep}
             hostName={linkState.hostName || activeHost?.label}
             workspace={currentSession.workspace}
+            queued={queued}
+            onRemoveQueued={handleRemoveQueued}
+            onRetryQueued={handleRetryQueued}
+            liveConnected={linkState.type === 'ready'}
             onBack={() => setRoute('sessions')}
             onSend={handleSendPrompt}
             onCancel={handleCancelPrompt}

@@ -61,13 +61,25 @@ npm run build:apk      # 产物：dist-apk/dsh-mobile-v<版本>.apk
 ## 测试与验证
 
 ```bash
-node --run test          # 客户端 107 条（markdown / 增量流式 / 审批契约 / 桌面通知降级）
+node --run test          # 客户端 269 条（markdown / 增量流式 / 审批契约 / 会话翻页 /
+                         #   会话分组折叠归档 / 发送队列与草稿 / 连接策略 / 桌面通知降级）
 node --run test:gateway  # 网关 96 条（e2e 85 + 存储往返 11）
 node --run test:android  # Android 原生 57 条（审批契约 / JSON / 帧解码 / 分类与账本）
 node --run verify        # 以上全部 + tsc + vite build
 ```
 
 `node --run` 不依赖 npm/pnpm 在 PATH 上。CI 或手动验收直接跑 `verify` 即可。
+
+### 整 app 端到端（CDP 驱动，不靠截图比对）
+
+debug 构建开了 WebView 远程调试，于是可以**精确驱动 SPA 的 DOM** 而不是猜坐标
+（WebView 的 DOM 不对 `uiautomator` 暴露，dump 出来是空树）：
+
+```bash
+adb shell pidof io.github.dshmobile.app
+adb forward tcp:9222 localabstract:webview_devtools_remote_<pid>
+node scripts/e2e-app-ui.mjs     # 配对 → 分组会话列表 → 打开会话 → 历史非空 → 发送 → 收到回复
+```
 
 ### 审批链路端到端验证（两层，缺一不可）
 

@@ -664,7 +664,7 @@ LinkState.Disconnected -> stopServiceIfNeeded()   // ❌ 逻辑反转
 ### 正在进行的 Electron 重构：三处已核实的坑
 
 > **2026-10-14 更新：下表四处均已修复**，保留原文以记录"当时为什么这么做"。
-> 修复后新增了 26 条桌面通知平台降级契约测试（`scripts/test-desktop-notify.mjs`）。
+> 修复后桌面通知的平台降级契约测试已扩到 **56 条**（`scripts/test-desktop-notify.mjs`）。
 
 以下是 **2026-10-14 逐条核实**的现状，不是历史包袱而是**进行中的代码**：
 
@@ -727,10 +727,23 @@ LinkState.Disconnected -> stopServiceIfNeeded()   // ❌ 逻辑反转
 
 | 命令 | 覆盖 |
 |---|---|
-| `node --run test` | client 107 条（markdown 44 / 增量流式 10 / 审批契约 27 / 桌面通知降级 26） |
+| `node --run test` | client **269 条**（markdown 44 / 增量流式 10 / 审批契约 27 / **会话翻页 12** / **会话分组折叠归档 39** / **发送队列与草稿 38** / **连接策略 43** / **桌面通知降级 56**） |
 | `node --run test:gateway` | 网关 96 条（e2e 85 + store 往返 11） |
 | `node --run test:android` | Android 原生 57 条（审批契约 / MiniJson / 帧解码 / 分类与账本） |
 | `node --run verify` | 以上全部 + `tsc -b` + `vite build` |
+
+**整 app 端到端（CDP 驱动，不靠截图比对）**：debug 构建开了
+`WebView.setWebContentsDebuggingEnabled(true)`，于是可以
+
+```bash
+adb shell pidof io.github.dshmobile.app
+adb forward tcp:9222 localabstract:webview_devtools_remote_<pid>
+curl http://127.0.0.1:9222/json     # 取 webSocketDebuggerUrl
+node scripts/e2e-app-ui.mjs         # 配对 → 分组列表 → 打开会话 → 历史非空 → 发送 → 收到回复
+```
+
+> 为什么值得这么做：WebView 的 DOM **不对 uiautomator 暴露**（dump 出来是空树），
+> 纯坐标点击的"验收"天天误报。
 
 **审批链路端到端复现**（模拟器）：
 

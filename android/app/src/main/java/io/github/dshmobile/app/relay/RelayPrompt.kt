@@ -39,6 +39,20 @@ object PromptClassifier {
     }
 
     /**
+     * 取本地化文案：真主机的 `displayReason` 形如 `{"en":"…","zh":"…"}`。
+     * 优先中文 → 英文 → 任意非空字符串 → 纯字符串。取不到返回 null（交给调用方回落）。
+     */
+    fun localized(value: Any?): String? {
+        if (value is String) return value.takeIf { it.isNotBlank() }
+        val map = MiniJson.obj(value) ?: return null
+        for (key in listOf("zh", "en")) {
+            val text = MiniJson.str(map, key)
+            if (!text.isNullOrBlank()) return text
+        }
+        return map.values.filterIsInstance<String>().firstOrNull { it.isNotBlank() }
+    }
+
+    /**
      * @return 需要用户作答的提示；**eventId 为空时返回 null** ——
      *         没有 eventId 就无法应答，弹一个点了没用的通知比不弹更糟。
      */
@@ -59,7 +73,10 @@ object PromptClassifier {
         }
 
         val body = if (isApproval) {
-            MiniJson.str(request, "displayReason")
+            // 🔴 `displayReason` 是**多语言对象** `{en, zh}`（真主机实测），不是字符串。
+            // 旧写法直接按字符串取 → 取不到 → 回落到只显示工具名，
+            // 用户在通知栏看不到"为什么要批准"，只能盲点。
+            localized(request["displayReason"])
                 ?: MiniJson.str(request, "reason")
                 ?: "工具调用: ${MiniJson.strOr(request, "toolName", "未知工具")}"
         } else {

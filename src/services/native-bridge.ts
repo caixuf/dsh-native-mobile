@@ -30,12 +30,24 @@ export interface NativeApprovalPayload {
   title: string;
   body: string;
   kind: 'approval' | 'question';
+  /** 真主机审批载荷里带的会话 id —— 桌面壳据此把窗口跳到出事的那个会话。 */
+  sessionId?: string | null;
 }
 
 export interface NativeDecision {
   eventId: string;
   /** true=允许，false=拒绝，**null=只是点了通知把它拉到前台**（不是同意）。 */
   allow: boolean | null;
+  /** 事件类型（桌面壳透传）。 */
+  kind?: 'approval' | 'question';
+  sessionId?: string | null;
+}
+
+/** 上报给桌面壳的连接状态（驱动托盘 tooltip）。 */
+export interface NativeRelayReport {
+  connected: boolean;
+  host?: string;
+  pending?: number;
 }
 
 export interface NativeRelayStatus {
@@ -64,6 +76,10 @@ interface AndroidBridge {
 interface DesktopBridge {
   notifyApproval(payload: NativeApprovalPayload): boolean;
   onApprovalAction(cb: (payload: NativeDecision) => void): () => void;
+  /** 上报连接状态（托盘 tooltip + 菜单）。 */
+  reportRelayStatus(payload: NativeRelayReport): boolean;
+  /** 托盘菜单点了"重新连接"。 */
+  onReconnectRequest(cb: (info: { reason: string }) => void): () => void;
   platform: string;
 }
 
@@ -218,11 +234,41 @@ export const NativeBridge = {
     try {
       const off = bridge.onApprovalAction((payload) => {
         if (!payload || typeof payload.eventId !== 'string') return;
-        cb({ eventId: payload.eventId, allow: payload.allow ?? null });
+        cb({
+          eventId: payload.eventId,
+          allow: payload.allow ?? null,
+          // kind/sessionId 必须透传：桌面壳靠它把窗口跳到出事的那个会话，
+          // 丢掉就退化成"只把窗口拿到面前"。
+          kind: payload.kind,
+          sessionId: payload.sessionId ?? null,
+        });
       });
       return typeof off === 'function' ? off : () => undefined;
     } catch (err) {
       console.warn('[native] onApprovalAction 订阅失败', err);
+      return () => undefined;
+    }
+  },
+
+  /** 把连接状态上报给桌面壳（托盘 tooltip/菜单用）。非 Electron 环境是空操作。 */
+  reportRelayStatus(payload: NativeRelayReport): boolean {
+    const bridge = desktopBridge();
+    if (!bridge || typeof bridge.reportRelayStatus !== 'function') return false;
+    try {
+      return bridge.reportRelayStatus(payload) === true;
+    } catch {
+      return false;
+    }
+  },
+
+  /** 订阅桌面托盘菜单的"重新连接"。 */
+  onReconnectRequest(cb: (info: { reason: string }) => void): () => void {
+    const bridge = desktopBridge();
+    if (!bridge || typeof bridge.onReconnectRequest !== 'function') return () => undefined;
+    try {
+      const off = bridge.onReconnectRequest((info) => cb({ reason: info?.reason ?? 'unknown' }));
+      return typeof off === 'function' ? off : () => undefined;
+    } catch {
       return () => undefined;
     }
   },
