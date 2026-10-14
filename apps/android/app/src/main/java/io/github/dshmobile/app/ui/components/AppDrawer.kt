@@ -313,6 +313,48 @@ fun AppDrawer(
                 }
             }
 
+            Spacer(Modifier.height(12.dp))
+
+            // 主题模式切换（跟随系统 / 浅色 / 深色）
+            Surface(
+                shape = RoundedCornerShape(10.dp),
+                color = MaterialTheme.colorScheme.surfaceContainerHigh,
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(3.dp),
+                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                ) {
+                    val currentMode = io.github.dshmobile.app.ui.ThemePreferences.currentMode
+                    io.github.dshmobile.app.ui.ThemeMode.values().forEach { mode ->
+                        val isSelected = currentMode == mode
+                        Surface(
+                            onClick = { io.github.dshmobile.app.ui.ThemePreferences.currentMode = mode },
+                            shape = RoundedCornerShape(8.dp),
+                            color = if (isSelected) MaterialTheme.colorScheme.surface else Color.Transparent,
+                            shadowElevation = if (isSelected) 1.dp else 0.dp,
+                            modifier = Modifier.weight(1f),
+                        ) {
+                            Box(
+                                contentAlignment = Alignment.Center,
+                                modifier = Modifier.padding(vertical = 6.dp),
+                            ) {
+                                Text(
+                                    text = mode.label,
+                                    style = MaterialTheme.typography.labelSmall,
+                                    fontWeight = if (isSelected) FontWeight.SemiBold else FontWeight.Normal,
+                                    color = if (isSelected) MaterialTheme.colorScheme.onSurface
+                                    else MaterialTheme.colorScheme.onSurfaceVariant,
+                                    maxLines = 1,
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+
             Spacer(Modifier.height(10.dp))
 
             // 底部技术标识

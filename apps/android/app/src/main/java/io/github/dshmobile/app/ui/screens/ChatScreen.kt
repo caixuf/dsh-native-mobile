@@ -16,6 +16,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.rememberScrollState
 import io.github.dshmobile.app.ui.WorkspaceFormatter
+import io.github.dshmobile.app.ui.AmbientWallpaper
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -261,95 +262,146 @@ fun ChatScreen(
             )
         },
     ) { padding ->
-        Column(
-            Modifier
-                .padding(padding)
-                .fillMaxSize(),
-        ) {
-            // 🔴 电脑准备中：远程创建会话时，手机要能看见「电脑正在准备」。
-            //
-            // 对齐逆向 MiniMax 移动端 `com.xproducer.yingshiai` 的
-            // `claw_pod_start_process_0..3` 四阶段：
-            //   唤醒 MaxClaw → 加载知识和技能 → 准备你的云端工作空间 → 即将准备完成
-            //
-            // 为什么必须有：我们是「手机发起、电脑执行」。从点发送到电脑真的开始跑，
-            // 中间有几秒到几十秒（唤醒进程、加载技能、准备工作区）。
-            // 没有这个反馈，用户会以为**App 卡了**，然后重复点击。
-            if (state.preparing) {
-                PreparingBanner(step = state.preparingStep)
-            }
+        AmbientWallpaper(Modifier.padding(padding)) {
+            Column(Modifier.fillMaxSize()) {
+                // 🔴 电脑准备中：远程创建会话时，手机要能看见「电脑正在准备」。
+                if (state.preparing) {
+                    PreparingBanner(step = state.preparingStep)
+                }
 
-            // 🔴 执行上下文条：让「事情正在哪台电脑跑」变得可感知。
-            ExecutionContextBar(
-                hostName = hostName,
-                workspace = workspace,
-                running = state.running,
-            )
-
-            // 🔴 任务执行进度与规划卡片（对齐 MiniMax team_plan_card / cycle_phase 交互）
-            val taskSteps = remember(state.lines, state.running) {
-                io.github.dshmobile.app.ui.components.TaskProgressParser.extractSteps(state.lines, state.running)
-            }
-            if (taskSteps.isNotEmpty()) {
-                io.github.dshmobile.app.ui.components.TaskProgressCard(
-                    steps = taskSteps,
+                // 🔴 执行上下文条：让「事情正在哪台电脑跑」变得可感知。
+                ExecutionContextBar(
+                    hostName = hostName,
+                    workspace = workspace,
                     running = state.running,
-                    modifier = Modifier.padding(horizontal = DshTheme.m.gutter, vertical = DshTheme.m.xs),
                 )
-            }
 
-            state.pending?.let { pending ->
-                ApprovalCard(
-                    title = pending.title,
-                    body = pending.body,
-                    options = pending.options,
-                    onApprove = { vm.approve(true) },
-                    onDeny = { vm.approve(false) },
-                    onOption = { vm.answerOption(it) },
-                )
-            }
+                // 🔴 快速配置选择器条（在进行中会话中可随时切换模式/权限/模型）
+                if (state.lines.isNotEmpty()) {
+                    SessionConfigStrip(
+                        selectedMode = state.selectedMode,
+                        selectedPerm = state.selectedPermission,
+                        selectedModel = state.selectedModel,
+                        availableModes = state.availableModes,
+                        availablePerms = state.availablePermissions,
+                        availableModels = state.availableModels,
+                        onSelectMode = { vm.selectMode(it) },
+                        onSelectPerm = { vm.selectPermission(it) },
+                        onSelectModel = { vm.selectModel(it) },
+                    )
+                }
 
-            state.error?.let { message ->
-                Surface(
-                    color = MaterialTheme.colorScheme.errorContainer,
-                    shape = MaterialTheme.shapes.small,
-                    modifier = Modifier.padding(
-                        horizontal = DshTheme.m.gutter,
-                        vertical = DshTheme.m.xs,
-                    ),
-                ) {
-                    Text(
-                        text = message,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onErrorContainer,
+                // 🔴 任务执行进度与规划卡片（对齐 MiniMax team_plan_card / cycle_phase 交互）
+                val taskSteps = remember(state.lines, state.running) {
+                    io.github.dshmobile.app.ui.components.TaskProgressParser.extractSteps(state.lines, state.running)
+                }
+                if (taskSteps.isNotEmpty()) {
+                    io.github.dshmobile.app.ui.components.TaskProgressCard(
+                        steps = taskSteps,
+                        running = state.running,
+                        modifier = Modifier.padding(horizontal = DshTheme.m.gutter, vertical = DshTheme.m.xs),
+                    )
+                }
+
+                state.pending?.let { pending ->
+                    ApprovalCard(
+                        title = pending.title,
+                        body = pending.body,
+                        options = pending.options,
+                        onApprove = { vm.approve(true) },
+                        onDeny = { vm.approve(false) },
+                        onOption = { vm.answerOption(it) },
+                    )
+                }
+
+                state.error?.let { message ->
+                    Surface(
+                        color = MaterialTheme.colorScheme.errorContainer,
+                        shape = MaterialTheme.shapes.small,
                         modifier = Modifier.padding(
-                            horizontal = DshTheme.m.md,
-                            vertical = DshTheme.m.sm,
+                            horizontal = DshTheme.m.gutter,
+                            vertical = DshTheme.m.xs,
                         ),
-                    )
-                }
-            }
-
-            when {
-                state.loading -> Box(
-                    Modifier.fillMaxSize(),
-                    contentAlignment = Alignment.Center,
-                ) {
-                    CircularProgressIndicator(
-                        modifier = Modifier.size(26.dp),
-                        strokeWidth = 2.5.dp,
-                        color = MaterialTheme.colorScheme.primary,
-                    )
+                    ) {
+                        Text(
+                            text = message,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onErrorContainer,
+                            modifier = Modifier.padding(
+                                horizontal = DshTheme.m.md,
+                                vertical = DshTheme.m.sm,
+                            ),
+                        )
+                    }
                 }
 
-                state.lines.isEmpty() -> {
-                    ChatEmptyHeroState(
-                        workspace = workspace,
-                        onPickSuggestion = { prompt ->
-                            draft = prompt
-                        },
-                    )
+                // 一次性提示：如实告知某项操作的真实效果（例如模式/权限
+                // 在 DSH 侧不可远程切换）。用中性色而非错误色 —— 这不是失败。
+                state.hint?.let { message ->
+                    LaunchedEffect(message) {
+                        kotlinx.coroutines.delay(4000)
+                        vm.consumeHint()
+                    }
+                    Surface(
+                        color = MaterialTheme.colorScheme.secondaryContainer,
+                        shape = MaterialTheme.shapes.small,
+                        modifier = Modifier.padding(
+                            horizontal = DshTheme.m.gutter,
+                            vertical = DshTheme.m.xs,
+                        ),
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier.padding(
+                                horizontal = DshTheme.m.md,
+                                vertical = DshTheme.m.sm,
+                            ),
+                        ) {
+                            DshIcon(
+                                DshIcons.Info,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.onSecondaryContainer,
+                                size = 14.dp,
+                            )
+                            Spacer(Modifier.width(6.dp))
+                            Text(
+                                text = message,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSecondaryContainer,
+                            )
+                        }
+                    }
                 }
+
+                when {
+                    state.loading -> Box(
+                        Modifier.fillMaxSize(),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(26.dp),
+                            strokeWidth = 2.5.dp,
+                            color = MaterialTheme.colorScheme.primary,
+                        )
+                    }
+
+                    state.lines.isEmpty() -> {
+                        ChatEmptyHeroState(
+                            workspace = workspace,
+                            selectedMode = state.selectedMode,
+                            selectedPerm = state.selectedPermission,
+                            selectedModel = state.selectedModel,
+                            availableModes = state.availableModes,
+                            availablePerms = state.availablePermissions,
+                            availableModels = state.availableModels,
+                            onSelectMode = { vm.selectMode(it) },
+                            onSelectPerm = { vm.selectPermission(it) },
+                            onSelectModel = { vm.selectModel(it) },
+                            onPickSuggestion = { prompt ->
+                                draft = prompt
+                            },
+                        )
+                    }
 
                 else -> LazyColumn(
                     state = listState,
@@ -369,6 +421,7 @@ fun ChatScreen(
             }
         }
     }
+}
 }
 
 // ── 电脑准备中 ──────────────────────────────────────────────────────────────
@@ -1400,13 +1453,18 @@ private fun ActionChip(
 @Composable
 private fun ChatEmptyHeroState(
     workspace: String?,
+    selectedMode: String,
+    selectedPerm: String,
+    selectedModel: String,
+    availableModes: List<String>,
+    availablePerms: List<String>,
+    availableModels: List<String>,
+    onSelectMode: (String) -> Unit,
+    onSelectPerm: (String) -> Unit,
+    onSelectModel: (String) -> Unit,
     onPickSuggestion: (String) -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    var selectedMode by remember { mutableStateOf("标准模式") }
-    var selectedPerm by remember { mutableStateOf("工作区内修改") }
-    var selectedModel by remember { mutableStateOf("deepseek-v4.1-flash") }
-
     var showModeDialog by remember { mutableStateOf(false) }
     var showPermDialog by remember { mutableStateOf(false) }
     var showModelDialog by remember { mutableStateOf(false) }
@@ -1520,13 +1578,12 @@ private fun ChatEmptyHeroState(
     }
 
     if (showModeDialog) {
-        val modes = listOf("标准模式", "代码审查模式", "计划与架构模式")
         SingleSelectDialog(
             title = "选择智能体模式",
-            options = modes,
+            options = availableModes,
             selected = selectedMode,
             onSelect = {
-                selectedMode = it
+                onSelectMode(it)
                 showModeDialog = false
             },
             onDismiss = { showModeDialog = false },
@@ -1534,13 +1591,12 @@ private fun ChatEmptyHeroState(
     }
 
     if (showPermDialog) {
-        val perms = listOf("工作区内修改", "完全权限", "只读模式")
         SingleSelectDialog(
             title = "选择操作权限范围",
-            options = perms,
+            options = availablePerms,
             selected = selectedPerm,
             onSelect = {
-                selectedPerm = it
+                onSelectPerm(it)
                 showPermDialog = false
             },
             onDismiss = { showPermDialog = false },
@@ -1548,13 +1604,99 @@ private fun ChatEmptyHeroState(
     }
 
     if (showModelDialog) {
-        val models = listOf("deepseek-v4.1-flash", "deepseek-chat", "deepseek-reasoner")
         SingleSelectDialog(
             title = "选择大语言模型",
-            options = models,
+            options = availableModels,
             selected = selectedModel,
             onSelect = {
-                selectedModel = it
+                onSelectModel(it)
+                showModelDialog = false
+            },
+            onDismiss = { showModelDialog = false },
+        )
+    }
+}
+
+/**
+ * 运行中会话顶部的快捷模式/权限/模型选择条。
+ */
+@Composable
+private fun SessionConfigStrip(
+    selectedMode: String,
+    selectedPerm: String,
+    selectedModel: String,
+    availableModes: List<String>,
+    availablePerms: List<String>,
+    availableModels: List<String>,
+    onSelectMode: (String) -> Unit,
+    onSelectPerm: (String) -> Unit,
+    onSelectModel: (String) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    var showModeDialog by remember { mutableStateOf(false) }
+    var showPermDialog by remember { mutableStateOf(false) }
+    var showModelDialog by remember { mutableStateOf(false) }
+
+    Row(
+        modifier = modifier
+            .fillMaxWidth()
+            .horizontalScroll(rememberScrollState())
+            .padding(horizontal = DshTheme.m.gutter, vertical = 5.dp),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        ConfigPill(
+            icon = DshIcons.TaskList,
+            label = "$selectedMode ▾",
+            onClick = { showModeDialog = true },
+        )
+
+        ConfigPill(
+            icon = DshIcons.ShieldAlert,
+            label = "$selectedPerm ▾",
+            onClick = { showPermDialog = true },
+        )
+
+        ConfigPill(
+            icon = DshIcons.Desktop,
+            label = "$selectedModel ▾",
+            onClick = { showModelDialog = true },
+        )
+    }
+
+    if (showModeDialog) {
+        SingleSelectDialog(
+            title = "切换智能体模式",
+            options = availableModes,
+            selected = selectedMode,
+            onSelect = {
+                onSelectMode(it)
+                showModeDialog = false
+            },
+            onDismiss = { showModeDialog = false },
+        )
+    }
+
+    if (showPermDialog) {
+        SingleSelectDialog(
+            title = "切换操作权限",
+            options = availablePerms,
+            selected = selectedPerm,
+            onSelect = {
+                onSelectPerm(it)
+                showPermDialog = false
+            },
+            onDismiss = { showPermDialog = false },
+        )
+    }
+
+    if (showModelDialog) {
+        SingleSelectDialog(
+            title = "切换大语言模型",
+            options = availableModels,
+            selected = selectedModel,
+            onSelect = {
+                onSelectModel(it)
                 showModelDialog = false
             },
             onDismiss = { showModelDialog = false },

@@ -110,6 +110,14 @@ data class ChatUiState(
      */
     val queue: List<QueuedMessage> = emptyList(),
     /**
+     * 一次性提示（如"模式偏好只影响本地展示"）。
+     *
+     * 用于**诚实告知**用户某项操作的真实效果 —— 例如模式/权限这类
+     * DSH 未开放远程切换的能力，不能假装切换成功了。
+     * UI 消费后应调用 [consumeHint] 清掉，避免常驻。
+     */
+    val hint: String? = null,
+    /**
      * 电脑是否正在「准备中」。
      *
      * 🔴 我们的产品是「手机发起、电脑执行」。从点发送到电脑上真的有响应，
@@ -122,6 +130,16 @@ data class ChatUiState(
     val preparing: Boolean = false,
     /** 0..3，当前进行到第几阶段；>= preparing 为 false 时忽略。 */
     val preparingStep: Int = 0,
+    /** 当前选中的大语言模型 */
+    val selectedModel: String = "deepseek-v4.1-flash",
+    val selectedProvider: String = "opendesign",
+    val availableModels: List<String> = listOf("deepseek-v4.1-flash", "deepseek-chat", "deepseek-reasoner"),
+    /** 当前智能体运行模式 */
+    val selectedMode: String = "标准模式",
+    val availableModes: List<String> = listOf("标准模式", "代码审查模式", "计划与架构模式"),
+    /** 当前操作权限范围 */
+    val selectedPermission: String = "工作区内修改",
+    val availablePermissions: List<String> = listOf("工作区内修改", "完全权限", "只读模式"),
 )
 
 class ChatViewModel(private val connProvider: () -> DshConnection?) : ViewModel() {
@@ -249,8 +267,13 @@ class ChatViewModel(private val connProvider: () -> DshConnection?) : ViewModel(
         viewModelScope.launch {
             fetchPage(c, sid, 80).onSuccess { (newCursor, obj) ->
                 cursor = newCursor
-                val serverLines = recordsOf(obj).mapIndexedNotNull { i, e -> toLine(e, i) }
+                // ⚠️ 顺序很重要：`recs` 必须先声明，下面两处都要用它。
+                // 之前出现过 `recs` 在声明前被引用（`val serverLines = recs...`
+                // 写在 `val recs = recordsOf(obj)` 之前），导致整块解析错位、
+                // 编译器报出一串"无法推断类型"的连锁错误。
                 val recs = recordsOf(obj)
+                val serverLines = recs.mapIndexedNotNull { i, e -> toLine(e, i) }
+                extractSessionContext(recs)
                 lastSeq = recs.lastOrNull()?.get("seq")
                     ?.jsonPrimitive?.content?.toLongOrNull() ?: newCursor
 
@@ -294,12 +317,14 @@ class ChatViewModel(private val connProvider: () -> DshConnection?) : ViewModel(
                         val r = c.call("session.page", pageArgs(sid, learned, 60), timeoutMs = 8_000)
                         r.onSuccess { value ->
                             val obj = value.jsonObject
-                            val serverLines = recordsOf(obj).mapIndexedNotNull { i, entry -> toLine(entry, i) }
+                            val recs = recordsOf(obj)
+                            extractSessionContext(recs)
+                            val serverLines = recs.mapIndexedNotNull { i, entry -> toLine(entry, i) }
                             val serverTexts = serverLines.filter { it.role == "user" }.map { it.text }.toSet()
                             val pendingLines = _state.value.lines.filter { it.key.startsWith("pending-") && it.text !in serverTexts }
                             val isRunning = detectRunning(obj)
 
-                            recordsOf(obj).lastOrNull()?.get("seq")?.jsonPrimitive?.content?.toLongOrNull()
+                            recs.lastOrNull()?.get("seq")?.jsonPrimitive?.content?.toLongOrNull()
                                 ?.takeIf { it > lastSeq }?.let { lastSeq = it }
 
                             _state.update {
@@ -390,6 +415,170 @@ class ChatViewModel(private val connProvider: () -> DshConnection?) : ViewModel(
         viewModelScope.launch {
             val ok = c.respond(pending.rpcId, outcome)
             if (!ok) _state.update { it.copy(error = "应答未被主机接受（可能已过期）") }
+        }
+    }
+
+    /**
+     * 选择并切换当前会话的大语言模型。
+     *
+     * 经真实主机实测确认（`session.selectModel`）：
+     * 形参名为 `request: { sessionId, provider, model }`。
+     */
+    fun selectModel(modelName: String) {
+        val c = requireConn() ?: return
+        val sid = _state.value.sessionId
+        val provider = when {
+            modelName.contains("flash") -> "opendesign"
+            modelName.contains("deepseek") -> "deepseek"
+            modelName.contains("claude") -> "anthropic"
+            modelName.contains("gpt") -> "openai"
+            else -> _state.value.selectedProvider
+        }
+        _state.update { it.copy(selectedModel = modelName, selectedProvider = provider) }
+        viewModelScope.launch {
+            val r = c.call(
+                "session.selectModel",
+                buildJsonObject {
+                    put("request", buildJsonObject {
+                        put("sessionId", sid)
+                        put("provider", provider)
+                        put("model", modelName)
+                    })
+                },
+                timeoutMs = 6_000,
+            )
+            r.onFailure { err ->
+                _state.update { it.copy(error = "模型切换提示: ${err.message ?: "该模型暂时不可用"}") }
+            }
+        }
+    }
+
+    /**
+     * 切换当前操作权限范围。
+     *
+     * 🔴 **实测修正（2026-10-14）**：原实现发 `/permission <preset>`。
+     * 实测证明 DSH 不识别该命令（`command` 槽位为空），它会被当成普通文本
+     * 发给模型 —— 既没改权限，又浪费一次调用并污染会话历史。
+     *
+     * **DSH 真实的权限机制是「审批请求」**（`approval/request` 事件）：
+     * 需要授权的动作会实时弹给用户，由用户逐次批准/拒绝
+     * （`$events/result` + `allowed-once | rejected | ...`）。
+     * 那是**逐次审批**，不是"预设档位"—— 所以不存在一个可以远程切换的档位开关。
+     *
+     * 现在的做法：
+     *  - 不再发假命令
+     *  - 控件如实说明：权限由电脑端逐次审批决定，手机端在弹窗里响应
+     */
+    fun selectPermission(permissionLabel: String) {
+        _state.update {
+            it.copy(
+                selectedPermission = permissionLabel,
+                hint = "权限由电脑端逐次审批：需要授权的动作会弹到这里，由你当场决定",
+            )
+        }
+    }
+
+    /** UI 展示完一次性提示后调用，避免常驻。 */
+    fun consumeHint() {
+        _state.update { it.copy(hint = null) }
+    }
+
+    /**
+     * 切换当前智能体模式。
+     *
+     * 🔴 **实测修正（2026-10-14）**：原实现发 `/preset <name>` 斜杠命令。
+     * 但实测证明 DSH **不识别**这些命令 —— 发 `/preset plan`、`/help`、`/model`、
+     * `/permission workspace-write` 全都返回 `accepted=true` 且
+     * **`command` 槽位为空**（按官方契约，该槽位只在命令被识别时出现）。
+     *
+     * 也就是说：这些"命令"实际被当成**普通文本发给了模型** ——
+     * 既没切换任何东西，还白白消耗一次模型调用、并把一串斜杠文本写进会话历史。
+     *
+     * 现在的做法：
+     *  - **不再发送任何斜杠命令**（避免污染会话与浪费 token）
+     *  - 模式仍是**本地展示偏好**，如实告知用户"这是提示词偏好，不是远端开关"
+     *  - 真正切预设要走 agentPreset 系列的接口，而它在主机侧是 `loopback_only`（实测被拦）
+     *
+     * ⚠️ 这是诚实的降级：宁可少一个假开关，也不要给用户"我改了但没生效"的错觉。
+     */
+    fun selectMode(modeLabel: String) {
+        _state.update {
+            it.copy(
+                selectedMode = modeLabel,
+                hint = "模式偏好已记录（本地展示）；DSH 未开放远程切换预设接口，实际行为由会话自身决定",
+            )
+        }
+    }
+
+    /**
+     * 从 session.page 记录中解析当前会话真实运行中的模型、模式与权限。
+     */
+    private fun extractSessionContext(records: List<JsonObject>) {
+        var foundModel: String? = null
+        var foundProvider: String? = null
+        var foundMode: String? = null
+        var foundPerm: String? = null
+
+        for (rec in records) {
+            val eventType = rec["type"]?.jsonPrimitive?.content ?: ""
+            val data = rec["data"] as? JsonObject
+
+            when (eventType) {
+                "permission/preset" -> {
+                    val p = data?.get("preset")?.jsonPrimitive?.content
+                    foundPerm = when (p) {
+                        "workspace-write" -> "工作区内修改"
+                        "danger-full-access" -> "完全权限"
+                        "read-only" -> "只读模式"
+                        else -> p
+                    }
+                }
+                "sandbox/mode" -> {
+                    if (foundPerm == null) {
+                        val m = data?.get("mode")?.jsonPrimitive?.content
+                        foundPerm = when (m) {
+                            "workspace-write" -> "工作区内修改"
+                            "danger-full-access" -> "完全权限"
+                            "read-only" -> "只读模式"
+                            else -> m
+                        }
+                    }
+                }
+                "agent-preset/selected" -> {
+                    val ap = data?.get("agentPreset")?.jsonPrimitive?.content
+                    foundMode = when (ap) {
+                        "cordis", "review" -> "代码审查模式"
+                        "plan" -> "计划与架构模式"
+                        "standard", "default" -> "标准模式"
+                        else -> ap
+                    }
+                }
+                "request/header" -> {
+                    val config = data?.get("header") as? JsonObject
+                    val cfg = config?.get("config") as? JsonObject
+                    val m = cfg?.get("model")?.jsonPrimitive?.content
+                    val p = cfg?.get("provider")?.jsonPrimitive?.content
+                    if (!m.isNullOrBlank()) foundModel = m
+                    if (!p.isNullOrBlank()) foundProvider = p
+                }
+                "request/context" -> {
+                    val m = data?.get("model")?.jsonPrimitive?.content
+                    val p = data?.get("provider")?.jsonPrimitive?.content
+                    if (!m.isNullOrBlank()) foundModel = m
+                    if (!p.isNullOrBlank()) foundProvider = p
+                }
+            }
+        }
+
+        if (foundModel != null || foundPerm != null || foundMode != null) {
+            _state.update { current ->
+                current.copy(
+                    selectedModel = foundModel ?: current.selectedModel,
+                    selectedProvider = foundProvider ?: current.selectedProvider,
+                    selectedPermission = foundPerm ?: current.selectedPermission,
+                    selectedMode = foundMode ?: current.selectedMode,
+                )
+            }
         }
     }
 

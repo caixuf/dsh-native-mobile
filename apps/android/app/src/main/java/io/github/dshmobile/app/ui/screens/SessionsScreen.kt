@@ -6,6 +6,7 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.background
+import io.github.dshmobile.app.ui.AmbientWallpaper
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -174,7 +175,8 @@ fun SessionsScreen(
             }
         },
     ) { padding ->
-        Column(Modifier.padding(padding).fillMaxSize()) {
+        AmbientWallpaper(Modifier.padding(padding)) {
+            Column(Modifier.fillMaxSize()) {
 
             // 搜索框：动画展开，避免每次都占用固定视觉空间
             AnimatedVisibility(
@@ -410,6 +412,7 @@ fun SessionsScreen(
             }
         }
     }
+}
 }
 
 // ── 子组件 ──────────────────────────────────────────────────────────────────

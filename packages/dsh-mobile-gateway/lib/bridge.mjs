@@ -58,7 +58,6 @@ export const PRIVILEGED_PREFIXES = [
   'settings.',
   'credentials.',
   'pluginManager.',
-  'agentPreset.',
   'directoryPicker.',
 ];
 

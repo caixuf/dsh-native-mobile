@@ -1,6 +1,10 @@
 package io.github.dshmobile.app.ui
 
+import androidx.compose.foundation.background
 import androidx.compose.foundation.isSystemInDarkTheme
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxScope
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Shapes
@@ -11,7 +15,14 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.Immutable
 import androidx.compose.runtime.ReadOnlyComposable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
 import androidx.compose.runtime.staticCompositionLocalOf
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
@@ -331,9 +342,27 @@ object DshTheme {
             if (isSystemInDarkTheme()) Blue200 else Blue600
 }
 
+/**
+ * 主题偏好模式：跟随系统 / 浅色模式 / 深色模式。
+ */
+enum class ThemeMode(val label: String) {
+    System("跟随系统"),
+    Light("浅色"),
+    Dark("深色"),
+}
+
+object ThemePreferences {
+    var currentMode: ThemeMode by mutableStateOf(ThemeMode.System)
+}
+
 @Composable
 fun DshMobileTheme(
-    darkTheme: Boolean = isSystemInDarkTheme(),
+    themeMode: ThemeMode = ThemePreferences.currentMode,
+    darkTheme: Boolean = when (themeMode) {
+        ThemeMode.System -> isSystemInDarkTheme()
+        ThemeMode.Light -> false
+        ThemeMode.Dark -> true
+    },
     content: @Composable () -> Unit,
 ) {
     CompositionLocalProvider(LocalDshMetrics provides DshMetrics()) {
@@ -345,3 +374,46 @@ fun DshMobileTheme(
         )
     }
 }
+
+/**
+ * 具有微妙光照层次与深度的工作区壁纸底衬。
+ *
+ * 对齐高端 AI Studio 界面（非单调平面白/黑板）：
+ * 顶部环境光晕 + 右下极弱氛围辅光 + 统一背景分层。
+ */
+@Composable
+fun AmbientWallpaper(
+    modifier: Modifier = Modifier,
+    content: @Composable BoxScope.() -> Unit,
+) {
+    val isDark = isSystemInDarkTheme()
+    val bgBase = MaterialTheme.colorScheme.background
+    val brandGlow = MaterialTheme.colorScheme.primary.copy(alpha = if (isDark) 0.08f else 0.045f)
+    val secondaryGlow = MaterialTheme.colorScheme.secondary.copy(alpha = if (isDark) 0.04f else 0.025f)
+
+    Box(
+        modifier = modifier
+            .fillMaxSize()
+            .background(bgBase)
+            .drawBehind {
+                // 顶部中心柔和辐射光晕
+                drawRect(
+                    brush = Brush.radialGradient(
+                        colors = listOf(brandGlow, Color.Transparent),
+                        center = Offset(size.width * 0.5f, -size.height * 0.1f),
+                        radius = size.width * 0.95f,
+                    )
+                )
+                // 底部次级漫反射氛围
+                drawRect(
+                    brush = Brush.radialGradient(
+                        colors = listOf(secondaryGlow, Color.Transparent),
+                        center = Offset(size.width * 0.85f, size.height * 0.9f),
+                        radius = size.width * 0.8f,
+                    )
+                )
+            },
+        content = content,
+    )
+}
+
