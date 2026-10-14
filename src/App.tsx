@@ -5,6 +5,8 @@ import { DshConnection } from './services/connection';
 import type { HostRequestItem } from './services/connection';
 import { PairingClient } from './services/pairing';
 import { Envelopes } from './services/envelopes';
+import { NativeBridge } from './services/native-bridge';
+import type { NativeRelayStatus } from './services/native-bridge';
 import { HostsScreen } from './components/screens/HostsScreen';
 import { PairScreen } from './components/screens/PairScreen';
 import { SessionsScreen } from './components/screens/SessionsScreen';
@@ -38,6 +40,9 @@ export const App: React.FC = () => {
   // Drawer
   const [drawerOpen, setDrawerOpen] = useState(false);
 
+  // 原生后台审批通道的状态（Android 中继服务 / Electron 主进程）
+  const [relayStatus, setRelayStatus] = useState<NativeRelayStatus | null>(null);
+
   const connRef = useRef<DshConnection | null>(null);
   const advanceTimerRef = useRef<number | null>(null);
 
@@ -47,6 +52,8 @@ export const App: React.FC = () => {
     setHosts(loaded);
     const active = HostStore.getActiveId();
     setActiveHostId(active);
+
+    setRelayStatus(NativeBridge.status());
 
     if (active) {
       startHostConnection(active);
@@ -65,6 +72,11 @@ export const App: React.FC = () => {
 
     const conn = new DshConnection(record.baseUrl, record.token, record.label);
     connRef.current = conn;
+
+    // 把凭据交给原生壳：Android 由前台服务在后台守着审批通道（WebView 一旦切后台
+    // 就会被挂起，靠网页自己守不住）；普通浏览器里这是安全的空操作。
+    const published = NativeBridge.publishConnection(record.baseUrl, record.token, record.label);
+    if (published) setRelayStatus(published);
 
     conn.onStateChange((state) => {
       setLinkState(state);
@@ -109,6 +121,15 @@ export const App: React.FC = () => {
       options,
       questionId: qFirst?.id,
       approval: isApproval,
+    });
+
+    // 桌面壳：窗口可能正藏在托盘里，网页根本不在看 —— 由主进程发系统通知。
+    // （Android 由前台服务自己发带按钮的通知，不经这里。）
+    NativeBridge.notifyApproval({
+      eventId: req.rpcId,
+      title,
+      body,
+      kind: isApproval ? 'approval' : 'question',
     });
   };
 
@@ -247,6 +268,10 @@ export const App: React.FC = () => {
         connRef.current.stop();
         connRef.current = null;
       }
+      // 忘记主机必须把原生侧的凭据与中继一并停掉，
+      // 否则后台还挂着一个"守着别人的通道"的服务。
+      NativeBridge.clearConnection();
+      setRelayStatus(NativeBridge.status());
       setActiveHostId(updated[0]?.id || null);
       if (updated[0]) {
         startHostConnection(updated[0].id);
@@ -460,6 +485,64 @@ export const App: React.FC = () => {
     setPendingPrompt(null);
   };
 
+  /**
+   * 用户在桌面通知上做了决定。
+   *
+   * 🔴 `allow === null` 只表示「点了通知，把窗口拿到我面前」——
+   * **不是同意**。把点击当批准，等于"用户只瞄了一眼，工具就执行了"。
+   */
+  useEffect(() => {
+    return NativeBridge.onApprovalAction((decision) => {
+      if (decision.allow === null) return;
+      if (!pendingPrompt || decision.eventId !== pendingPrompt.rpcId) return;
+      void handleApprove(decision.allow);
+    });
+    // handleApprove 每次渲染都会重建，但只有 pendingPrompt 变化时才需要重新订阅；
+    // 回调里用 eventId 与当前待办比对，不会误伤。
+  }, [pendingPrompt]);
+
+  /**
+   * Android 中继在通知栏把待办处理掉后，收起 App 里的弹窗。
+   *
+   * 没有这一步，用户会看到「通知栏点过允许了，App 里还挂着让我点」——
+   * 于是怀疑到底批没批，甚至重复应答同一个 eventId。
+   */
+  useEffect(() => {
+    if (!pendingPrompt) return;
+    const eventId = pendingPrompt.rpcId;
+    const timer = window.setInterval(() => {
+      if (NativeBridge.isAnsweredElsewhere(eventId)) {
+        setPendingPrompt(null);
+      }
+    }, 2000);
+    return () => window.clearInterval(timer);
+  }, [pendingPrompt]);
+
+  /**
+   * 后台提醒能力缺失时必须让用户知道。
+   *
+   * 产品的核心承诺是「电脑端等你授权 → 手机立刻收到」。在普通浏览器里打开时
+   * 这条承诺**不成立**（切后台就断连），静默地不成立比明说更糟。
+   */
+  const backgroundAlertWarning = (() => {
+    if (hosts.length === 0) return null;
+    const platform = NativeBridge.platform();
+    if (platform === 'web') {
+      return '当前在浏览器中打开：锁屏或切到后台后收不到审批提醒。要随时收到请在手机上安装 App。';
+    }
+    if (!relayStatus) return null;
+    if (relayStatus.state === 'auth-failed') {
+      return '后台审批通道已停止：设备令牌失效，请重新配对，否则电脑端等待授权时手机不会有任何提示。';
+    }
+    if (relayStatus.configured && !relayStatus.notificationsEnabled) {
+      return '通知权限未开启：审批到了手机也不会提醒你。请在系统设置里允许本应用发送通知。';
+    }
+    if (relayStatus.lastError) {
+      return `后台审批通道异常：${relayStatus.lastError}`;
+    }
+    return null;
+  })();
+
   const activeHost = hosts.find((h) => h.id === activeHostId);
 
   return (
@@ -488,6 +571,12 @@ export const App: React.FC = () => {
 
       {/* Main Screen Router */}
       <main className="flex-1 h-full overflow-hidden relative">
+        {/* 「锁屏收不到提醒」必须明说，不能静默 */}
+        {backgroundAlertWarning && (
+          <div className="absolute top-0 inset-x-0 z-50 bg-amber-500/15 text-amber-200 border-b border-amber-500/30 px-3 py-2 text-[11px] leading-snug backdrop-blur-sm">
+            ⚠️ {backgroundAlertWarning}
+          </div>
+        )}
         {route === 'hosts' && (
           <HostsScreen
             hosts={hosts}

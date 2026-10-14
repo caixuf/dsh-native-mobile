@@ -1,0 +1,229 @@
+/**
+ * 原生壳桥接（Android WebView / Electron）。
+ *
+ * ## 为什么需要它
+ *
+ * 产品核心场景是「电脑端等你授权 → 手机立刻收到并当场处理」。
+ * 但**网页本身撑不住这个场景**：
+ *
+ * - Android：`onPause()` 一到，WebView 的 JS 定时器与 WebSocket 就被系统挂起，
+ *   锁屏/切后台即断连。所以真正的守护交给**原生前台服务**
+ *   （`ApprovalRelayService`），网页只负责在连接成功时把凭据交给它。
+ * - Electron：窗口通常藏在托盘里，网页不在看。审批通知由**主进程**发
+ *   （`electron/main.cjs`），网页只负责递消息、并在用户点了通知后执行应答。
+ *
+ * ## 一个必须守住的语义
+ *
+ * 通知被**点击**（`allow === null`）只表示「把窗口拿到我面前」，
+ * **绝不等于同意**。把点击当成批准，就是"用户只瞄了一眼，工具就执行了"。
+ *
+ * ## 降级
+ *
+ * 两个壳都不在（普通浏览器打开）时，所有方法都是安全的空操作，
+ * `platform === 'web'`，调用方据此如实展示「后台收不到提醒」。
+ */
+
+export type NativePlatform = 'android' | 'electron' | 'web';
+
+export interface NativeApprovalPayload {
+  eventId: string;
+  title: string;
+  body: string;
+  kind: 'approval' | 'question';
+}
+
+export interface NativeDecision {
+  eventId: string;
+  /** true=允许，false=拒绝，**null=只是点了通知把它拉到前台**（不是同意）。 */
+  allow: boolean | null;
+}
+
+export interface NativeRelayStatus {
+  available: boolean;
+  platform: NativePlatform;
+  /** 中继是否已配置（有主机与令牌）。 */
+  configured: boolean;
+  /** stopped | connecting | handshaking | connected | retrying | auth-failed */
+  state: string;
+  notificationsEnabled: boolean;
+  clientId: string | null;
+  lastError: string | null;
+  label: string;
+}
+
+/** Android 壳通过 `addJavascriptInterface(NativeBridge, "DSHNative")` 注入。 */
+interface AndroidBridge {
+  setConnection(baseUrl: string, token: string, label: string): string;
+  clearConnection(): string;
+  reconnect(): string;
+  status(): string;
+  isAnswered(eventId: string): boolean;
+}
+
+/** Electron 壳通过 preload 的 contextBridge 注入。 */
+interface DesktopBridge {
+  notifyApproval(payload: NativeApprovalPayload): boolean;
+  onApprovalAction(cb: (payload: NativeDecision) => void): () => void;
+  platform: string;
+}
+
+function androidBridge(): AndroidBridge | null {
+  if (typeof window === 'undefined') return null;
+  const bridge = (window as unknown as { DSHNative?: AndroidBridge }).DSHNative;
+  return bridge && typeof bridge.setConnection === 'function' ? bridge : null;
+}
+
+function desktopBridge(): DesktopBridge | null {
+  if (typeof window === 'undefined') return null;
+  const bridge = (window as unknown as { dshDesktop?: DesktopBridge }).dshDesktop;
+  return bridge && typeof bridge.notifyApproval === 'function' ? bridge : null;
+}
+
+function parseStatus(raw: string | undefined): Partial<NativeRelayStatus> {
+  if (!raw) return {};
+  try {
+    return JSON.parse(raw) as Partial<NativeRelayStatus>;
+  } catch {
+    // 原生返回了非 JSON —— 如实当成"状态未知"，不要假装已连接。
+    return {};
+  }
+}
+
+const EMPTY_STATUS: NativeRelayStatus = {
+  available: false,
+  platform: 'web',
+  configured: false,
+  state: 'stopped',
+  notificationsEnabled: false,
+  clientId: null,
+  lastError: null,
+  label: '',
+};
+
+export const NativeBridge = {
+  platform(): NativePlatform {
+    if (androidBridge()) return 'android';
+    if (desktopBridge()) return 'electron';
+    return 'web';
+  },
+
+  /**
+   * 是否有「App 不在前台也能收到审批」的能力。
+   *
+   * 普通浏览器打开网页时这是 **false** —— 用户有权知道这一点，
+   * 而不是以为锁屏也能收到。
+   */
+  supportsBackgroundAlerts(): boolean {
+    return androidBridge() !== null || desktopBridge() !== null;
+  },
+
+  /**
+   * 把当前连接交给原生中继（Android）。
+   *
+   * 幂等：重复调用只是让它重新加载配置并重连，可以放心在每次连接时调用。
+   */
+  publishConnection(baseUrl: string, token: string, label: string): NativeRelayStatus | null {
+    const bridge = androidBridge();
+    if (!bridge) return null;
+    try {
+      return { ...EMPTY_STATUS, ...parseStatus(bridge.setConnection(baseUrl, token, label)) };
+    } catch (err) {
+      console.warn('[native] setConnection 失败', err);
+      return null;
+    }
+  },
+
+  /** 忘记主机 / 登出时停掉中继并清掉原生侧凭据。 */
+  clearConnection(): void {
+    const bridge = androidBridge();
+    if (!bridge) return;
+    try {
+      bridge.clearConnection();
+    } catch (err) {
+      console.warn('[native] clearConnection 失败', err);
+    }
+  },
+
+  /** 用户点「重试」时强制中继重连。 */
+  reconnect(): NativeRelayStatus | null {
+    const bridge = androidBridge();
+    if (!bridge) return null;
+    try {
+      return { ...EMPTY_STATUS, ...parseStatus(bridge.reconnect()) };
+    } catch {
+      return null;
+    }
+  },
+
+  /** 中继状态；没有原生壳时返回 unavailable。 */
+  status(): NativeRelayStatus {
+    const platform = this.platform();
+    const bridge = androidBridge();
+    if (!bridge) {
+      // Electron 也有后台提醒能力（主进程发通知），但没有"中继服务"状态可查。
+      return {
+        ...EMPTY_STATUS,
+        available: platform === 'electron',
+        platform,
+        state: platform === 'electron' ? 'desktop' : 'stopped',
+      };
+    }
+    try {
+      return { ...EMPTY_STATUS, platform, ...parseStatus(bridge.status()) };
+    } catch {
+      return { ...EMPTY_STATUS, platform };
+    }
+  },
+
+  /**
+   * 该待办是否已经在原生侧（通知栏）被处理过。
+   *
+   * 网页端据此收起已经答过的弹窗 —— 否则会出现「通知栏点过了，App 里还挂着让我点」，
+   * 用户会怀疑到底批没批，甚至重复应答。
+   */
+  isAnsweredElsewhere(eventId: string): boolean {
+    const bridge = androidBridge();
+    if (!bridge) return false;
+    try {
+      return bridge.isAnswered(eventId) === true;
+    } catch {
+      return false;
+    }
+  },
+
+  /**
+   * 发起一条桌面通知（Electron）。
+   *
+   * @returns 是否成功交给主进程；false 表示壳不支持或载荷非法。
+   */
+  notifyApproval(payload: NativeApprovalPayload): boolean {
+    const bridge = desktopBridge();
+    if (!bridge) return false;
+    try {
+      return bridge.notifyApproval(payload) === true;
+    } catch (err) {
+      console.warn('[native] notifyApproval 失败', err);
+      return false;
+    }
+  },
+
+  /**
+   * 订阅桌面通知上的用户决定。
+   *
+   * @returns 取消订阅函数。**注意 `allow === null` 只表示"点了通知"**。
+   */
+  onApprovalAction(cb: (payload: NativeDecision) => void): () => void {
+    const bridge = desktopBridge();
+    if (!bridge || typeof bridge.onApprovalAction !== 'function') return () => undefined;
+    try {
+      const off = bridge.onApprovalAction((payload) => {
+        if (!payload || typeof payload.eventId !== 'string') return;
+        cb({ eventId: payload.eventId, allow: payload.allow ?? null });
+      });
+      return typeof off === 'function' ? off : () => undefined;
+    } catch (err) {
+      console.warn('[native] onApprovalAction 订阅失败', err);
+      return () => undefined;
+    }
+  },
+};

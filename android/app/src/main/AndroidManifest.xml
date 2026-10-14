@@ -6,6 +6,18 @@
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
 
+    <!--
+      🔴 审批提醒相关权限。缺任何一条，症状都是**静默的**：
+
+      · POST_NOTIFICATIONS（Android 13+）：没有它，通知不报错、直接不显示 ——
+        服务在守护、审批到了手机、用户什么都看不到。
+      · FOREGROUND_SERVICE / ..._DATA_SYNC：没有它，前台服务起不来，
+        锁屏或切后台后 WebView 的 WebSocket 被挂起，连接断掉。
+    -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+
     <application
         android:allowBackup="true"
         android:icon="@mipmap/ic_launcher"
@@ -24,6 +36,20 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <!--
+          审批中继：持有原生 WebSocket，不受 WebView 生命周期影响。
+          exported=false：只有本 App 能启动它。
+        -->
+        <service
+            android:name=".relay.ApprovalRelayService"
+            android:exported="false"
+            android:foregroundServiceType="dataSync" />
+
+        <!-- 通知按钮的落点。exported=false：外部应用无法伪造一个"允许"。 -->
+        <receiver
+            android:name=".relay.RelayActionReceiver"
+            android:exported="false" />
     </application>
 
 </manifest>
