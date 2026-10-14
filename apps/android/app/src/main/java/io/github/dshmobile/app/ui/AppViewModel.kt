@@ -221,6 +221,9 @@ class AppViewModel(private val store: HostStore) : ViewModel() {
                         instanceName = paired.instanceName,
                     )
                     store.upsert(record)
+                    // 记下地址供下次预填 —— 即使用户之后删掉这台主机，
+                    // 地址也还在（同一台电脑的地址通常不变）。
+                    store.rememberBaseUrl(record.baseUrl)
                     _state.update { it.copy(busy = false, notice = "已配对 ${paired.label}") }
                     refresh()
                     select(record.id)
@@ -268,6 +271,8 @@ class AppViewModel(private val store: HostStore) : ViewModel() {
                         _state.update { it.copy(busy = false, error = error.message) }
                         return@onSuccess
                     }
+                    // 记下地址供下次预填（用户要求：登录不该每次手打网址）
+                    store.rememberBaseUrl(record.baseUrl)
                     _state.update { it.copy(busy = false, notice = "已登录 ${paired.label}") }
                     refresh()
                     select(record.id)

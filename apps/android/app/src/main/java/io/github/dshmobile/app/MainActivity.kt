@@ -154,6 +154,9 @@ private fun AppRoot(app: DshMobileApp) {
                     appVm.pair(base, code, name) { route = Route.Sessions }
                 },
                 deviceName = AppViewModel.deviceName(),
+                // 预填上次用过的网关地址 —— 不用每次手打
+                // `http://192.168.x.x:19387`（用户明确要求「不要填网址」）。
+                initialBaseUrl = app.hosts.lastBaseUrl(),
             )
 
             Route.Sessions -> {

@@ -200,6 +200,37 @@ class HostStore(context: Context) {
         all().firstOrNull { it.id == id }?.let { upsert(it.copy(label = label)) }
     }
 
+    /**
+     * 记住最近一次成功使用的网关地址，供下次登录预填。
+     *
+     * 🔴 为什么需要（2026-10-14 用户反馈）：
+     *
+     * 「能不能不要填网址，只账户密码」—— 账号密码登录每次都要求手打
+     * `http://192.168.x.x:19387`，这是纯粹的重复劳动。地址在一台电脑上基本不变，
+     * 记一次就够。
+     *
+     * 取值优先级（见 [lastBaseUrl]）：
+     *   1. 已保存主机里最近使用过的地址（最可信 —— 它真的连上过）
+     *   2. 显式记住的历史地址（用户可能删过主机但地址仍有效）
+     *
+     * 注意：这是**便利性**缓存，不是安全边界 —— 鉴权始终靠 token。
+     */
+    fun rememberBaseUrl(url: String) {
+        val clean = url.trim()
+        if (clean.isEmpty()) return
+        runCatching { prefs.edit().putString(KEY_LAST_BASE_URL, clean).apply() }
+    }
+
+    /** 最近使用过的网关地址；没有则返回空串（UI 会显示占位提示）。 */
+    fun lastBaseUrl(): String {
+        // 优先用「已保存主机」里的地址 —— 那是确实配对成功过的，比历史缓存可靠。
+        val hosts = runCatching { all() }.getOrElse { emptyList() }
+        val fromHost = hosts.maxByOrNull { it.lastUsedAt }?.baseUrl?.takeIf { it.isNotBlank() }
+        val cached = runCatching { prefs.getString(KEY_LAST_BASE_URL, "") }.getOrNull().orEmpty()
+        Log.i(TAG, "lastBaseUrl: hosts=${hosts.size} fromHost=${fromHost ?: "-"} cached=${if (cached.isBlank()) "-" else cached}")
+        return fromHost ?: cached
+    }
+
     /** 写失败必须抛出去 —— 否则 UI 会假装登录成功，实际下次启动就没了。 */
     private fun persist(records: List<HostRecord>) {
         val ok = try {
@@ -216,6 +247,9 @@ class HostStore(context: Context) {
 
     companion object {
         private const val KEY_HOSTS = "hosts"
+
+    /** 最近一次成功使用的网关地址（用于登录页预填）。 */
+    private const val KEY_LAST_BASE_URL = "last_base_url"
         private const val PLAIN_NAME = "dsh_hosts"
     }
 }

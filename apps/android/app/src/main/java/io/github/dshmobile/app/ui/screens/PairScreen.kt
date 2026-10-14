@@ -220,9 +220,19 @@ fun PairScreen(
     onPair: (baseUrl: String, code: String, deviceName: String) -> Unit,
     deviceName: String,
     onBack: (() -> Unit)? = null,
+    /**
+     * 预填的网关地址（上次用过的）。
+     *
+     * 🔴 用户明确要求「不要填网址，只账户密码」—— 地址在一台电脑上基本不变，
+     * 每次手打 `http://192.168.x.x:19387` 是纯粹的重复劳动。
+     * 传空串时保持空输入框（首次使用）。
+     */
+    initialBaseUrl: String = "",
 ) {
     var selectedTab by remember { mutableIntStateOf(0) } // 0: 6位数字配对, 1: 账号密码
-    var baseUrl by remember { mutableStateOf("") }
+    // 用 initialBaseUrl 作初值。key 也带上它 —— 否则从主机列表再次进入配对页时，
+    // `remember` 会沿用第一次组合时的旧初值，预填就失效了。
+    var baseUrl by remember(initialBaseUrl) { mutableStateOf(initialBaseUrl) }
     var pin by remember { mutableStateOf("") }
     var username by remember { mutableStateOf("dsh") }
     var password by remember { mutableStateOf("") }
