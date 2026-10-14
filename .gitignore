@@ -3,11 +3,11 @@ dist/
 *.log
 
 # Android
-apps/android/.gradle/
-apps/android/.kotlin/
-apps/android/local.properties
-apps/android/build/
-apps/android/app/build/
+android/.gradle/
+android/.kotlin/
+android/local.properties
+android/build/
+android/app/build/
 *.apk
 
 # 🔴 签名密钥与密码：绝不提交（本仓库是 public）。

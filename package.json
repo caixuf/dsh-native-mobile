@@ -12,6 +12,7 @@
     "test:markdown": "node --experimental-strip-types scripts/test-markdown.mjs",
     "test:incremental": "node --experimental-strip-types scripts/test-incremental.mjs",
     "electron": "electron electron/main.cjs",
+    "build:apk": "tsc -b && vite build && node scripts/build-apk.mjs",
     "verify": "npm run test && npm run build"
   },
   "dependencies": {
