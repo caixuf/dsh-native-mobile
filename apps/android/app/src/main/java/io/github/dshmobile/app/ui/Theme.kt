@@ -1,13 +1,23 @@
 package io.github.dshmobile.app.ui
 
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Shapes
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Typography
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
@@ -19,11 +29,13 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.staticCompositionLocalOf
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
@@ -112,88 +124,88 @@ private val WarningBright = Color(0xFFF7AD31)
 private val Danger = Color(0xFFE31937)    // MiniMax red_500
 private val DangerBright = Color(0xFFF73646)
 
-// ── 亮色方案 ───────────────────────────────────────────────────────────────
+// ── 亮色方案（Clean Titanium & Electric Azure）────────────────────────────────
 private val LightColors = lightColorScheme(
-    primary = Blue550,
-    onPrimary = N0,
-    primaryContainer = Blue050,
-    onPrimaryContainer = Blue700,
+    primary = Color(0xFF2563EB),
+    onPrimary = Color(0xFFFFFFFF),
+    primaryContainer = Color(0xFFEFF6FF),
+    onPrimaryContainer = Color(0xFF1D4ED8),
 
-    secondary = N600,
-    onSecondary = N0,
-    secondaryContainer = N100,
-    onSecondaryContainer = D900,
+    secondary = Color(0xFF4B5563),
+    onSecondary = Color(0xFFFFFFFF),
+    secondaryContainer = Color(0xFFF3F4F6),
+    onSecondaryContainer = Color(0xFF111827),
 
-    tertiary = Warning,
-    onTertiary = N0,
-    tertiaryContainer = Color(0xFFFFF9ED),
-    onTertiaryContainer = Color(0xFF311908),
+    tertiary = Color(0xFFD97706),
+    onTertiary = Color(0xFFFFFFFF),
+    tertiaryContainer = Color(0xFFFFFBEB),
+    onTertiaryContainer = Color(0xFF78350F),
 
-    background = N50,
-    onBackground = D900,
-    surface = N0,                    // 卡片纯白（MiniMax --card: #fff）
-    onSurface = D900,
-    surfaceVariant = N100,
-    onSurfaceVariant = N500,
-    surfaceContainerLowest = N0,
-    surfaceContainerLow = N25,
-    surfaceContainer = N50,
-    surfaceContainerHigh = N75,
-    surfaceContainerHighest = N100,
+    background = Color(0xFFF8F9FA),
+    onBackground = Color(0xFF111827),
+    surface = Color(0xFFFFFFFF),
+    onSurface = Color(0xFF111827),
+    surfaceVariant = Color(0xFFF3F4F6),
+    onSurfaceVariant = Color(0xFF6B7280),
+    surfaceContainerLowest = Color(0xFFFFFFFF),
+    surfaceContainerLow = Color(0xFFF9FAFB),
+    surfaceContainer = Color(0xFFF3F4F6),
+    surfaceContainerHigh = Color(0xFFE5E7EB),
+    surfaceContainerHighest = Color(0xFFD1D5DB),
 
-    outline = N300,
-    outlineVariant = N200,            // 边框主色
-    inverseSurface = D900,
-    inverseOnSurface = N0,
+    outline = Color(0xFFD1D5DB),
+    outlineVariant = Color(0xFFE5E7EB),
+    inverseSurface = Color(0xFF111827),
+    inverseOnSurface = Color(0xFFF9FAFB),
 
-    error = Danger,
-    onError = N0,
-    errorContainer = Color(0xFFFEEDEE), // MiniMax red_50
-    onErrorContainer = Color(0xFF140003),
+    error = Color(0xFFDC2626),
+    onError = Color(0xFFFFFFFF),
+    errorContainer = Color(0xFFFEF2F2),
+    onErrorContainer = Color(0xFF7F1D1D),
 
-    scrim = Color(0x33000000),        // MiniMax --opacity_black_1_20 ≈ .2，这里略重一点便于阅读
+    scrim = Color(0x33000000),
 )
 
-// ── 暗色方案 ───────────────────────────────────────────────────────────────
+// ── 暗色方案（Linear Obsidian & Deep Studio）─────────────────────────────────
 private val DarkColors = darkColorScheme(
-    primary = Blue200,
-    onPrimary = Color(0xFF001226),
-    primaryContainer = Blue700,
-    onPrimaryContainer = Blue075,
+    primary = Color(0xFF60A5FA),
+    onPrimary = Color(0xFF031126),
+    primaryContainer = Color(0xFF1D4ED8),
+    onPrimaryContainer = Color(0xFFDBEAFE),
 
-    secondary = D300,
-    onSecondary = D950,
-    secondaryContainer = D700,
-    onSecondaryContainer = Color(0xFFEDEEF2),
+    secondary = Color(0xFFA1A1AA),
+    onSecondary = Color(0xFF090A0D),
+    secondaryContainer = Color(0xFF27272A),
+    onSecondaryContainer = Color(0xFFF4F4F5),
 
-    tertiary = WarningBright,
-    onTertiary = Color(0xFF311908),
-    tertiaryContainer = Color(0xFF3C2A10),
-    onTertiaryContainer = Color(0xFFFFF9ED),
+    tertiary = Color(0xFFFBBF24),
+    onTertiary = Color(0xFF2D1E05),
+    tertiaryContainer = Color(0xFF452D0A),
+    onTertiaryContainer = Color(0xFFFEF3C7),
 
-    background = D950,
-    onBackground = Color(0xFFE5E5E5),
-    surface = D850,
-    onSurface = Color(0xFFE5E5E5),
-    surfaceVariant = D700,
-    onSurfaceVariant = D300,
-    surfaceContainerLowest = D950,
-    surfaceContainerLow = D900,
-    surfaceContainer = D850,
-    surfaceContainerHigh = D800,
-    surfaceContainerHighest = D750,
+    background = Color(0xFF090A0E), // Obsidian rich canvas
+    onBackground = Color(0xFFF3F4F6),
+    surface = Color(0xFF13141A),     // Studio card surface
+    onSurface = Color(0xFFF3F4F6),
+    surfaceVariant = Color(0xFF1A1C24),
+    onSurfaceVariant = Color(0xFF9CA3AF),
+    surfaceContainerLowest = Color(0xFF090A0E),
+    surfaceContainerLow = Color(0xFF0E0F14),
+    surfaceContainer = Color(0xFF14161E),
+    surfaceContainerHigh = Color(0xFF1A1D27),
+    surfaceContainerHighest = Color(0xFF232734),
 
-    outline = D600,
-    outlineVariant = D700,
-    inverseSurface = N0,
-    inverseOnSurface = D900,
+    outline = Color(0xFF374151),
+    outlineVariant = Color(0xFF242734), // Precision hairline border
+    inverseSurface = Color(0xFFF9FAFB),
+    inverseOnSurface = Color(0xFF111827),
 
-    error = DangerBright,
-    onError = Color(0xFF3C1F1B),
-    errorContainer = Color(0xFF570C0C),
-    onErrorContainer = Color(0xFFFEF2F2),
+    error = Color(0xFFEF4444),
+    onError = Color(0xFFFFFFFF),
+    errorContainer = Color(0xFF450A0A),
+    onErrorContainer = Color(0xFFFEE2E2),
 
-    scrim = Color(0x66000000),
+    scrim = Color(0x80000000),
 )
 
 // ── 排版体系 ───────────────────────────────────────────────────────────────
@@ -378,8 +390,11 @@ fun DshMobileTheme(
 /**
  * 具有微妙光照层次与深度的工作区壁纸底衬。
  *
- * 对齐高端 AI Studio 界面（非单调平面白/黑板）：
- * 顶部环境光晕 + 右下极弱氛围辅光 + 统一背景分层。
+ * 对齐 Linear / Raycast / Claude Studio 界面：
+ * - 顶部中心 Azure Bloom 漫反射光晕
+ * - 右上侧 Indigo Ambient 氛围反射
+ * - 左下侧 Cyan Warmth 柔和光斑
+ * - 纯净克制，层次丰富，赋予设备端工作台专属的真实技术纵深感。
  */
 @Composable
 fun AmbientWallpaper(
@@ -388,32 +403,118 @@ fun AmbientWallpaper(
 ) {
     val isDark = isSystemInDarkTheme()
     val bgBase = MaterialTheme.colorScheme.background
-    val brandGlow = MaterialTheme.colorScheme.primary.copy(alpha = if (isDark) 0.08f else 0.045f)
-    val secondaryGlow = MaterialTheme.colorScheme.secondary.copy(alpha = if (isDark) 0.04f else 0.025f)
+    val brandGlow = MaterialTheme.colorScheme.primary.copy(alpha = if (isDark) 0.09f else 0.05f)
+    val indigoGlow = Color(0xFF6366F1).copy(alpha = if (isDark) 0.055f else 0.035f)
+    val cyanGlow = Color(0xFF06B6D4).copy(alpha = if (isDark) 0.04f else 0.025f)
 
     Box(
         modifier = modifier
             .fillMaxSize()
             .background(bgBase)
             .drawBehind {
-                // 顶部中心柔和辐射光晕
+                // 1. 顶部中心品牌主光晕 (Azure Bloom)
                 drawRect(
                     brush = Brush.radialGradient(
                         colors = listOf(brandGlow, Color.Transparent),
-                        center = Offset(size.width * 0.5f, -size.height * 0.1f),
-                        radius = size.width * 0.95f,
+                        center = Offset(size.width * 0.5f, -size.height * 0.05f),
+                        radius = size.width * 1.1f,
                     )
                 )
-                // 底部次级漫反射氛围
+                // 2. 顶部右侧微弱靛紫反射 (Indigo Ambient)
                 drawRect(
                     brush = Brush.radialGradient(
-                        colors = listOf(secondaryGlow, Color.Transparent),
-                        center = Offset(size.width * 0.85f, size.height * 0.9f),
+                        colors = listOf(indigoGlow, Color.Transparent),
+                        center = Offset(size.width * 0.95f, size.height * 0.25f),
                         radius = size.width * 0.8f,
+                    )
+                )
+                // 3. 底部青色微光 (Cyan Warmth)
+                drawRect(
+                    brush = Brush.radialGradient(
+                        colors = listOf(cyanGlow, Color.Transparent),
+                        center = Offset(size.width * 0.15f, size.height * 0.95f),
+                        radius = size.width * 0.75f,
                     )
                 )
             },
         content = content,
     )
+}
+
+/**
+ * 现代高质感磨砂玻璃卡片表面（GlassCard）。
+ * 带 1px 超精细 hairline 边框，自然承托内容并保持轻盈。
+ */
+@Composable
+fun GlassCard(
+    modifier: Modifier = Modifier,
+    shape: Shape = RoundedCornerShape(16.dp),
+    borderColor: Color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.55f),
+    backgroundColor: Color = MaterialTheme.colorScheme.surface.copy(
+        alpha = if (isSystemInDarkTheme()) 0.82f else 0.94f
+    ),
+    content: @Composable () -> Unit,
+) {
+    Surface(
+        modifier = modifier,
+        shape = shape,
+        color = backgroundColor,
+        border = BorderStroke(1.dp, borderColor),
+        content = content,
+    )
+}
+
+/**
+ * 具有平滑呼吸动画的状态发光环点（PulseDot）。
+ * 用于指示在线状态、正在执行的任务与实时工作队列。
+ */
+@Composable
+fun PulseDot(
+    modifier: Modifier = Modifier,
+    color: Color = DshTheme.online,
+    size: Dp = 8.dp,
+    pulsing: Boolean = true,
+) {
+    if (!pulsing) {
+        Box(
+            modifier = modifier
+                .size(size)
+                .background(color, CircleShape),
+        )
+        return
+    }
+
+    val infiniteTransition = rememberInfiniteTransition(label = "pulse")
+    val scale by infiniteTransition.animateFloat(
+        initialValue = 1f,
+        targetValue = 1.9f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(1500, easing = FastOutSlowInEasing),
+            repeatMode = RepeatMode.Restart,
+        ),
+        label = "pulseScale",
+    )
+    val alpha by infiniteTransition.animateFloat(
+        initialValue = 0.65f,
+        targetValue = 0f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(1500, easing = FastOutSlowInEasing),
+            repeatMode = RepeatMode.Restart,
+        ),
+        label = "pulseAlpha",
+    )
+
+    Box(contentAlignment = Alignment.Center, modifier = modifier.size(size * 2)) {
+        Box(
+            modifier = Modifier
+                .size(size * scale)
+                .background(color.copy(alpha = alpha), CircleShape),
+        )
+        Box(
+            modifier = Modifier
+                .size(size)
+                .background(color, CircleShape),
+        )
+    }
 }
 

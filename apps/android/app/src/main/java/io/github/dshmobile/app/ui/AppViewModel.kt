@@ -1,6 +1,7 @@
 package io.github.dshmobile.app.ui
 
 import android.os.Build
+import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import io.github.dshmobile.app.data.HostRecord
@@ -80,6 +81,10 @@ data class HostsUiState(
  */
 class AppViewModel(private val store: HostStore) : ViewModel() {
 
+    private companion object {
+        const val TAG = "DSH_APP"
+    }
+
     private val _state = MutableStateFlow(HostsUiState())
     val state: StateFlow<HostsUiState> = _state.asStateFlow()
 
@@ -90,6 +95,45 @@ class AppViewModel(private val store: HostStore) : ViewModel() {
 
     fun refresh() {
         _state.update { it.copy(hosts = store.all(), activeId = it.activeId ?: store.all().firstOrNull()?.id) }
+    }
+
+    /**
+     * 启动时自动连上已保存的主机。
+     *
+     * 🔴 为什么必须有（2026-10-14 模拟器实测发现）：
+     *
+     * 原实现 `refresh()` 只设了 `activeId`，**从不调用 `startConnection`**。
+     * 结果是每次打开 App 都停在「未连接」，用户必须手动点一下电脑才连上。
+     *
+     * 这跟"丝滑"直接冲突 —— 一个遥控器 App 打开就该是已连接状态。
+     *
+     * 同时解决第二个问题：`AppViewModel` 是 Activity 级的，Activity 重建
+     * （旋转屏幕、从后台恢复被回收）会重新构造 ViewModel。若不复用
+     * `ConnectionHub` 里已有的连接，每次重建都会新建一条 —— 那上一轮把连接
+     * 提升到进程级 scope 的收益就白费了。
+     *
+     * 幂等：已有连接时直接沿用，不重连。
+     */
+    fun ensureConnected() {
+        val activeId = _state.value.activeId ?: store.all().firstOrNull()?.id ?: run {
+            Log.i(TAG, "ensureConnected: 没有已保存的主机，跳过自动连接")
+            return
+        }
+        _state.update { it.copy(activeId = activeId) }
+
+        // 已有活连接（进程级存活）→ 直接复用，只把状态接回 UI。
+        val existing = ConnectionHub.connection
+        if (existing != null) {
+            Log.i(TAG, "ensureConnected: 复用进程级活连接 activeId=$activeId")
+            connection = existing
+            connectJob?.cancel()
+            connectJob = viewModelScope.launch {
+                existing.state.collect { s -> _state.update { it.copy(link = s) } }
+            }
+            return
+        }
+        Log.i(TAG, "ensureConnected: 无活连接，新建 activeId=$activeId")
+        startConnection(activeId)
     }
 
     fun activeHost(): HostRecord? = _state.value.activeId?.let { store.find(it) }
@@ -118,7 +162,11 @@ class AppViewModel(private val store: HostStore) : ViewModel() {
     }
 
     private fun startConnection(hostId: String) {
-        val record = store.find(hostId) ?: return
+        val record = store.find(hostId) ?: run {
+            Log.w(TAG, "startConnection: store.find($hostId) 返回 null —— 记录读不出来，无法连接")
+            return
+        }
+        Log.i(TAG, "startConnection: baseUrl=${record.baseUrl} tokenLen=${record.token.length}")
         // 🔴 用**进程级 scope**，不是 viewModelScope。
         //
         // 原实现传 `viewModelScope` —— 它的生命挂在 Activity 上，用户一切到后台
@@ -132,7 +180,10 @@ class AppViewModel(private val store: HostStore) : ViewModel() {
         // 挂到连接中心：由它统一收 events、在后台发通知、处理锁屏应答。
         ConnectionHub.attach(conn)
         connectJob = viewModelScope.launch {
-            conn.state.collect { s -> _state.update { it.copy(link = s) } }
+            conn.state.collect { s ->
+                Log.i(TAG, "连接状态: $s")
+                _state.update { it.copy(link = s) }
+            }
         }
         conn.start()
     }

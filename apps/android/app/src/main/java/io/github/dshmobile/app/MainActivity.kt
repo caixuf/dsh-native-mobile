@@ -84,7 +84,12 @@ private fun AppRoot(app: DshMobileApp) {
     )
     val sessionsState by sessionsVm.state.collectAsStateWithLifecycle()
 
-    LaunchedEffect(Unit) { appVm.refresh() }
+    // 启动即连上已保存的电脑 —— 遥控器 App 打开就该是「已连接」，
+    // 而不是让用户每次手动点一下。同时复用进程级连接（若还活着）。
+    LaunchedEffect(Unit) {
+        appVm.refresh()
+        appVm.ensureConnected()
+    }
 
     // 登录/配对成功后自动进入会话列表。
     LaunchedEffect(state.notice) {
