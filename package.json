@@ -16,6 +16,7 @@
     "test:desktop-notify": "node scripts/test-desktop-notify.mjs",
     "test:android": "node scripts/test-android.mjs",
     "test:fake-host": "node packages/dsh-mobile-gateway/scripts/fake-host.mjs",
+    "pair:android": "node scripts/pair-and-point-android.mjs",
     "electron": "electron electron/main.cjs",
     "build:apk": "tsc -b && vite build && node scripts/build-apk.mjs",
     "verify": "node --run test && node --run typecheck && node --run build && node --run test:gateway && node --run test:android"

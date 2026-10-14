@@ -69,9 +69,17 @@ node --run verify        # 以上全部 + tsc + vite build
 
 `node --run` 不依赖 npm/pnpm 在 PATH 上。CI 或手动验收直接跑 `verify` 即可。
 
-### 审批链路端到端复现（模拟器）
+### 审批链路端到端验证（两层，缺一不可）
 
-真实主机不会因为你想测就发一条审批出来，所以仓库里带了一个**假主机**：
+**第一层 · 真主机**（证明真网关认这条连接）：把手机直接指向真网关，走真配对拿真令牌。
+
+```bash
+node scripts/pair-and-point-android.mjs          # 铸码 → 真配对 → adb reverse → 启动 App
+adb logcat -s DshRelay                            # 应出现 ready 带回的**真 clientId**
+node scripts/pair-and-point-android.mjs --revoke-device <deviceId>   # 验完吊销令牌
+```
+
+**第二层 · 假主机**（证明触发可控 + 回执形状逐字正确）：真主机不会因为你想测就发一条审批出来。
 
 ```bash
 node packages/dsh-mobile-gateway/scripts/fake-host.mjs &   # 监听 19400
@@ -82,10 +90,12 @@ adb shell am start -n io.github.dshmobile.app/.MainActivity \
 adb logcat -s DshRelay
 ```
 
-假主机下发一条审批 → 手机弹通知 → 点「允许一次」→ 假主机**逐字校验**回执形状
-（`method=$events/result`、`args={clientId,eventId,outcome}`、`value` 必须是词表内的裸字符串）
-并打印结论。词表外的值会被真实主机**静默当成拒绝**，这是本项目最贵的一类 bug，
-所以校验写得比"收到请求"严格得多。
+假主机**逐字校验**回执形状：`method=$events/result`、`args={clientId,eventId,outcome}`、
+`value` 必须是词表内的裸字符串 —— 词表外的值会被真实主机**静默当成拒绝**，
+这是本项目最贵的一类 bug，所以校验写得比"收到请求"严格得多。
 
+> `--es` 预置凭据与假主机都**只在 debug 构建生效**（release 忽略 extra），
+> 否则任何应用都能改写中继目标。
+>
 > Android 13+ 需要 `POST_NOTIFICATIONS` 权限。没授权时通知**不报错、直接不显示** ——
 > App 顶部会明确提示，`adb logcat -s DshRelay` 也会打印 `通知是否可用=false`。
