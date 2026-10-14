@@ -646,6 +646,7 @@ private fun ExecutionContextBar(
                         PulseDot(
                             color = if (running) MaterialTheme.colorScheme.primary else DshTheme.online,
                             size = 6.dp,
+                            // 运行中脉动更"急"，静止时更"缓" —— 用动画节奏传达状态
                             pulseScale = if (running) 2.2f else 1.6f,
                         )
                     }
@@ -819,36 +820,69 @@ private fun LineBubble(line: ChatLine) {
                 Box(
                     modifier = Modifier
                         .background(
-                            color = if (isDark) Color(0xFF27272A) else Color(0xFFF4F4F5),
+                            brush = Brush.linearGradient(
+                                colors = if (isDark) listOf(Color(0xFF262937), Color(0xFF1B1D28))
+                                else listOf(Color(0xFFFFFFFF), Color(0xFFF1F3F7)),
+                            ),
                             shape = RoundedCornerShape(
                                 topStart = 18.dp,
                                 topEnd = 18.dp,
                                 bottomStart = 18.dp,
-                                bottomEnd = 5.dp,
+                                bottomEnd = 4.dp,
                             ),
                         )
                         .border(
                             1.dp,
-                            if (isDark) Color(0xFF3F3F46) else Color(0xFFE4E4E7),
+                            if (isDark) Color(0xFF383C4E) else Color(0xFFE2E5EB),
                             RoundedCornerShape(
                                 topStart = 18.dp,
                                 topEnd = 18.dp,
                                 bottomStart = 18.dp,
-                                bottomEnd = 5.dp,
+                                bottomEnd = 4.dp,
                             ),
                         )
-                        .padding(horizontal = 14.dp, vertical = 10.dp),
+                        .padding(horizontal = 14.dp, vertical = 11.dp),
                 ) {
                     SelectionContainer {
                         MarkdownText(
                             text = line.text,
-                            color = if (isDark) Color(0xFFFAFAFA) else Color(0xFF18181B),
+                            color = if (isDark) Color(0xFFF3F4F8) else Color(0xFF111827),
                         )
                     }
                 }
             } else {
-                // agent 消息：走 Markdown 渲染 + 支持长按任意自由选中文本
+                // agent 消息：增加顶层精美 Agent 身份标识与呼吸小标
                 Column {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier.padding(bottom = 6.dp),
+                    ) {
+                        Box(
+                            Modifier
+                                .size(18.dp)
+                                .background(
+                                    MaterialTheme.colorScheme.primaryContainer,
+                                    CircleShape,
+                                ),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            DshIcon(
+                                DshIcons.Cpu,
+                                contentDescription = null,
+                                size = 11.dp,
+                                tint = MaterialTheme.colorScheme.primary,
+                            )
+                        }
+                        Spacer(Modifier.width(6.dp))
+                        Text(
+                            text = "DeepSeek · Agent",
+                            style = MaterialTheme.typography.labelSmall,
+                            fontWeight = FontWeight.SemiBold,
+                            color = MaterialTheme.colorScheme.primary,
+                            letterSpacing = 0.5.sp,
+                        )
+                    }
+
                     SelectionContainer {
                         MarkdownText(
                             text = line.text,
@@ -906,7 +940,11 @@ private fun MessageActionBar(text: String) {
             Text(
                 text = if (copied) "已复制" else "复制",
                 style = MaterialTheme.typography.labelSmall,
-                color = if (copied) DshTheme.online else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f),
+                // 对比度修正（2026-10-14 计算得出，非目测）：
+                // 原来是 onSurfaceVariant.copy(alpha=0.5f) + 11sp。合成色 #b8b8c0
+                // 在浅底上对比度仅 1.97:1，而 11sp 属正文级，WCAG 2.1 AA 要求 4.5:1。
+                // 去掉 alpha 后为完整的 onSurfaceVariant（#717182），对比度 4.79:1 ✓。
+                color = if (copied) DshTheme.online else MaterialTheme.colorScheme.onSurfaceVariant,
                 fontSize = 11.sp,
             )
         }
@@ -939,36 +977,37 @@ private fun QueueStrip(
     onPromote: (String) -> Unit,
     onRetry: (String) -> Unit,
 ) {
-    Column(
-        Modifier
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(14.dp))
-            .background(MaterialTheme.colorScheme.surfaceContainerLow)
-            .border(
-                1.dp,
-                MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f),
-                RoundedCornerShape(14.dp),
-            )
-            .padding(horizontal = 10.dp, vertical = 8.dp),
-        verticalArrangement = Arrangement.spacedBy(6.dp),
+    GlassCard(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(14.dp),
+        backgroundColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.85f),
+        borderColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.35f),
     ) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            DshIcon(
-                DshIcons.TaskList,
-                contentDescription = null,
-                tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                size = 13.dp,
-            )
-            Spacer(Modifier.width(6.dp))
-            Text(
-                text = "待发送 ${queue.size} 条 · 当前回合结束后依次执行",
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-        }
+        Column(
+            Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 10.dp, vertical = 8.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                DshIcon(
+                    DshIcons.TaskList,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.primary,
+                    size = 13.dp,
+                )
+                Spacer(Modifier.width(6.dp))
+                Text(
+                    text = "待发送 ${queue.size} 条 · 当前回合结束后依次执行",
+                    style = MaterialTheme.typography.labelSmall,
+                    fontWeight = FontWeight.Medium,
+                    color = MaterialTheme.colorScheme.onSurface,
+                )
+            }
 
-        queue.forEach { item ->
-            QueueRow(item = item, onRemove = onRemove, onPromote = onPromote, onRetry = onRetry)
+            queue.forEach { item ->
+                QueueRow(item = item, onRemove = onRemove, onPromote = onPromote, onRetry = onRetry)
+            }
         }
     }
 }
@@ -1190,157 +1229,154 @@ private fun Composer(
                 }
             }
 
-            Row(
-                Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.Bottom,
-                horizontalArrangement = Arrangement.spacedBy(DshTheme.m.sm),
+            GlassCard(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(26.dp),
+                backgroundColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.92f),
+                borderColor = if (value.isNotBlank()) MaterialTheme.colorScheme.primary.copy(alpha = 0.6f)
+                             else MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.65f),
             ) {
-                // 🔴 客户端对齐：+ 附件与快捷指令入口（Task 17）
-                Box(
+                Row(
                     Modifier
-                        .size(48.dp)
-                        .clip(CircleShape)
-                        .background(
-                            if (showActionMenu) MaterialTheme.colorScheme.primaryContainer
-                            else MaterialTheme.colorScheme.surfaceContainerHighest,
-                        )
-                        .clickable { showActionMenu = !showActionMenu },
-                    contentAlignment = Alignment.Center,
+                        .fillMaxWidth()
+                        .padding(horizontal = 6.dp, vertical = 5.dp),
+                    verticalAlignment = Alignment.Bottom,
+                    horizontalArrangement = Arrangement.spacedBy(4.dp),
                 ) {
-                    DshIcon(
-                        DshIcons.Add,
-                        contentDescription = "添加指令或附件",
-                        tint = if (showActionMenu) MaterialTheme.colorScheme.primary
-                        else MaterialTheme.colorScheme.onSurfaceVariant,
-                        size = 20.dp,
-                    )
-                }
-
-                TextField(
-                    value = value,
-                    onValueChange = onValueChange,
-                    placeholder = {
-                        Text(
-                            when {
-                                !enabled -> "连接已断开…"
-                                running -> "运行中也可以发，会排队执行…"
-                                value.isEmpty() -> "描述你想要构建的内容，/ 调用指令，@ 文件或对话"
-                                else -> "发消息，或按住右侧说话…"
-                            },
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                        )
-                    },
-                    enabled = enabled,
-                    maxLines = 6,
-                    shape = RoundedCornerShape(18.dp),
-                    colors = TextFieldDefaults.colors(
-                        focusedContainerColor = MaterialTheme.colorScheme.surface,
-                        unfocusedContainerColor = MaterialTheme.colorScheme.surface,
-                        disabledContainerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
-                        focusedIndicatorColor = Color.Transparent,
-                        unfocusedIndicatorColor = Color.Transparent,
-                        disabledIndicatorColor = Color.Transparent,
-                        focusedTextColor = MaterialTheme.colorScheme.onSurface,
-                        unfocusedTextColor = MaterialTheme.colorScheme.onSurface,
-                    ),
-                    modifier = Modifier
-                        .weight(1f)
-                        // Web 端用 --dsw-elevation-stroke-color 描边代替阴影；
-                        // 有内容时描边转主色，给"输入中"一点反馈
-                        .border(
-                            1.dp,
-                            if (value.isNotBlank()) {
-                                MaterialTheme.colorScheme.primary.copy(alpha = 0.4f)
-                            } else {
-                                MaterialTheme.colorScheme.outlineVariant
-                            },
-                            RoundedCornerShape(18.dp),
-                        ),
-                )
-
-                if (sending || !enabled) {
+                    // 🔴 客户端对齐：+ 附件与快捷指令入口（Task 17）
                     Box(
                         Modifier
-                            .size(48.dp)
+                            .size(42.dp)
+                            .clip(CircleShape)
                             .background(
-                                MaterialTheme.colorScheme.surfaceContainerHighest,
-                                CircleShape,
-                            ),
-                        contentAlignment = Alignment.Center,
-                    ) {
-                        CircularProgressIndicator(
-                            modifier = Modifier.size(18.dp),
-                            strokeWidth = 2.dp,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
-                } else if (canSend) {
-                    // 有文字时显示常规发送按钮
-                    Box(
-                        Modifier
-                            .size(48.dp)
-                            .background(
-                                MaterialTheme.colorScheme.primary,
-                                CircleShape,
+                                if (showActionMenu) MaterialTheme.colorScheme.primaryContainer
+                                else MaterialTheme.colorScheme.surfaceContainerHighest.copy(alpha = 0.6f),
                             )
-                            .clickable(onClick = onSend),
+                            .clickable { showActionMenu = !showActionMenu },
                         contentAlignment = Alignment.Center,
                     ) {
                         DshIcon(
-                            DshIcons.Send,
-                            contentDescription = "发送",
-                            tint = MaterialTheme.colorScheme.onPrimary,
-                            size = 20.dp,
-                        )
-                    }
-                } else {
-                    // 输入框为空时显示 MiniMax 风格的按住说话麦克风按钮
-                    Box(
-                        Modifier
-                            .size(48.dp)
-                            .background(
-                                if (voiceState.isListening) MaterialTheme.colorScheme.primaryContainer
-                                else MaterialTheme.colorScheme.surfaceContainerHighest,
-                                CircleShape,
-                            )
-                            .pointerInput(enabled) {
-                                awaitEachGesture {
-                                    awaitFirstDown(requireUnconsumed = false)
-                                    val hasPerm = ContextCompat.checkSelfPermission(
-                                        context,
-                                        Manifest.permission.RECORD_AUDIO,
-                                    ) == PackageManager.PERMISSION_GRANTED
-                                    if (!hasPerm) {
-                                        permissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
-                                        return@awaitEachGesture
-                                    }
-                                    haptics.performHapticFeedback(HapticFeedbackType.LongPress)
-                                    voiceState.start()
-
-                                    var totalDragY = 0f
-                                    do {
-                                        val event = awaitPointerEvent()
-                                        val change = event.changes.firstOrNull() ?: break
-                                        totalDragY += change.position.y - change.previousPosition.y
-                                        voiceState.isCancelling = (totalDragY < -130f)
-                                    } while (event.changes.any { it.pressed })
-
-                                    haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove)
-                                    voiceState.stop(cancel = voiceState.isCancelling)
-                                }
-                            },
-                        contentAlignment = Alignment.Center,
-                    ) {
-                        DshIcon(
-                            DshIcons.Mic,
-                            contentDescription = "按住说话",
-                            tint = if (voiceState.isListening) MaterialTheme.colorScheme.primary
+                            DshIcons.Add,
+                            contentDescription = "添加指令或附件",
+                            tint = if (showActionMenu) MaterialTheme.colorScheme.primary
                             else MaterialTheme.colorScheme.onSurfaceVariant,
-                            size = 20.dp,
+                            size = 19.dp,
                         )
+                    }
+
+                    TextField(
+                        value = value,
+                        onValueChange = onValueChange,
+                        placeholder = {
+                            Text(
+                                when {
+                                    !enabled -> "连接已断开…"
+                                    running -> "运行中也可以发，会排队执行…"
+                                    value.isEmpty() -> "描述你想要构建的内容，/ 调用指令…"
+                                    else -> "发消息，或按住右侧说话…"
+                                },
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.65f),
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                        },
+                        enabled = enabled,
+                        maxLines = 6,
+                        colors = TextFieldDefaults.colors(
+                            focusedContainerColor = Color.Transparent,
+                            unfocusedContainerColor = Color.Transparent,
+                            disabledContainerColor = Color.Transparent,
+                            focusedIndicatorColor = Color.Transparent,
+                            unfocusedIndicatorColor = Color.Transparent,
+                            disabledIndicatorColor = Color.Transparent,
+                            focusedTextColor = MaterialTheme.colorScheme.onSurface,
+                            unfocusedTextColor = MaterialTheme.colorScheme.onSurface,
+                        ),
+                        modifier = Modifier.weight(1f),
+                    )
+
+                    if (sending || !enabled) {
+                        Box(
+                            Modifier
+                                .size(42.dp)
+                                .background(
+                                    MaterialTheme.colorScheme.surfaceContainerHighest,
+                                    CircleShape,
+                                ),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(18.dp),
+                                strokeWidth = 2.dp,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                    } else if (canSend) {
+                        // 有文字时显示常规发送按钮
+                        Box(
+                            Modifier
+                                .size(42.dp)
+                                .background(
+                                    MaterialTheme.colorScheme.primary,
+                                    CircleShape,
+                                )
+                                .clickable(onClick = onSend),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            DshIcon(
+                                DshIcons.Send,
+                                contentDescription = "发送",
+                                tint = MaterialTheme.colorScheme.onPrimary,
+                                size = 18.dp,
+                            )
+                        }
+                    } else {
+                        // 输入框为空时显示 MiniMax 风格的按住说话麦克风按钮
+                        Box(
+                            Modifier
+                                .size(42.dp)
+                                .background(
+                                    if (voiceState.isListening) MaterialTheme.colorScheme.primaryContainer
+                                    else MaterialTheme.colorScheme.surfaceContainerHighest.copy(alpha = 0.6f),
+                                    CircleShape,
+                                )
+                                .pointerInput(enabled) {
+                                    awaitEachGesture {
+                                        awaitFirstDown(requireUnconsumed = false)
+                                        val hasPerm = ContextCompat.checkSelfPermission(
+                                            context,
+                                            Manifest.permission.RECORD_AUDIO,
+                                        ) == PackageManager.PERMISSION_GRANTED
+                                        if (!hasPerm) {
+                                            permissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+                                            return@awaitEachGesture
+                                        }
+                                        haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+                                        voiceState.start()
+
+                                        var totalDragY = 0f
+                                        do {
+                                            val event = awaitPointerEvent()
+                                            val change = event.changes.firstOrNull() ?: break
+                                            totalDragY += change.position.y - change.previousPosition.y
+                                            voiceState.isCancelling = (totalDragY < -130f)
+                                        } while (event.changes.any { it.pressed })
+
+                                        haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                                        voiceState.stop(cancel = voiceState.isCancelling)
+                                    }
+                                },
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            DshIcon(
+                                DshIcons.Mic,
+                                contentDescription = "按住说话",
+                                tint = if (voiceState.isListening) MaterialTheme.colorScheme.primary
+                                else MaterialTheme.colorScheme.onSurfaceVariant,
+                                size = 18.dp,
+                            )
+                        }
                     }
                 }
             }
@@ -1557,17 +1593,44 @@ private fun ChatEmptyHeroState(
             modifier = Modifier.fillMaxWidth(),
         ) {
             Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                // 顶部高质感标识
+                Surface(
+                    shape = RoundedCornerShape(20.dp),
+                    color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.5f),
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.3f)),
+                    modifier = Modifier.padding(bottom = 12.dp),
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        PulseDot(
+                            color = MaterialTheme.colorScheme.primary,
+                            size = 6.dp,
+                        )
+                        Spacer(Modifier.width(6.dp))
+                        Text(
+                            text = "DSH NATIVE · 遥控中枢",
+                            style = MaterialTheme.typography.labelSmall,
+                            fontWeight = FontWeight.SemiBold,
+                            color = MaterialTheme.colorScheme.primary,
+                            letterSpacing = 0.6.sp,
+                        )
+                    }
+                }
+
                 Text(
                     text = "探索未至之境",
                     style = MaterialTheme.typography.headlineMedium,
                     fontWeight = FontWeight.Bold,
                     color = MaterialTheme.colorScheme.onBackground,
+                    letterSpacing = (-0.5).sp,
                 )
                 Spacer(Modifier.height(6.dp))
                 Text(
-                    text = "与远端电脑上的深度智能体协同构建",
+                    text = "与远端电脑上的深度智能体协同构建 · 本地原生算力",
                     style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.8f),
                 )
             }
 
@@ -1604,42 +1667,69 @@ private fun ChatEmptyHeroState(
                 )
             }
 
-            Spacer(Modifier.height(8.dp))
+            Spacer(Modifier.height(6.dp))
 
+            // Studio Bento Prompt 引导卡片
             Column(
-                verticalArrangement = Arrangement.spacedBy(8.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp),
                 modifier = Modifier.fillMaxWidth(),
             ) {
                 val suggestions = listOf(
-                    "分析当前工程结构并梳理主流程",
-                    "检查代码变更并运行单元测试",
-                    "规划下一阶段的功能实现计划",
+                    Triple(DshIcons.Folder, "代码架构探查", "分析当前工程结构并梳理主流程"),
+                    Triple(DshIcons.TaskList, "自动化质量验证", "检查代码变更并运行单元测试"),
+                    Triple(DshIcons.Desktop, "演进路线规划", "规划下一阶段的功能实现计划"),
                 )
-                suggestions.forEach { prompt ->
-                    Surface(
-                        onClick = { onPickSuggestion(prompt) },
-                        shape = RoundedCornerShape(12.dp),
-                        color = MaterialTheme.colorScheme.surface,
-                        border = BorderStroke(
-                            1.dp,
-                            MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.6f),
-                        ),
-                        modifier = Modifier.fillMaxWidth(),
+                suggestions.forEach { (icon, title, prompt) ->
+                    GlassCard(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { onPickSuggestion(prompt) },
+                        shape = RoundedCornerShape(14.dp),
+                        backgroundColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.85f),
+                        borderColor = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.55f),
                     ) {
                         Row(
                             Modifier.padding(horizontal = 14.dp, vertical = 12.dp),
                             verticalAlignment = Alignment.CenterVertically,
                         ) {
-                            Text(
-                                text = prompt,
-                                style = MaterialTheme.typography.bodyMedium,
-                                color = MaterialTheme.colorScheme.onSurface,
-                                modifier = Modifier.weight(1f),
-                            )
+                            Box(
+                                Modifier
+                                    .size(36.dp)
+                                    .background(
+                                        MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.7f),
+                                        RoundedCornerShape(10.dp),
+                                    ),
+                                contentAlignment = Alignment.Center,
+                            ) {
+                                DshIcon(
+                                    icon,
+                                    contentDescription = null,
+                                    size = 18.dp,
+                                    tint = MaterialTheme.colorScheme.primary,
+                                )
+                            }
+                            Spacer(Modifier.width(12.dp))
+                            Column(Modifier.weight(1f)) {
+                                Text(
+                                    text = title,
+                                    style = MaterialTheme.typography.titleSmall,
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = MaterialTheme.colorScheme.onSurface,
+                                )
+                                Spacer(Modifier.height(2.dp))
+                                Text(
+                                    text = prompt,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.8f),
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                )
+                            }
+                            Spacer(Modifier.width(8.dp))
                             DshIcon(
                                 DshIcons.Send,
                                 contentDescription = null,
-                                size = 14.dp,
+                                size = 15.dp,
                                 tint = MaterialTheme.colorScheme.primary,
                             )
                         }
