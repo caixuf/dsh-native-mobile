@@ -235,11 +235,26 @@ fun ChatScreen(
                 value = draft,
                 onValueChange = { draft = it },
                 sending = state.sending,
-                enabled = !state.running,
+                // 🔴 运行中**不再锁输入**（2026-10-14）。
+                //
+                // 原实现是 `enabled = !state.running`，把输入框整个禁用 ——
+                // 但协议本来就支持运行中继续发：`session.prompt` 的
+                // `mode=queue` 会排在当前回合之后，这正是客户端的「任务队列」。
+                // 锁住输入是纯粹的自我设限，用户被迫干等一整轮才能打下一句。
+                //
+                // 现在始终可输入；运行中发出的消息进本地队列并按 queue 模式提交。
+                enabled = true,
+                running = state.running,
+                queue = state.queue,
                 onSend = {
-                    vm.send(draft)
-                    draft = ""
+                    if (draft.isNotBlank()) {
+                        vm.send(draft)
+                        draft = ""
+                    }
                 },
+                onRemoveQueued = { vm.removeQueued(it) },
+                onPromoteQueued = { vm.promoteToSteer(it) },
+                onRetryQueued = { vm.retryQueued(it) },
             )
         },
     ) { padding ->
@@ -772,6 +787,160 @@ private fun MessageActionBar(text: String) {
     }
 }
 
+// ── 待发送队列 ──────────────────────────────────────────────────────────────
+
+/**
+ * 待发送队列条。
+ *
+ * ## 为什么需要它
+ *
+ * 用户在**运行中**发出的消息会按 `mode=queue` 提交给主机 ——
+ * 主机会在当前回合结束后依次执行。但主机**不会主动推送"我的队列里有什么"**，
+ * 所以客户端必须自己记账，否则用户看到的现象是「发了但屏幕上没反应」。
+ *
+ * 这一条解决了三件事：
+ *  - **可见**：明确告诉他"已排队，会在当前回合后执行"
+ *  - **可撤销**：还没提交的可以直接删掉，不必等它真的跑起来
+ *  - **可插话**：想立刻打断当前回合，就把它提升为 `steer`
+ *
+ * 交互对齐客户端：客户端在输入框上方给排队消息留位，并支持
+ * 「插话发送全部排队消息」（`session.updateQueue` 的 promote-to-steer）。
+ */
+@Composable
+private fun QueueStrip(
+    queue: List<io.github.dshmobile.app.ui.QueuedMessage>,
+    onRemove: (String) -> Unit,
+    onPromote: (String) -> Unit,
+    onRetry: (String) -> Unit,
+) {
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(14.dp))
+            .background(MaterialTheme.colorScheme.surfaceContainerLow)
+            .border(
+                1.dp,
+                MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f),
+                RoundedCornerShape(14.dp),
+            )
+            .padding(horizontal = 10.dp, vertical = 8.dp),
+        verticalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            DshIcon(
+                DshIcons.TaskList,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                size = 13.dp,
+            )
+            Spacer(Modifier.width(6.dp))
+            Text(
+                text = "待发送 ${queue.size} 条 · 当前回合结束后依次执行",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+
+        queue.forEach { item ->
+            QueueRow(item = item, onRemove = onRemove, onPromote = onPromote, onRetry = onRetry)
+        }
+    }
+}
+
+@Composable
+private fun QueueRow(
+    item: io.github.dshmobile.app.ui.QueuedMessage,
+    onRemove: (String) -> Unit,
+    onPromote: (String) -> Unit,
+    onRetry: (String) -> Unit,
+) {
+    val failed = item.status == "failed"
+    val steered = item.mode == "steer"
+
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(9.dp))
+            .background(MaterialTheme.colorScheme.surface)
+            .padding(start = 8.dp, end = 4.dp, top = 5.dp, bottom = 5.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        // 状态点：失败红、插话橙、正常主色
+        Box(
+            Modifier
+                .size(6.dp)
+                .clip(CircleShape)
+                .background(
+                    when {
+                        failed -> MaterialTheme.colorScheme.error
+                        steered -> MaterialTheme.colorScheme.tertiary
+                        else -> MaterialTheme.colorScheme.primary
+                    },
+                ),
+        )
+        Spacer(Modifier.width(7.dp))
+
+        Column(Modifier.weight(1f)) {
+            Text(
+                text = item.text.replace('\n', ' '),
+                style = MaterialTheme.typography.bodySmall,
+                color = if (failed) {
+                    MaterialTheme.colorScheme.error
+                } else {
+                    MaterialTheme.colorScheme.onSurface
+                },
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+            )
+            if (failed || steered) {
+                Text(
+                    text = when {
+                        failed -> "发送失败" + (item.error?.let { "：$it" } ?: "") 
+                        else -> "插话模式 · 立即注入当前回合"
+                    },
+                    style = MaterialTheme.typography.labelSmall,
+                    color = if (failed) {
+                        MaterialTheme.colorScheme.error
+                    } else {
+                        MaterialTheme.colorScheme.tertiary
+                    },
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+        }
+
+        if (failed) {
+            IconButton(onClick = { onRetry(item.localId) }, modifier = Modifier.size(30.dp)) {
+                DshIcon(
+                    DshIcons.Refresh,
+                    contentDescription = "重试",
+                    tint = MaterialTheme.colorScheme.primary,
+                    size = 15.dp,
+                )
+            }
+        } else if (!steered) {
+            IconButton(onClick = { onPromote(item.localId) }, modifier = Modifier.size(30.dp)) {
+                DshIcon(
+                    DshIcons.Send,
+                    contentDescription = "改为插话，立即注入当前回合",
+                    tint = MaterialTheme.colorScheme.tertiary,
+                    size = 15.dp,
+                )
+            }
+        }
+
+        IconButton(onClick = { onRemove(item.localId) }, modifier = Modifier.size(30.dp)) {
+            DshIcon(
+                DshIcons.Close,
+                contentDescription = "移除",
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                size = 15.dp,
+            )
+        }
+    }
+}
+
 // ── 输入区 ──────────────────────────────────────────────────────────────────
 
 /**
@@ -788,7 +957,12 @@ private fun Composer(
     onValueChange: (String) -> Unit,
     sending: Boolean,
     enabled: Boolean,
+    running: Boolean,
+    queue: List<io.github.dshmobile.app.ui.QueuedMessage>,
     onSend: () -> Unit,
+    onRemoveQueued: (String) -> Unit,
+    onPromoteQueued: (String) -> Unit,
+    onRetryQueued: (String) -> Unit,
 ) {
     val context = LocalContext.current
     val haptics = LocalHapticFeedback.current
@@ -808,7 +982,9 @@ private fun Composer(
         }
     }
 
-    val canSend = value.isNotBlank() && !sending && enabled
+    // 🔴 运行中也允许发送（进队列）。只在"正在提交"这一瞬间防抖，
+    //    避免用户连点导致同一句话重复入队。
+    val canSend = value.isNotBlank() && enabled
 
     Box {
         // 36px 渐隐：把滚动内容"化"进输入区，避免硬边界
@@ -842,6 +1018,19 @@ private fun Composer(
                 rmsLevel = voiceState.rmsLevel,
             )
 
+            // ── 待发送队列 ────────────────────────────────────────────────
+            // 运行中发出的消息先在这里可见，用户能确认"发出去了"、
+            // 也能撤销或改为插话。没有它的话，运行中发消息像是石沉大海。
+            if (queue.isNotEmpty()) {
+                QueueStrip(
+                    queue = queue,
+                    onRemove = onRemoveQueued,
+                    onPromote = onPromoteQueued,
+                    onRetry = onRetryQueued,
+                )
+                Spacer(Modifier.height(DshTheme.m.sm))
+            }
+
             Row(
                 Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.Bottom,
@@ -852,7 +1041,13 @@ private fun Composer(
                     onValueChange = onValueChange,
                     placeholder = {
                         Text(
-                            if (enabled) "发消息，或按住右侧说话…" else "正在运行中…",
+                            // 运行中不再提示「正在运行中，不能输入」——
+                            // 现在可以输入，且会作为排队消息提交。
+                            when {
+                                !enabled -> "连接已断开…"
+                                running -> "运行中也可以发，会排队执行…"
+                                else -> "发消息，或按住右侧说话…"
+                            },
                             style = MaterialTheme.typography.bodyMedium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )

@@ -56,6 +56,42 @@ data class PendingPrompt(
     val approval: Boolean = false,
 )
 
+/**
+ * 一条**待发送**的消息（排队中，尚未被主机处理）。
+ *
+ * 🔴 为什么要有本地队列（2026-10-14）：
+ *
+ * 用户反馈「正在运行中时候不能输入啊，不能发送任务队列，你看客户端就可以的」。
+ * 排查发现**能力一直都在** —— `session.prompt` 的 `mode` 参数本身就是
+ * `queue | steer`：
+ *   - `queue` → 排在当前回合之后执行（这就是"任务队列"）
+ *   - `steer` → 直接注入当前回合（这就是"插话"）
+ *
+ * 而 `session.updateQueue` 还能编辑 / 删除 / 把排队项**提升为 steer**。
+ *
+ * 所以卡住的不是协议，是我们自己的 UI —— `Composer(enabled = !state.running)`
+ * 把输入框整个锁死了。这是纯粹的自我设限。
+ *
+ * 本地队列的作用：主机不会主动推"我的队列里有什么"，所以排队项由客户端自己
+ * 记账（乐观 UI），保证用户立刻看到"我发出去了"而不是干等。
+ */
+data class QueuedMessage(
+    /** 客户端本地 id，用于删除/编辑定位。 */
+    val localId: String,
+    val text: String,
+    /** 提交时使用的 mode；`queue` 排队、`steer` 插话。 */
+    val mode: String = "queue",
+    val createdAt: Long = System.currentTimeMillis(),
+    /**
+     * 提交状态。
+     * `pending` = 已本地入队但还没成功发给主机（或还不知道结果）
+     * `sent`    = 主机已确认接收（accepted）
+     * `failed`  = 提交失败（网络/权限），保留在队列里让用户决定重试或删除
+     */
+    val status: String = "pending",
+    val error: String? = null,
+)
+
 data class ChatUiState(
     val sessionId: String = "",
     val title: String = "",
@@ -66,6 +102,13 @@ data class ChatUiState(
     val loading: Boolean = true,
     val error: String? = null,
     val rawTail: String? = null,
+    /**
+     * 待发送队列（本地记账）。
+     *
+     * 用户在**运行中**也可以继续输入并发送 —— 消息进入这里，按 `queue` 模式
+     * 提交给主机，主机在当前回合结束后依次执行。
+     */
+    val queue: List<QueuedMessage> = emptyList(),
     /**
      * 电脑是否正在「准备中」。
      *
@@ -378,33 +421,101 @@ class ChatViewModel(private val connProvider: () -> DshConnection?) : ViewModel(
         answer(Envelopes.questionOutcome(questionId, listOf(text)))
     }
 
+    /**
+     * 发送消息。
+     *
+     * 🔴 **运行中也能发**（2026-10-14 修复）。
+     *
+     * 原实现有两个自我设限：
+     *   1. `if (_state.value.sending) return` —— 提交中直接丢消息；
+     *   2. UI 层 `Composer(enabled = !state.running)` 把输入框锁死。
+     *
+     * 但协议本来就支持：`session.prompt` 的 `mode=queue` 会**排在当前回合之后**，
+     * 这正是客户端「任务队列」的行为。所以这里改成：
+     *
+     *   - 空闲 → 立即提交（照旧）
+     *   - 运行中 / 提交中 → **入本地队列并提交**，模式用 `queue`
+     *
+     * 本地队列只用于展示与撤销；真正的排队由主机负责。
+     */
     fun send(text: String) {
         val body = text.trim()
-        if (body.isEmpty() || _state.value.sending) return
+        if (body.isEmpty()) return
 
-        if (_state.value.sessionId.startsWith("local-") || conn == null) {
-            val userMsg = ChatLine(
-                key = "u-${System.currentTimeMillis()}",
-                role = "user",
-                text = body,
-                kind = "markdown",
-            )
-            val replyMsg = ChatLine(
-                key = "a-${System.currentTimeMillis()}",
-                role = "assistant",
-                text = "已收到语音/文字指令：\n\n> **$body**\n\n指令已通过手机随身端下发！在配对的工作电脑上，桌面端已部署的 MCP 工具（搜索、文件系统、终端命令、代码执行）将在此步协同调用执行。",
-                kind = "markdown",
-            )
-            _state.update {
-                it.copy(
-                    lines = it.lines + userMsg + replyMsg,
-                    sending = false,
-                    preparing = false,
-                )
-            }
+        val current = _state.value
+        val busy = current.running || current.sending
+
+        if (current.sessionId.startsWith("local-") || conn == null) {
+            sendLocalDemo(body)
             return
         }
 
+        if (!busy) {
+            // 空闲：走原有的即时提交路径（保留「电脑准备中」阶段反馈）
+            submitImmediate(body)
+        } else {
+            // 忙：入队 + 以 queue 模式提交
+            enqueueAndSubmit(body)
+        }
+    }
+
+    /** 本地演示会话（未连接主机时）的假回复，仅用于空壳可用性。 */
+    private fun sendLocalDemo(body: String) {
+        val userMsg = ChatLine(
+            key = "u-${System.currentTimeMillis()}",
+            role = "user",
+            text = body,
+            kind = "markdown",
+        )
+        val replyMsg = ChatLine(
+            key = "a-${System.currentTimeMillis()}",
+            role = "assistant",
+            text = "已收到语音/文字指令：\n\n> **$body**\n\n指令已通过手机随身端下发！在配对的工作电脑上，桌面端已部署的 MCP 工具（搜索、文件系统、终端命令、代码执行）将在此步协同调用执行。",
+            kind = "markdown",
+        )
+        _state.update {
+            it.copy(lines = it.lines + userMsg + replyMsg, sending = false, preparing = false)
+        }
+    }
+
+    /**
+     * 运行中入队并提交。
+     *
+     * 先本地入队（乐观 UI，用户立刻看到"已排队"），再提交；提交失败把该项标记为
+     * `failed` 并**保留在队列里** —— 不能静默丢掉用户辛苦打的字。
+     */
+    private fun enqueueAndSubmit(body: String) {
+        val localId = "q-${System.currentTimeMillis()}-${(0..999).random()}"
+        val item = QueuedMessage(localId = localId, text = body, mode = "queue")
+        _state.update { it.copy(queue = it.queue + item, error = null) }
+
+        val c = conn ?: return
+        viewModelScope.launch {
+            submitPrompt(c, body, mode = "queue")
+                .onSuccess {
+                    _state.update { s ->
+                        s.copy(queue = s.queue.map { if (it.localId == localId) it.copy(status = "sent") else it })
+                    }
+                }
+                .onFailure { error ->
+                    _state.update { s ->
+                        s.copy(
+                            queue = s.queue.map {
+                                if (it.localId == localId) {
+                                    it.copy(status = "failed", error = error.message)
+                                } else {
+                                    it
+                                }
+                            },
+                            error = error.message,
+                        )
+                    }
+                }
+        }
+    }
+
+    /** 空闲态提交：保留「电脑准备中」的阶段式反馈。 */
+    private fun submitImmediate(body: String) {
         val c = requireConn() ?: return
         val userLine = ChatLine(
             key = "pending-${System.currentTimeMillis()}",
@@ -412,7 +523,6 @@ class ChatViewModel(private val connProvider: () -> DshConnection?) : ViewModel(
             text = body,
             kind = "user/message",
         )
-        // 进入「电脑准备中」阶段 0，并立即乐观呈现用户消息
         _state.update {
             it.copy(
                 lines = it.lines + userLine,
@@ -428,7 +538,7 @@ class ChatViewModel(private val connProvider: () -> DshConnection?) : ViewModel(
         // 每一步的时长按「远程唤醒 + 加载技能 + 准备工作区」的真实耗时估计。
         advanceJob?.cancel()
         advanceJob = viewModelScope.launch {
-            val schedule = listOf(600L, 1600L, 3000L) // 到 step1/2/3 的延迟
+            val schedule = listOf(600L, 1600L, 3000L)
             for ((i, delay) in schedule.withIndex()) {
                 kotlinx.coroutines.delay(delay)
                 if (!_state.value.preparing) return@launch
@@ -437,35 +547,101 @@ class ChatViewModel(private val connProvider: () -> DshConnection?) : ViewModel(
         }
 
         viewModelScope.launch {
-            // args 的键名必须是服务端声明的形参名 `request`（实测确认）。
-            // 内部的字段名则来自 SessionPromptRequest 的业务定义。
-            c.call("session.prompt", buildJsonObject {
-                put("request", buildJsonObject {
-                    // requestId 与 sessionId 同为必填。
-                    put("requestId", java.util.UUID.randomUUID().toString())
-                    put("sessionId", _state.value.sessionId)
-                    put("mode", "queue")
-                    put("content", kotlinx.serialization.json.buildJsonArray {
-                        add(buildJsonObject { put("type", "text"); put("text", body) })
-                    })
-                })
-            }).onSuccess {
-                // 主机已接收：进入最后阶段，然后交给 running 接管
-                _state.update {
-                    it.copy(
-                        sending = false,
-                        running = true,
-                        preparing = false,
-                        preparingStep = 3,
-                    )
+            submitPrompt(c, body, mode = "queue")
+                .onSuccess {
+                    _state.update { it.copy(sending = false, running = true) }
                 }
-                reload()
-            }.onFailure { error ->
-                _state.update {
-                    it.copy(sending = false, preparing = false, error = error.message)
+                .onFailure { error ->
+                    _state.update { it.copy(sending = false, preparing = false, error = error.message) }
                 }
-            }
         }
+    }
+
+    /**
+     * 实际提交一条 prompt。
+     *
+     * args 的键名必须是服务端声明的形参名 `request`（实测确认）；
+     * 内部字段来自 `SessionPromptRequest`：requestId / sessionId / mode / content，
+     * 其中 `requestId` 与 `sessionId` **同为必填**。
+     */
+    private suspend fun submitPrompt(
+        c: DshConnection,
+        body: String,
+        mode: String,
+    ): Result<kotlinx.serialization.json.JsonElement> =
+        c.call("session.prompt", buildJsonObject {
+            put("request", buildJsonObject {
+                put("requestId", java.util.UUID.randomUUID().toString())
+                put("sessionId", _state.value.sessionId)
+                put("mode", mode)
+                put("content", kotlinx.serialization.json.buildJsonArray {
+                    add(buildJsonObject { put("type", "text"); put("text", body) })
+                })
+            })
+        })
+
+    // ── 队列管理 ────────────────────────────────────────────────────────────
+
+    /** 从队列里移除一条（本地撤销；已经发给主机的无法撤回）。 */
+    fun removeQueued(localId: String) {
+        _state.update { s -> s.copy(queue = s.queue.filterNot { it.localId == localId }) }
+    }
+
+    /**
+     * 把一条排队消息**提升为插话**（steer）。
+     *
+     * 语义：不再等当前回合结束，而是立刻注入进去 —— 对应客户端
+     * `session.updateQueue` 的 `{kind:'steer'}`，以及 prompt 的 `mode=steer`。
+     */
+    fun promoteToSteer(localId: String) {
+        val item = _state.value.queue.firstOrNull { it.localId == localId } ?: return
+        if (item.status == "sent") {
+            // 已提交的项无法改写，提示用户而不是假装成功
+            _state.update { it.copy(error = "这条已经发出去了，无法再改为插话") }
+            return
+        }
+        _state.update { s ->
+            s.copy(queue = s.queue.map { if (it.localId == localId) it.copy(mode = "steer") else it })
+        }
+        val c = conn ?: return
+        viewModelScope.launch {
+            submitPrompt(c, item.text, mode = "steer")
+                .onSuccess {
+                    _state.update { s -> s.copy(queue = s.queue.filterNot { it.localId == localId }) }
+                }
+                .onFailure { error -> _state.update { s -> s.copy(error = error.message) } }
+        }
+    }
+
+    /** 重试一条失败的消息。 */
+    fun retryQueued(localId: String) {
+        val item = _state.value.queue.firstOrNull { it.localId == localId } ?: return
+        val c = conn ?: return
+        _state.update { s ->
+            s.copy(queue = s.queue.map { if (it.localId == localId) it.copy(status = "pending", error = null) else it })
+        }
+        viewModelScope.launch {
+            submitPrompt(c, item.text, mode = item.mode)
+                .onSuccess {
+                    _state.update { s ->
+                        s.copy(queue = s.queue.map { if (it.localId == localId) it.copy(status = "sent") else it })
+                    }
+                }
+                .onFailure { error ->
+                    _state.update { s ->
+                        s.copy(
+                            queue = s.queue.map {
+                                if (it.localId == localId) it.copy(status = "failed", error = error.message) else it
+                            },
+                        )
+                    }
+                }
+        }
+    }
+
+    /** 清空队列里的本地记录（不发任何请求）。 */
+    fun clearQueue() {
+        _state.update { s -> s.copy(queue = s.queue.filter { it.status == "failed" }) }
     }
 
     fun cancel() {
