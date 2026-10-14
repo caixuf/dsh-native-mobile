@@ -64,7 +64,15 @@ fun DisclosureToolCard(
     var expanded by remember { mutableStateOf(initialExpanded) }
     val isDark = isSystemInDarkTheme()
 
-    val (toolSummary, toolIcon, targetSummary) = parseToolSummary(line)
+    // 🔴 必须 remember（2026-10-14 性能审计发现）。
+    //
+    // `parseToolSummary` 内部会走 `extractArgValue` → 真实 JSON 解析 + 三处正则，
+    // 是**实打实的 CPU 工作**。原实现直接在组合期调用，滚动时每张工具卡进入组合
+    // 都要重付一次。长会话里工具卡很多（实测一轮 50+ 张），累计可观。
+    //
+    // 用 `line` 做 key：`ChatLine` 是全 `val` 的 data class，等于比较开销很小，
+    // 且内容不变时不会误失效。
+    val (toolSummary, toolIcon, targetSummary) = remember(line) { parseToolSummary(line) }
 
     val toolTint = if (line.isError) {
         MaterialTheme.colorScheme.error
@@ -206,8 +214,14 @@ fun DisclosureToolCard(
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.padding(bottom = 4.dp),
                     )
+                    // 🔴 必须 remember（2026-10-14 性能审计发现）。
+                    //
+                    // `prettyJson` 会**重新解析 JSON 并重新格式化**。原实现写在
+                    // 组合体里，展开态下每次重组都要重做一遍（流式期间工具卡
+                    // 频繁重组）。按 `argsContent` 做 key 即可精确缓存。
+                    val prettyArgs = remember(argsContent) { prettyJson(argsContent) }
                     CodeCard(
-                        code = prettyJson(argsContent),
+                        code = prettyArgs,
                         language = guessLanguage(line.toolName, argsContent),
                         maxHeightLines = 25,
                     )
@@ -335,13 +349,35 @@ private fun extractArgValue(jsonStr: String, vararg keys: String): String? {
 
     // 2. 兜底：正则，但**允许转义引号**（[^"\\] 或 \\. 交替），避免在 \" 处截断
     for (key in keys) {
-        val pattern = Regex("\"$key\"\\s*:\\s*\"((?:\\\\.|[^\"\\\\])*)\"", RegexOption.IGNORE_CASE)
-        val match = pattern.find(jsonStr)
+        val match = argRegex(key).find(jsonStr)
         if (match != null) {
             return unescapeJsonString(match.groupValues[1])
         }
     }
     return null
+}
+
+/**
+ * 按 key 缓存正则。
+ *
+ * 🔴 为什么需要缓存（2026-10-14 性能审计发现）：
+ *
+ * `extractArgValue` 会在 `for (key in keys)` 循环里构造正则，而 `keys` 是
+ * 调用方传入的可变列表（如 `["command"]`、`["file_path", "path"]`）。
+ * Kotlin 的 `Regex(pattern)` **没有内置缓存**，同一 key 每次都要重新
+ * `Pattern.compile`。
+ *
+ * 工具卡在滚动时反复进入组合，而 `parseToolSummary` 已按 `line` remember，
+ * 但**首次展开**和首次组合仍会走这里；同一批 key 在一个会话里高度重复
+ * （`command`/`path`/`content` 等），缓存命中率很高。
+ *
+ * 用 `ConcurrentHashMap` 而非普通 map：渲染可能在多个组合/线程上下文中进行。
+ * 缓存条目数上界 = 工具参数名的种类数（几十个量级），不存在无限增长风险。
+ */
+private val argRegexCache = java.util.concurrent.ConcurrentHashMap<String, Regex>()
+
+private fun argRegex(key: String): Regex = argRegexCache.getOrPut(key) {
+    Regex("\"$key\"\\s*:\\s*\"((?:\\\\.|[^\"\\\\])*)\"", RegexOption.IGNORE_CASE)
 }
 
 /** 宽松解析：解析失败返回 null，绝不抛异常（渲染路径上崩溃不可接受）。 */

@@ -175,6 +175,50 @@ enum class CalloutType(val defaultTitle: String, val keyword: String) {
 
 object Markdown {
 
+    // ── 预编译正则 ──────────────────────────────────────────────────────────
+    //
+    // 🔴 全部提到文件级（2026-10-14 真机性能审计发现）。
+    //
+    // 原实现把这些 `Regex(...)` **写在 `while (i < lines.size)` 循环体内**，
+    // 导致**每一行都重新 `Pattern.compile`**。
+    //
+    // 为什么这是大问题：Kotlin 的 `Regex(pattern)` **没有内置缓存**，
+    // 每次构造都会真的编译一遍正则。实测估算：
+    //   - 每条消息行要编译 5~7 个 Pattern
+    //   - 一条 40 行的消息 ≈ **250 次 Pattern.compile**
+    //   - 而调用点在 `MarkdownView` 的**组合中**（`remember(text)`），
+    //     流式输出时尾部消息每 2.5 秒重解析一次 → 每次都重付这笔钱
+    //
+    // 对照：`TaskProgressCard.kt` 的 `CHECKLIST_REGEX` 早就做对了 ——
+    // 同一个仓库里两种写法并存，说明这是疏漏而非有意设计。
+    private val HEADING_RE = Regex("^(#{1,6})\\s+(.*)$")
+
+    /**
+     * 分隔线 `---` / `***` / `___`。
+     *
+     * ⚠️ 用 raw string：普通字符串里的 `\$` 是「转义的美元符号」而非正则行尾锚点，
+     * 写错会去匹配字面 `$` 字符（本项目踩过两次）。
+     */
+    private val DIVIDER_RE = Regex("""^\s*([-*_])\s*(?:\1\s*){2,}$""")
+
+    private val TABLE_SEP_RE = Regex("""^\|?[\s:|-]+\|[\s:|-]*$""")
+    private val TABLE_SEP_PREFIX_RE = Regex("""^\|?\s*:?-{1,}""")
+    private val QUOTE_RE = Regex("^\\s*>\\s?(.*)$")
+    private val UNORDERED_RE = Regex("^(\\s*)[-*+]\\s+(.*)$")
+    private val ORDERED_RE = Regex("^(\\s*)(\\d+)[.)]\\s+(.*)$")
+    private val TASK_RE = Regex("^\\[([ xX])\\]\\s+(.*)$")
+
+    /**
+     * Callout 头 `[!NOTE]` 等（GitHub 风格告示块）。
+     *
+     * ⚠️ 必须带 `IGNORE_CASE`：宿主模型经常写 `[!note]` / `[!Warning]`，
+     * 大小写敏感会漏判，告示块就退化成普通引用块。
+     */
+    private val CALLOUT_RE = Regex(
+        """^\[!(NOTE|TIP|IMPORTANT|WARNING|CAUTION)\](?:\s+(.*))?$""",
+        RegexOption.IGNORE_CASE,
+    )
+
     /**
      * 解析。永不抛异常 —— 渲染路径上抛异常等于整个 App 崩在流式输出中，
      * 这是不可接受的降级。
@@ -211,7 +255,7 @@ object Markdown {
         fun flushQuote() {
             if (quoteRawLines.isNotEmpty()) {
                 val first = quoteRawLines.first().trim()
-                val calloutMatch = Regex("""^\[!(NOTE|TIP|IMPORTANT|WARNING|CAUTION)\](?:\s+(.*))?$""", RegexOption.IGNORE_CASE).find(first)
+                val calloutMatch = CALLOUT_RE.find(first)
                 if (calloutMatch != null) {
                     val type = CalloutType.from(calloutMatch.groupValues[1]) ?: CalloutType.Note
                     val titleSuffix = calloutMatch.groupValues[2].trim().takeIf { it.isNotBlank() }
@@ -271,7 +315,7 @@ object Markdown {
             }
 
             // ── 标题 ──
-            val heading = Regex("^(#{1,6})\\s+(.*)$").find(line)
+            val heading = HEADING_RE.find(line)
             if (heading != null) {
                 flushAll()
                 val level = heading.groupValues[1].length
@@ -287,7 +331,7 @@ object Markdown {
             // 不是正则的"行尾锚点"。锚点要用 `\$` 转义的正则形式时，
             // 整个 pattern 要放在**raw string**（`"""..."""`）里，
             // 否则 `Regex("...\$")` 匹配的是字面 $ 字符（踩过这个坑）。
-            val dividerRe = Regex("""^\s*([-*_])\s*(?:\1\s*){2,}$""")
+            val dividerRe = DIVIDER_RE
             if (dividerRe.matches(line)) {
                 flushAll()
                 out += MdNode.Divider
@@ -303,8 +347,8 @@ object Markdown {
             // 🔴 流式妥协：分隔行还没打完时（`| ---`）也放行，让表格从第一帧起
             // 就是表格。否则整张表会在「最后一格补齐」的瞬间从段落**整体跳变**
             // 成表格 —— 手机上就是一次明显的闪跳。
-            val tableSepRe = Regex("""^\|?[\s:|-]+\|[\s:|-]*$""")
-            val tableSepPrefixRe = Regex("""^\|?\s*:?-{1,}""")
+            val tableSepRe = TABLE_SEP_RE
+            val tableSepPrefixRe = TABLE_SEP_PREFIX_RE
             if (line.contains('|') && i + 1 < lines.size) {
                 val sep = lines[i + 1].trim()
                 val isSep = tableSepRe.matches(sep) || tableSepPrefixRe.matches(sep)
@@ -332,7 +376,7 @@ object Markdown {
             }
 
             // ── 引用 ──
-            val quote = Regex("^\\s*>\\s?(.*)$").find(line)
+            val quote = QUOTE_RE.find(line)
             if (quote != null) {
                 flushPara(); flushList()
                 quoteRawLines += quote.groupValues[1]
@@ -341,8 +385,8 @@ object Markdown {
             }
 
             // ── 列表（含任务列表）──
-            val unordered = Regex("^(\\s*)[-*+]\\s+(.*)$").find(line)
-            val ordered = Regex("^(\\s*)(\\d+)[.)]\\s+(.*)$").find(line)
+            val unordered = UNORDERED_RE.find(line)
+            val ordered = ORDERED_RE.find(line)
             if (unordered != null || ordered != null) {
                 flushPara(); flushQuote()
                 val isOrdered = ordered != null
@@ -352,7 +396,7 @@ object Markdown {
                 val itemNum = if (isOrdered) ordered!!.groupValues[2].toIntOrNull() ?: 1 else 1
 
                 // 任务列表：`- [ ]` / `- [x]`
-                val task = Regex("^\\[([ xX])\\]\\s+(.*)$").find(body)
+                val task = TASK_RE.find(body)
                 if (task != null) {
                     val isChecked = task.groupValues[1].lowercase() == "x"
                     // 任务项让当前列表变成无序（不再画 1. / • 标记，勾选框自带）

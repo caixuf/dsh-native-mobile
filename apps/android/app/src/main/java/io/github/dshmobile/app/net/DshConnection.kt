@@ -273,7 +273,17 @@ class DshConnection(
             .post(body)
             .build()
 
-        val text = withContext(Dispatchers.IO) {
+        // 🔴 JSON 解析必须**留在 IO 线程**（2026-10-14 真机性能审计发现）。
+        //
+        // 原实现把 `parseToJsonElement` 放在 `withContext(IO)` 块**外面** ——
+        // 它于是回到调用方上下文执行，而调用方是 `viewModelScope`（= Main.immediate）。
+        //
+        // 后果：每次 `session.page` 轮询（2.5s 一次）都在**主线程**解析 JSON。
+        // 实测单次响应体 **468 KB / 147 条记录**，主线程解析这么大一块
+        // 必然掉帧 —— 这正是"界面不丝滑"的一个直接来源。
+        //
+        // 现在解析与读取一起在 IO 完成，只把**已经解析好的 JsonObject** 交回去。
+        val frame = withContext(Dispatchers.IO) {
             // 🔴 两个都必须：① 阻塞式 execute() 不能在主线程跑（否则
             // NetworkOnMainThreadException，请求根本发不出去）；② 超时交给
             // OkHttp 自己的 readTimeout —— 原来的 withTimeoutOrNull 包一个阻塞调用
@@ -286,16 +296,16 @@ class DshConnection(
             } else {
                 http
             }
-            callClient.newCall(request).execute().use { response ->
-                val raw = response.body?.string().orEmpty()
+            val raw = callClient.newCall(request).execute().use { response ->
+                val text = response.body?.string().orEmpty()
                 if (!response.isSuccessful) {
                     throw DshCallException("transport_${response.code}", "$method 失败：HTTP ${response.code}")
                 }
-                raw
+                text
             }
+            Envelopes.json.parseToJsonElement(raw).jsonObject
         }
 
-        val frame = Envelopes.json.parseToJsonElement(text).jsonObject
         if (frame.str("rpcId") != rpcId) {
             throw DshCallException("rpc_id_mismatch", "$method 的 rpcId 与请求不一致")
         }

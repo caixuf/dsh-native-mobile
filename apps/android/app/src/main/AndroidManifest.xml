@@ -7,6 +7,14 @@
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.VIBRATE" />
+    <!--
+      前台服务：让「与电脑的连接」在 App 退到后台后依然存活，
+      这样电脑端的授权请求才能立刻推到手机上。
+
+      类型选 dataSync（与远端同步数据），语义最贴合本用途。
+    -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
 
     <uses-feature android:name="android.hardware.camera" android:required="false" />
     <uses-feature android:name="android.hardware.camera.autofocus" android:required="false" />
@@ -32,6 +40,24 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <!--
+          常驻前台服务：保持连接，确保授权请求能立刻送达（详见 RemoteSessionService 注释）。
+          exported=false —— 只由本应用启动，不对外暴露。
+        -->
+        <service
+            android:name=".notify.RemoteSessionService"
+            android:exported="false"
+            android:foregroundServiceType="dataSync" />
+
+        <!--
+          通知按钮的应答接收器。
+          exported=false 是**安全要求**：应答会以你的身份向电脑发送授权决定，
+          绝不能让外部应用伪造这个广播（否则等于任何人都能替你点"允许一次"）。
+        -->
+        <receiver
+            android:name=".notify.ApprovalActionReceiver"
+            android:exported="false" />
     </application>
 
 </manifest>

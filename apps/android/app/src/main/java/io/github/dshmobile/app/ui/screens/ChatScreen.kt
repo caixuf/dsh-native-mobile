@@ -151,8 +151,43 @@ fun ChatScreen(
     var draft by remember { mutableStateOf("") }
     val listState = rememberLazyListState()
 
-    LaunchedEffect(state.lines.size) {
-        if (state.lines.isNotEmpty()) listState.animateScrollToItem(state.lines.lastIndex)
+    // 🔴 跟随滚动重写（2026-10-14 体验审计，两处真问题）
+    //
+    // 原实现：
+    //     LaunchedEffect(state.lines.size) {
+    //         if (state.lines.isNotEmpty()) listState.animateScrollToItem(state.lines.lastIndex)
+    //     }
+    //
+    // 问题 ①：key 只有 `size` —— 流式输出时末尾那条消息是**原地变长**的
+    //         （size 不变），于是**完全不跟随**。用户看到的现象是
+    //         "AI 在打字但画面不动，得自己一直往下滑"。
+    // 问题 ②：一旦新增一行（如 tool/call 事件），就**无条件**动画拽到底部。
+    //         即使用户正在上滑读历史，也会被生生打断。
+    //         这是"不丝滑"里体感最差的一项。
+    //
+    // 现在：
+    //   - key 加入**末尾文本长度**，覆盖"原地变长"这一流式主场景
+    //   - 先判断用户是否**在底部附近**，只在底部时才跟随（不打断上滑）
+    //   - 保留 animateScrollToItem：它是可被用户手势打断的（见下面说明）
+    //
+    // 关于为何仍用 animate 而非 scrollToItem：`animateScrollToItem` 在用户
+    // 手指触碰列表时会让位给手势，而 `scrollToItem` 是瞬时跳变。跟随滚动
+    // 用动画的观感更连续，也更符合"丝滑"的诉求。
+    val lastLine = state.lines.lastOrNull()
+    LaunchedEffect(state.lines.size, lastLine?.key, lastLine?.text?.length) {
+        if (state.lines.isEmpty()) return@LaunchedEffect
+        val info = listState.layoutInfo
+        val lastVisible = info.visibleItemsInfo.lastOrNull()
+        // 判据：最后一项可见，且其下沿没有超出视口太多。
+        // 留 200px 余量 —— 容忍子像素/行高误差，避免"明明在底部却判定为不在"。
+        val atBottom = lastVisible == null ||
+            (
+                lastVisible.index >= info.totalItemsCount - 1 &&
+                    lastVisible.offset + lastVisible.size <= info.viewportEndOffset + 200
+                )
+        if (atBottom) {
+            listState.animateScrollToItem(state.lines.lastIndex)
+        }
     }
 
     Scaffold(
@@ -292,7 +327,29 @@ fun ChatScreen(
                 }
 
                 // 🔴 任务执行进度与规划卡片（对齐 MiniMax team_plan_card / cycle_phase 交互）
-                val taskSteps = remember(state.lines, state.running) {
+                //
+                // ⚠️ key 不能取整个 `state.lines`（2026-10-14 性能审计发现）。
+                //
+                // 原来的写法是 `remember(state.lines, state.running)` —— 而 `lines`
+                // 每次轮询都会被**重建成一个新 List 实例**，`List.equals` 逐项比对后
+                // 判为不等 → 每 2.5 秒对**全部**消息重跑一遍 `extractSteps`，
+                // 其内部会对每条 assistant 消息的**全文**做 `CHECKLIST_REGEX.findAll`。
+                // 长会话下这是 O(总字符数) 的重扫。
+                //
+                // `extractSteps` 的输入实际上只有三样东西：
+                //   ① 列表长度（决定"当前轮次"的切片边界）
+                //   ② 最后一条 assistant 文本（流式时它才是变化的那个）
+                //   ③ running 状态
+                // 所以按这三样做 key，效果等价而代价从 O(全文) 降到 O(1)。
+                //
+                // 取舍说明：若**中间**某条 assistant 文本在长度与末条都不变的前提下
+                // 被改写，这里的 steps 会暂时滞后一次更新才刷新。本应用的 lines 在
+                // 流式期间是**只追加**（只有尾部在变），reload 时整表替换通常也会
+                // 改变长度或末条文本，因此这个窗口在实践中不出现。
+                val lastAssistantText = state.lines
+                    .lastOrNull { it.role == "assistant" || it.role == "agent" }
+                    ?.text
+                val taskSteps = remember(state.lines.size, lastAssistantText, state.running) {
                     io.github.dshmobile.app.ui.components.TaskProgressParser.extractSteps(state.lines, state.running)
                 }
                 if (taskSteps.isNotEmpty()) {

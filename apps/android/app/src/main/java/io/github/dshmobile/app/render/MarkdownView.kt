@@ -348,7 +348,15 @@ private fun ParagraphText(
     color: Color,
     onLinkClick: ((String) -> Unit)?,
 ) {
-    if (children.isEmpty() || plainOf(children).isBlank()) return
+    // 🔴 判空必须 remember（2026-10-14 性能审计发现）。
+    //
+    // `plainOf` 会**递归遍历整棵节点树**并 `buildString` 拼出完整文本 ——
+    // 只为判断它是不是空白。原实现没包 remember，段落每重组一次就白跑一遍。
+    //
+    // 同类计算在 `ListBlockView` 是包了 remember 的，唯独这里漏了。
+    // `children` 是稳定的 data class 列表，用它做 key 足够精确。
+    val blank = remember(children) { children.isEmpty() || plainOf(children).isBlank() }
+    if (blank) return
     InlineText(children, color, onLinkClick)
     Spacer(Modifier.height(DshTheme.m.sm))
 }

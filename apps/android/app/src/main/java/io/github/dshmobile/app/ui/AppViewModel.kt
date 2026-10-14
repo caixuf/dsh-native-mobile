@@ -10,6 +10,7 @@ import io.github.dshmobile.app.net.DshCallException
 import io.github.dshmobile.app.net.DshConnection
 import io.github.dshmobile.app.net.LinkState
 import io.github.dshmobile.app.net.PairingClient
+import io.github.dshmobile.app.notify.ConnectionHub
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -96,18 +97,40 @@ class AppViewModel(private val store: HostStore) : ViewModel() {
     fun select(hostId: String) {
         if (_state.value.activeId == hostId && connection != null) return
         connectJob?.cancel()
-        connection?.stop()
-        connection = null
+        teardownConnection()
         _state.update { it.copy(activeId = hostId, link = LinkState.Connecting(0), error = null) }
         store.touch(hostId)
         refresh()
         startConnection(hostId)
     }
 
+    /**
+     * 断开并**从连接中心摘除**。
+     *
+     * 摘除是必须的：不摘的话，旧连接仍是 `ConnectionHub.connection`，
+     * 用户在锁屏上点「允许一次」会应答到**已经作废的那条连接**上 ——
+     * 表现为点了没反应，而电脑端继续卡着。
+     */
+    private fun teardownConnection() {
+        connection?.stop()
+        connection = null
+        ConnectionHub.detach()
+    }
+
     private fun startConnection(hostId: String) {
         val record = store.find(hostId) ?: return
-        val conn = DshConnection(viewModelScope, record.baseUrl, record.token)
+        // 🔴 用**进程级 scope**，不是 viewModelScope。
+        //
+        // 原实现传 `viewModelScope` —— 它的生命挂在 Activity 上，用户一切到后台
+        // 或旋转屏幕重建 Activity，连接就断了。后果是：
+        //   电脑端卡在"等待授权"，而手机完全不知道（这正是用户反馈的场景）。
+        //
+        // 改传 `ConnectionHub.scope` 后，连接不再随 Activity 销毁，
+        // 配合 RemoteSessionService（前台服务）防进程回收，才能做到后台收审批。
+        val conn = DshConnection(ConnectionHub.scope, record.baseUrl, record.token)
         connection = conn
+        // 挂到连接中心：由它统一收 events、在后台发通知、处理锁屏应答。
+        ConnectionHub.attach(conn)
         connectJob = viewModelScope.launch {
             conn.state.collect { s -> _state.update { it.copy(link = s) } }
         }
@@ -116,8 +139,7 @@ class AppViewModel(private val store: HostStore) : ViewModel() {
 
     fun reconnect() {
         _state.value.activeId?.let { id ->
-            connection?.stop()
-            connection = null
+            teardownConnection()
             startConnection(id)
         }
     }
@@ -125,8 +147,7 @@ class AppViewModel(private val store: HostStore) : ViewModel() {
     fun forget(hostId: String) {
         store.remove(hostId)
         if (_state.value.activeId == hostId) {
-            connection?.stop()
-            connection = null
+            teardownConnection()
             _state.update { it.copy(activeId = null, link = LinkState.Disconnected) }
         }
         refresh()

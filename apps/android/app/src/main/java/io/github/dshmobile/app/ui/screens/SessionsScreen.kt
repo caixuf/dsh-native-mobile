@@ -721,6 +721,13 @@ private fun WorkspaceHeader(
                         color = MaterialTheme.colorScheme.onSurface,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
+                        // 🔴 名字**主动让位**（2026-10-14 真机修复）。
+                        //
+                        // Compose 的 Row 里，带 weight 的子项**最后**测量；不给 weight
+                        // 的子项先按固有宽度占位。所以让名字带 weight 后：
+                        // 计数文字与「运行中」徽章先拿到它们的固有宽度，**剩下的**才归名字，
+                        // 名字过长时自己省略 —— 而不是把计数文字挤成竖排单列。
+                        modifier = Modifier.weight(1f, fill = false),
                     )
                     Spacer(Modifier.width(8.dp))
                     if (group.isRunning) {
@@ -732,9 +739,25 @@ private fun WorkspaceHeader(
                         Spacer(Modifier.width(6.dp))
                     }
                     Text(
-                        text = "${group.sessions.size} 会话" + if (group.subagents.isNotEmpty()) " · ${group.subagents.size} 子代理" else "",
+                        text = buildString {
+                            append("${group.sessions.size} 会话")
+                            if (group.subagents.isNotEmpty()) {
+                                append(" · ${group.subagents.size} 子代理")
+                            }
+                        },
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.75f),
+                        // 🔴 必须限制单行 + 省略号（2026-10-14 真机发现）。
+                        //
+                        // 这是 Row 里**最后一个**没有宽度约束的子项。当它前面多出
+                        // 「运行中 N」徽章时，剩余宽度被挤到接近 0，Compose 会把每个
+                        // 汉字**单独折行**——真机上表现为「2 会话 · 5 子代理」竖着排成
+                        // 一列 7 行，非常难看。
+                        //
+                        // 组名那行有 maxLines=1 + Ellipsis，这行漏了，所以只有"运行中"
+                        // 的组才会露馅（aiwork 组没有徽章，显示正常）。
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
                     )
                 }
 

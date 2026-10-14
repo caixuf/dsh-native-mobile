@@ -1,0 +1,86 @@
+feat(mobile): 后台审批通知 + 主线程性能修复（P0）
+
+## P0 后台审批通知（新能力）
+
+用户诉求：「需要用户回答时立马在手机端通知用户，在手机端选择」。
+
+**根因不是一个通知没写，而是连接绑在 Activity 上**：
+
+    AppViewModel.viewModelScope → DshConnection
+
+`viewModelScope` 的生命挂在 Activity 上，用户一切后台/旋转屏幕，连接就断了
+—— 电脑端卡在"等待授权"，手机完全不知道。
+
+新增 `notify/` 包：
+
+- `ConnectionHub`    进程级连接中心（`SupervisorJob` + IO），不随 Activity 销毁；
+                     统一收 `hostRequests`、发通知、处理应答
+- `ApprovalNotifier` 通知渠道 + 审批卡（允许一次 / 拒绝）+ 提问选项按钮
+- `RemoteSessionService` 前台服务（dataSync 类型），防进程回收
+- `ApprovalActionReceiver` **锁屏直接应答**，不必先解锁进 App
+
+设计取舍（已在代码注释中记录依据）：
+- 只处理 `answerable=true` 的请求 —— 否则 `schedule/changed` 这类
+  过程噪音也会弹「需要授权」（应用内 UI 曾踩过同一个坑）
+- 前台时不弹通知（应用内卡片已在显示），避免重复打扰
+- 提问选项 > 3 个时不硬塞按钮，改为提示打开 App —— 宁可少给快捷方式，
+  不给**错误的**快捷方式（通知最多 3 个动作）
+- 前台服务通知用 LOW + 无声：它是状态标识，不是事件提醒
+
+顺带修正：`AppViewModel` 断开连接时调 `ConnectionHub.detach()`，
+否则锁屏应答会发到**已作废的连接**上（表现为点了没反应）。
+
+## 性能修复（基于子智能体只读审计，逐条附行号）
+
+1. `DshConnection.kt:298` **JSON 解析移出主线程**
+   `withContext(IO)` 原本只包住 HTTP，`parseToJsonElement` 在其**之后**、
+   仍在 `Main.immediate` 上执行。实测单次响应体 468 KB / 147 条，
+   每 2.5 秒在主线程解析一次 → 必然掉帧。
+
+2. `Markdown.kt` **9 个正则提为文件级预编译**
+   原本写在 `while (i < lines.size)` 循环体内，每行重新 `Pattern.compile`。
+   Kotlin `Regex()` 无内置缓存；一条 40 行消息约 250 次编译。
+   对照：`TaskProgressCard.CHECKLIST_REGEX` 早就做对了。
+
+3. `ChatViewModel.startPolling` **轮询改 `Dispatchers.Default` + 后台暂停**
+   `MutableStateFlow.update` 是原子的、可从任意线程调用，整段可安全搬离主线程。
+
+4. `ChatViewModel` **内容未变不更新 state**
+   原实现每轮都新建 List 并 `copy` 进 state → 即使逐字相同也判为变化，
+   每 2.5 秒无条件重组整个聊天界面（待机也在掉帧）。
+
+5. `ChatScreen` **跟随滚动重写**（体感提升最明显）
+   原 `LaunchedEffect(lines.size)` 有两个真问题：
+   - 流式时末尾消息**原地变长**（size 不变）→ **完全不跟随**，用户得手动滑
+   - 新增一行就无条件 `animateScrollToItem` → **打断正在上滑读历史的用户**
+   现改为：key 加入末尾文本长度，且仅在「已在底部附近」时才跟随。
+
+6. `ChatScreen` `extractSteps` 的 remember key 从整个 `state.lines`
+   收窄为 `(size, 末条 assistant 文本, running)` —— 原 key 导致每轮全量重扫。
+
+7. `MarkdownView.ParagraphText` 补 `remember`（判空要递归拼全文，原每次重组都跑）
+
+8. `DisclosureToolCard` 补 `remember`（JSON 解析 + prettyJson）+
+   动态 key 正则改用 `ConcurrentHashMap` 缓存
+
+9. `detectRunning` 新增接收已抽取 records 的重载，消除重复 `recordsOf`
+
+## 测试
+
+Android **150/150**（新增 11 条）。
+
+新增 `ApprovalContractTest` 钉死一个**静默失败**风险：
+主机 `ApprovalOutcome` 词表只有 `allowed-once|rejected|cancelled|unavailable`，
+**词表外的值不报错，而是被静默归一化成 `unavailable`（= 拒绝）**。
+即"用户点了允许却被拒绝"且无任何报错 —— 锁屏审批最危险的失败模式。
+此前**零测试覆盖**。现覆盖：值必须是裸字符串（不能是 `{approved:true}` 对象）、
+必须在词表内、允许与拒绝必须产出不同值、提问 `answers[].id/selected` 形状。
+
+## ⚠️ 未验证
+
+**真机 USB 在实测前断开，端到端未验证。** 具体未做：
+- 锁屏通知能否真的弹出（需真机 + 触发一次审批）
+- 进程级连接在后台是否真的存活
+- 前台服务是否被系统正常拉起
+
+已完成的验证：编译通过、150/150 单测、release/debug APK 构建成功。

@@ -6,6 +6,8 @@ import io.github.dshmobile.app.net.DshConnection
 import io.github.dshmobile.app.net.Envelopes
 import io.github.dshmobile.app.net.HostRequest
 import io.github.dshmobile.app.render.JsonRender
+import io.github.dshmobile.app.notify.ConnectionHub
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -297,12 +299,32 @@ class ChatViewModel(private val connProvider: () -> DshConnection?) : ViewModel(
 
     /**
      * 轮询会话状态与增量事件。
+     *
+     * 🔴 跑在 `Dispatchers.Default`，**不是主线程**（2026-10-14 性能审计发现）。
+     *
+     * `viewModelScope.launch` 默认是 `Dispatchers.Main.immediate`。原实现因此
+     * 把一整条重活链都放在了主线程上：
+     *   - `Envelopes.json.parseToJsonElement` 解析响应体（实测单次 **468 KB**）
+     *   - `recordsOf` + `toLine()` × 60 条
+     *   - `extractSessionContext` + `detectRunning` 全量扫描
+     *
+     * 每 2.5 秒一次的主线程突发，必然掉帧 —— 这是"不丝滑"的直接来源。
+     *
+     * 安全性说明：循环内只做纯计算与 `_state.update`，而
+     * `MutableStateFlow.update` 是原子的、可从任意线程调用；
+     * 所有 UI 读取仍通过 `collectAsStateWithLifecycle` 回到主线程。
+     * 因此整段搬离主线程是安全的，不需要逐处 `withContext`。
+     *
+     * 同时加了**后台暂停**：App 退到后台时 UI 已不收集，继续每 2.5 秒
+     * 解析 468KB 纯属浪费电与 CPU（还可能撞上回到前台的那一刻）。
      */
     private fun startPolling() {
         pollJob?.cancel()
-        pollJob = viewModelScope.launch {
+        pollJob = viewModelScope.launch(Dispatchers.Default) {
             while (isActive) {
                 delay(2_500)
+                // 后台不轮询 —— 见上面说明
+                if (!ConnectionHub.appInForeground) continue
                 val c = conn ?: continue
                 val sid = _state.value.sessionId
                 if (sid.isEmpty() || _state.value.pending != null) continue
@@ -322,16 +344,42 @@ class ChatViewModel(private val connProvider: () -> DshConnection?) : ViewModel(
                             val serverLines = recs.mapIndexedNotNull { i, entry -> toLine(entry, i) }
                             val serverTexts = serverLines.filter { it.role == "user" }.map { it.text }.toSet()
                             val pendingLines = _state.value.lines.filter { it.key.startsWith("pending-") && it.text !in serverTexts }
-                            val isRunning = detectRunning(obj)
+                            // 复用上面已经抽好的 recs，不再让 detectRunning 内部重抽一遍
+                            val isRunning = detectRunning(recs)
 
-                            recs.lastOrNull()?.get("seq")?.jsonPrimitive?.content?.toLongOrNull()
-                                ?.takeIf { it > lastSeq }?.let { lastSeq = it }
+                            val newSeq = recs.lastOrNull()?.get("seq")?.jsonPrimitive?.content?.toLongOrNull()
+                            newSeq?.takeIf { it > lastSeq }?.let { lastSeq = it }
+
+                            // 🔴 内容没真变就**不更新 state**（2026-10-14 性能审计发现）。
+                            //
+                            // 原实现每次都 `serverLines + pendingLines` 新建一个 List 并
+                            // `copy` 进 state。即使内容逐字相同，`StateFlow` 也会因为
+                            // **新实例**而认为发生了变化 → 整棵 Compose 订阅树重组。
+                            //
+                            // 而轮询是 2.5 秒一次的固定节拍：主机没有新内容时，
+                            // 我们仍会每 2.5 秒无条件重组一次整个聊天界面。
+                            // 这是"待机也在掉帧"的来源。
+                            //
+                            // 现在先比对新旧列表与运行态，完全相同就直接跳过 update。
+                            val merged = serverLines + pendingLines
+                            val cur = _state.value
+                            val sameLines = merged == cur.lines
+                            val sameRunning = isRunning == cur.running
+                            val nextPreparing =
+                                if (isRunning || serverLines.any { line -> line.role == "assistant" }) {
+                                    false
+                                } else {
+                                    cur.preparing
+                                }
+                            if (sameLines && sameRunning && nextPreparing == cur.preparing) {
+                                return@onSuccess
+                            }
 
                             _state.update {
                                 it.copy(
-                                    lines = serverLines + pendingLines,
+                                    lines = merged,
                                     running = isRunning,
-                                    preparing = if (isRunning || serverLines.any { line -> line.role == "assistant" }) false else it.preparing,
+                                    preparing = nextPreparing,
                                 )
                             }
                         }
@@ -961,8 +1009,20 @@ class ChatViewModel(private val connProvider: () -> DshConnection?) : ViewModel(
         )
     }
 
-    private fun detectRunning(page: JsonObject): Boolean {
-        val records = recordsOf(page)
+    private fun detectRunning(page: JsonObject): Boolean = detectRunning(recordsOf(page))
+
+    /**
+     * 在**已抽取**的记录列表上判定运行态。
+     *
+     * 🔴 为什么要这个重载（2026-10-14 性能审计发现）：
+     *
+     * 调用点（轮询路径）手上已经有 `recs` 了，却调用 `detectRunning(obj)`，
+     * 后者内部再 `recordsOf(page)` 抽一遍 —— 对同一份 payload 做两次
+     * `records` 数组映射 + 全量类型判定。纯重复工作，每 2.5 秒一次。
+     *
+     * 这里保留原签名（其他地方可能在用）并转发到新重载，避免改动面扩大。
+     */
+    private fun detectRunning(records: List<JsonObject>): Boolean {
         var running = false
         records.forEach { entry ->
             when (JsonRender.typeOf(entry)) {

@@ -1,9 +1,11 @@
 package io.github.dshmobile.app
 
+import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.material3.DrawerValue
 import androidx.compose.material3.ModalNavigationDrawer
 import androidx.compose.material3.rememberDrawerState
@@ -35,6 +37,17 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
+
+        // 🔴 API 33+ 必须**运行时**申请通知权限。
+        //
+        // 不申请的话：通知被系统**静默丢弃**（不报错、不崩、日志也干净），
+        // 表现为"审批请求明明收到了，锁屏却什么都不弹" —— 极难排查。
+        // Manifest 里声明 POST_NOTIFICATIONS 只解决"可申请"，不等于"已授予"。
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            registerForActivityResult(ActivityResultContracts.RequestPermission()) { }
+                .launch(android.Manifest.permission.POST_NOTIFICATIONS)
+        }
+
         setContent {
             DshMobileTheme {
                 val app = application as DshMobileApp
