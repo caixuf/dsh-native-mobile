@@ -217,17 +217,64 @@ fun AppDrawer(
                     }
                 }
             } else {
+                val groups = androidx.compose.runtime.remember(sessions) {
+                    io.github.dshmobile.app.ui.WorkspaceFormatter.groupSessions(sessions)
+                }
                 LazyColumn(
                     modifier = Modifier.weight(1f),
-                    verticalArrangement = Arrangement.spacedBy(4.dp),
+                    verticalArrangement = Arrangement.spacedBy(3.dp),
                 ) {
-                    items(sessions, key = { it.sessionId }) { row ->
-                        val isSelected = row.sessionId == currentSessionId
-                        DrawerSessionRow(
-                            session = row,
-                            isSelected = isSelected,
-                            onClick = { onSelectSession(row) },
-                        )
+                    groups.forEach { group ->
+                        item(key = "drawer-ws-${group.cwd ?: "none"}") {
+                            Row(
+                                Modifier
+                                    .fillMaxWidth()
+                                    .padding(top = 10.dp, bottom = 4.dp, start = 4.dp, end = 4.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                DshIcon(
+                                    DshIcons.Folder,
+                                    contentDescription = null,
+                                    size = 13.dp,
+                                    tint = if (group.isRunning) MaterialTheme.colorScheme.primary
+                                    else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
+                                )
+                                Spacer(Modifier.width(6.dp))
+                                Text(
+                                    text = group.displayName,
+                                    style = MaterialTheme.typography.labelSmall,
+                                    fontWeight = FontWeight.Bold,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.85f),
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                    modifier = Modifier.weight(1f, fill = false),
+                                )
+                                if (group.isRunning) {
+                                    Spacer(Modifier.width(6.dp))
+                                    Box(
+                                        Modifier
+                                            .size(6.dp)
+                                            .clip(CircleShape)
+                                            .background(MaterialTheme.colorScheme.primary),
+                                    )
+                                }
+                                Spacer(Modifier.width(6.dp))
+                                Text(
+                                    text = "${group.sessions.size}",
+                                    style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp),
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f),
+                                )
+                            }
+                        }
+
+                        items(group.sessions, key = { it.sessionId }) { row ->
+                            val isSelected = row.sessionId == currentSessionId
+                            DrawerSessionRow(
+                                session = row,
+                                isSelected = isSelected,
+                                onClick = { onSelectSession(row) },
+                            )
+                        }
                     }
                 }
             }

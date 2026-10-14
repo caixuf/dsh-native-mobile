@@ -13,6 +13,9 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.ui.draw.clip
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.rememberScrollState
+import io.github.dshmobile.app.ui.WorkspaceFormatter
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -339,14 +342,12 @@ fun ChatScreen(
                     )
                 }
 
-                state.lines.isEmpty() -> Box(
-                    Modifier.fillMaxSize(),
-                    contentAlignment = Alignment.Center,
-                ) {
-                    EmptyState(
-                        icon = DshIcons.ChatBubble,
-                        title = "这个会话还没有内容",
-                        hint = "在下面发一条消息，就能远程驱动电脑上的 DSH 了。",
+                state.lines.isEmpty() -> {
+                    ChatEmptyHeroState(
+                        workspace = workspace,
+                        onPickSuggestion = { prompt ->
+                            draft = prompt
+                        },
                     )
                 }
 
@@ -1031,25 +1032,80 @@ private fun Composer(
                 Spacer(Modifier.height(DshTheme.m.sm))
             }
 
+            var showActionMenu by remember { mutableStateOf(false) }
+
+            if (showActionMenu) {
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .padding(bottom = 6.dp)
+                        .horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    ActionChip("/plan 计划") {
+                        val next = if (value.isBlank()) "/plan " else "$value /plan "
+                        onValueChange(next)
+                        showActionMenu = false
+                    }
+                    ActionChip("/test 测试") {
+                        val next = if (value.isBlank()) "/test " else "$value /test "
+                        onValueChange(next)
+                        showActionMenu = false
+                    }
+                    ActionChip("@ 引用文件") {
+                        val next = if (value.isBlank()) "@" else "$value @"
+                        onValueChange(next)
+                        showActionMenu = false
+                    }
+                    ActionChip("+ 工作区上下文") {
+                        val next = if (value.isBlank()) "[附带当前工作区上下文] " else "$value [附带当前工作区上下文] "
+                        onValueChange(next)
+                        showActionMenu = false
+                    }
+                }
+            }
+
             Row(
                 Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.Bottom,
                 horizontalArrangement = Arrangement.spacedBy(DshTheme.m.sm),
             ) {
+                // 🔴 客户端对齐：+ 附件与快捷指令入口（Task 17）
+                Box(
+                    Modifier
+                        .size(48.dp)
+                        .clip(CircleShape)
+                        .background(
+                            if (showActionMenu) MaterialTheme.colorScheme.primaryContainer
+                            else MaterialTheme.colorScheme.surfaceContainerHighest,
+                        )
+                        .clickable { showActionMenu = !showActionMenu },
+                    contentAlignment = Alignment.Center,
+                ) {
+                    DshIcon(
+                        DshIcons.Add,
+                        contentDescription = "添加指令或附件",
+                        tint = if (showActionMenu) MaterialTheme.colorScheme.primary
+                        else MaterialTheme.colorScheme.onSurfaceVariant,
+                        size = 20.dp,
+                    )
+                }
+
                 TextField(
                     value = value,
                     onValueChange = onValueChange,
                     placeholder = {
                         Text(
-                            // 运行中不再提示「正在运行中，不能输入」——
-                            // 现在可以输入，且会作为排队消息提交。
                             when {
                                 !enabled -> "连接已断开…"
                                 running -> "运行中也可以发，会排队执行…"
+                                value.isEmpty() -> "描述你想要构建的内容，/ 调用指令，@ 文件或对话"
                                 else -> "发消息，或按住右侧说话…"
                             },
                             style = MaterialTheme.typography.bodyMedium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
                         )
                     },
                     enabled = enabled,
@@ -1313,4 +1369,278 @@ private fun OptionChips(
             }
         }
     }
+}
+
+@Composable
+private fun ActionChip(
+    text: String,
+    onClick: () -> Unit,
+) {
+    Surface(
+        onClick = onClick,
+        shape = RoundedCornerShape(14.dp),
+        color = MaterialTheme.colorScheme.surfaceContainerHigh,
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.6f)),
+    ) {
+        Text(
+            text = text,
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurface,
+            modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
+        )
+    }
+}
+
+/**
+ * 客户端对齐的空态会话主屏（P2 / P3）：
+ * - 「探索未至之境」大标题
+ * - 四个核心胶囊（工作区 / 模式 / 权限 / 模型）
+ * - 快捷 Prompt 引导卡片
+ */
+@Composable
+private fun ChatEmptyHeroState(
+    workspace: String?,
+    onPickSuggestion: (String) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    var selectedMode by remember { mutableStateOf("标准模式") }
+    var selectedPerm by remember { mutableStateOf("工作区内修改") }
+    var selectedModel by remember { mutableStateOf("deepseek-v4.1-flash") }
+
+    var showModeDialog by remember { mutableStateOf(false) }
+    var showPermDialog by remember { mutableStateOf(false) }
+    var showModelDialog by remember { mutableStateOf(false) }
+
+    val (wsName, _) = remember(workspace) {
+        WorkspaceFormatter.format(workspace)
+    }
+
+    Box(
+        modifier = modifier
+            .fillMaxSize()
+            .padding(horizontal = DshTheme.m.gutter),
+        contentAlignment = Alignment.Center,
+    ) {
+        Column(
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(16.dp),
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                Text(
+                    text = "探索未至之境",
+                    style = MaterialTheme.typography.headlineMedium,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.onBackground,
+                )
+                Spacer(Modifier.height(6.dp))
+                Text(
+                    text = "与远端电脑上的深度智能体协同构建",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+
+            // 四大控件胶囊选择器行（工作区 / 模式 / 权限 / 模型）
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .horizontalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterHorizontally),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                ConfigPill(
+                    icon = DshIcons.Folder,
+                    label = wsName,
+                    onClick = { /* 当前工作区 */ },
+                )
+
+                ConfigPill(
+                    icon = DshIcons.TaskList,
+                    label = "$selectedMode ▾",
+                    onClick = { showModeDialog = true },
+                )
+
+                ConfigPill(
+                    icon = DshIcons.ShieldAlert,
+                    label = "$selectedPerm ▾",
+                    onClick = { showPermDialog = true },
+                )
+
+                ConfigPill(
+                    icon = DshIcons.Desktop,
+                    label = "$selectedModel ▾",
+                    onClick = { showModelDialog = true },
+                )
+            }
+
+            Spacer(Modifier.height(8.dp))
+
+            Column(
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                val suggestions = listOf(
+                    "分析当前工程结构并梳理主流程",
+                    "检查代码变更并运行单元测试",
+                    "规划下一阶段的功能实现计划",
+                )
+                suggestions.forEach { prompt ->
+                    Surface(
+                        onClick = { onPickSuggestion(prompt) },
+                        shape = RoundedCornerShape(12.dp),
+                        color = MaterialTheme.colorScheme.surface,
+                        border = BorderStroke(
+                            1.dp,
+                            MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.6f),
+                        ),
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Row(
+                            Modifier.padding(horizontal = 14.dp, vertical = 12.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Text(
+                                text = prompt,
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurface,
+                                modifier = Modifier.weight(1f),
+                            )
+                            DshIcon(
+                                DshIcons.Send,
+                                contentDescription = null,
+                                size = 14.dp,
+                                tint = MaterialTheme.colorScheme.primary,
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if (showModeDialog) {
+        val modes = listOf("标准模式", "代码审查模式", "计划与架构模式")
+        SingleSelectDialog(
+            title = "选择智能体模式",
+            options = modes,
+            selected = selectedMode,
+            onSelect = {
+                selectedMode = it
+                showModeDialog = false
+            },
+            onDismiss = { showModeDialog = false },
+        )
+    }
+
+    if (showPermDialog) {
+        val perms = listOf("工作区内修改", "完全权限", "只读模式")
+        SingleSelectDialog(
+            title = "选择操作权限范围",
+            options = perms,
+            selected = selectedPerm,
+            onSelect = {
+                selectedPerm = it
+                showPermDialog = false
+            },
+            onDismiss = { showPermDialog = false },
+        )
+    }
+
+    if (showModelDialog) {
+        val models = listOf("deepseek-v4.1-flash", "deepseek-chat", "deepseek-reasoner")
+        SingleSelectDialog(
+            title = "选择大语言模型",
+            options = models,
+            selected = selectedModel,
+            onSelect = {
+                selectedModel = it
+                showModelDialog = false
+            },
+            onDismiss = { showModelDialog = false },
+        )
+    }
+}
+
+@Composable
+private fun ConfigPill(
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    label: String,
+    onClick: () -> Unit,
+) {
+    Surface(
+        onClick = onClick,
+        shape = RoundedCornerShape(16.dp),
+        color = MaterialTheme.colorScheme.surfaceContainerHigh,
+        border = BorderStroke(
+            1.dp,
+            MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f),
+        ),
+    ) {
+        Row(
+            Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            DshIcon(icon, contentDescription = null, size = 13.dp, tint = MaterialTheme.colorScheme.primary)
+            Spacer(Modifier.width(5.dp))
+            Text(
+                text = label,
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurface,
+                maxLines = 1,
+            )
+        }
+    }
+}
+
+@Composable
+private fun SingleSelectDialog(
+    title: String,
+    options: List<String>,
+    selected: String,
+    onSelect: (String) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    androidx.compose.material3.AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(title, style = MaterialTheme.typography.titleMedium) },
+        text = {
+            Column(
+                modifier = Modifier.fillMaxWidth(),
+                verticalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                options.forEach { opt ->
+                    Surface(
+                        onClick = { onSelect(opt) },
+                        shape = RoundedCornerShape(10.dp),
+                        color = if (opt == selected) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surface,
+                        border = BorderStroke(
+                            1.dp,
+                            if (opt == selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outlineVariant,
+                        ),
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Row(
+                            Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Text(
+                                text = opt,
+                                style = MaterialTheme.typography.bodyMedium,
+                                fontWeight = if (opt == selected) FontWeight.SemiBold else FontWeight.Normal,
+                                color = if (opt == selected) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurface,
+                                modifier = Modifier.weight(1f),
+                            )
+                            if (opt == selected) {
+                                DshIcon(DshIcons.Check, contentDescription = null, size = 16.dp, tint = MaterialTheme.colorScheme.primary)
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onDismiss) { Text("取消") }
+        },
+    )
 }

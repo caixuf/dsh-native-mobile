@@ -475,11 +475,11 @@ async function mint() {
   return display;
 }
 
-async function pair(code) {
+async function pair(code, deviceName = 'Pixel') {
   const res = await fetch(`${base}/mobile-gateway/pair`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ code, deviceName: 'Pixel', platform: 'android' }),
+    body: JSON.stringify({ code, deviceName, platform: 'android' }),
   });
   return { status: res.status, json: await res.json() };
 }
@@ -511,7 +511,7 @@ const mintRes = await fetch(`${base}/mobile-gateway/manage/api/mint`, {
 const pinState = await mintRes.json();
 const pin = pinState?.pairing?.pin;
 check('铸码包含 6 位纯数字 PIN', /^\d{6}$/.test(pin), `pin=${pin}`);
-const pinPaired = await pair(pin);
+const pinPaired = await pair(pin, 'Pixel-PIN');
 check('6位数字 PIN 首次配对成功', pinPaired.status === 200 && !!pinPaired.json.token, `status=${pinPaired.status}`);
 
 console.log('\n[2] 鉴权');

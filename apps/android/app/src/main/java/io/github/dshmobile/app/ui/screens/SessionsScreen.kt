@@ -53,6 +53,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.foundation.border
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.Surface
 import androidx.compose.material3.TextButton
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.font.FontFamily
@@ -65,12 +66,12 @@ import io.github.dshmobile.app.ui.icons.DshIcons
 import io.github.dshmobile.app.ui.DshTheme
 import io.github.dshmobile.app.ui.SessionRow
 import io.github.dshmobile.app.ui.SessionsViewModel
+import io.github.dshmobile.app.ui.WorkspaceGroup
+import io.github.dshmobile.app.ui.WorkspaceFormatter
 import io.github.dshmobile.app.ui.components.EmptyState
 import io.github.dshmobile.app.ui.components.DshIcon
 import io.github.dshmobile.app.ui.components.MetaTag
-import io.github.dshmobile.app.ui.components.DshIcon
 import io.github.dshmobile.app.ui.components.StatusPill
-import io.github.dshmobile.app.ui.components.DshIcon
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -257,64 +258,68 @@ fun SessionsScreen(
                     item(key = "remote-dashboard-header") {
                         RemoteHostDashboardCard(
                             linkState = linkState,
-                            workspaceCount = state.rows.mapNotNull { it.workspace }.filter { it.isNotBlank() }.distinct().size,
+                            workspaceCount = state.workspaceGroups.size,
                             sessionCount = state.rows.size,
-                            runningCount = state.rows.count { it.running },
+                            runningCount = state.workspaceGroups.sumOf { it.runningCount },
                         )
                         Spacer(Modifier.height(DshTheme.m.xs))
                     }
-                    // 子代理会话：只列出、不可点开。
-                    // 裸 sessionId 打不开，主机会报
-                    // "subagent Sessions require their durable parent address"。
-                    if (state.showSubagents && state.subagentRows.isNotEmpty()) {
-                        item(key = "subagent-header") {
-                            SubagentHeader(state.subagentRows.size)
-                        }
-                        items(state.subagentRows, key = { "sa-${it.sessionId}" }) { row ->
-                            SubagentCard(row)
-                        }
-                        item(key = "subagent-divider") {
-                            Spacer(Modifier.height(DshTheme.m.xs))
-                            Box(
-                                Modifier
-                                    .fillMaxWidth()
-                                    .height(1.dp)
-                                    .background(MaterialTheme.colorScheme.outlineVariant),
+
+                    // 🔴 会话/工作区树（P1）：可折叠父节点，组内按活跃时间与运行态排序
+                    state.workspaceGroups.forEach { group ->
+                        val isExpanded = state.expandedWorkspaces.contains(group.cwd)
+                        item(key = "ws-header-${group.cwd ?: "none"}") {
+                            WorkspaceHeader(
+                                group = group,
+                                isExpanded = isExpanded,
+                                onToggle = { vm.toggleWorkspace(group.cwd) },
                             )
-                            Spacer(Modifier.height(DshTheme.m.sm))
                         }
-                    }
 
-                    // 🔴 按工作区分组 —— 对齐 MiniMax 的 `rc_workspace_section_item`。
-                    //
-                    // 为什么要分组：我们的产品是「电脑干活，手机遥控」。用户点开会话时，
-                    // 真正想知道的是「这件事是在哪个目录里做的」。把所有会话平铺成
-                    // 一列，就丢掉了这个最关键的组织维度。
-                    // 实测 `session.list` 每条都带 `cwd`，且**同一台电脑上通常有好几个
-                    // 不同项目目录**，不分组就分不清。
-                    val groups = state.rows.groupBy { it.workspace }
-                    // 目录多的排前面？否 —— 保持列表原有顺序（按更新时间），
-                    // 只是把**相邻的同目录会话**聚到一起，最新的那个目录在最前。
-                    val ordered = groups.entries.sortedByDescending { e ->
-                        e.value.maxOf { it.updatedAt }
-                    }
+                        if (isExpanded) {
+                            items(group.sessions, key = { it.sessionId }) { row ->
+                                SessionCard(row) { onOpen(row) }
+                            }
 
-                    ordered.forEach { (ws, rows) ->
-                        item(key = "ws-header-${ws ?: "none"}") {
-                            WorkspaceHeader(ws, rows.size)
-                        }
-                        items(rows, key = { it.sessionId }) { row ->
-                            SessionCard(row) { onOpen(row) }
+                            // 子代理会话归入所属工作区（Task 11）
+                            if (state.showSubagents && group.subagents.isNotEmpty()) {
+                                item(key = "ws-subagent-header-${group.cwd ?: "none"}") {
+                                    Row(
+                                        Modifier
+                                            .fillMaxWidth()
+                                            .padding(start = 12.dp, top = 6.dp, bottom = 4.dp),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                    ) {
+                                        DshIcon(
+                                            DshIcons.Eye,
+                                            contentDescription = null,
+                                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                            size = 13.dp,
+                                        )
+                                        Spacer(Modifier.width(6.dp))
+                                        Text(
+                                            text = "工作区子代理会话 · ${group.subagents.size}",
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        )
+                                    }
+                                }
+                                items(group.subagents, key = { "sa-${it.sessionId}" }) { row ->
+                                    SubagentCard(row)
+                                }
+                            }
                         }
                     }
                 }
             }
 
             if (showCreateDialog) {
-                val availableWorkspaces = remember(state.rows) {
-                    state.rows.mapNotNull { it.workspace }.filter { it.isNotBlank() }.distinct()
+                val availableWorkspaces = remember(state.workspaceGroups) {
+                    state.workspaceGroups.mapNotNull { it.cwd }.filter { it.isNotBlank() }.distinct()
                 }
                 var selectedWorkspace by remember { mutableStateOf<String?>(availableWorkspaces.firstOrNull()) }
+                var customWorkspaceInput by remember { mutableStateOf("") }
+                var isCustom by remember { mutableStateOf(false) }
 
                 androidx.compose.material3.AlertDialog(
                     onDismissRequest = { showCreateDialog = false },
@@ -322,13 +327,13 @@ fun SessionsScreen(
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             DshIcon(DshIcons.Desktop, contentDescription = null, size = 20.dp, tint = MaterialTheme.colorScheme.primary)
                             Spacer(Modifier.width(8.dp))
-                            Text("新建远程电脑会话", style = MaterialTheme.typography.titleMedium)
+                            Text("新建工作区会话", style = MaterialTheme.typography.titleMedium)
                         }
                     },
                     text = {
                         Column {
                             Text(
-                                "选择此会话在电脑上执行的工作区目录：",
+                                "选择此会话在电脑上执行的目标工作区：",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
@@ -341,16 +346,45 @@ fun SessionsScreen(
                                 WorkspacePickOption(
                                     title = "电脑默认工作区",
                                     path = "使用远端 DSH 宿主默认路径",
-                                    selected = selectedWorkspace == null,
-                                    onClick = { selectedWorkspace = null },
+                                    selected = !isCustom && selectedWorkspace == null,
+                                    onClick = {
+                                        isCustom = false
+                                        selectedWorkspace = null
+                                    },
                                 )
 
                                 availableWorkspaces.forEach { ws ->
+                                    val (name, _) = WorkspaceFormatter.format(ws)
                                     WorkspacePickOption(
-                                        title = shortPath(ws),
+                                        title = name,
                                         path = ws,
-                                        selected = selectedWorkspace == ws,
-                                        onClick = { selectedWorkspace = ws },
+                                        selected = !isCustom && selectedWorkspace == ws,
+                                        onClick = {
+                                            isCustom = false
+                                            selectedWorkspace = ws
+                                        },
+                                    )
+                                }
+
+                                WorkspacePickOption(
+                                    title = "指定新路径…",
+                                    path = if (isCustom && customWorkspaceInput.isNotBlank()) customWorkspaceInput else "输入宿主电脑绝对路径或 WSL 路径",
+                                    selected = isCustom,
+                                    onClick = { isCustom = true },
+                                )
+
+                                if (isCustom) {
+                                    OutlinedTextField(
+                                        value = customWorkspaceInput,
+                                        onValueChange = { customWorkspaceInput = it },
+                                        placeholder = {
+                                            Text(
+                                                """例如 C:\code\repo 或 \\wsl.localhost\Ubuntu\...""",
+                                                style = MaterialTheme.typography.bodySmall,
+                                            )
+                                        },
+                                        singleLine = true,
+                                        modifier = Modifier.fillMaxWidth(),
                                     )
                                 }
                             }
@@ -360,7 +394,8 @@ fun SessionsScreen(
                         TextButton(
                             onClick = {
                                 showCreateDialog = false
-                                vm.create(cwd = selectedWorkspace) { onOpen(it) }
+                                val targetCwd = if (isCustom) customWorkspaceInput.trim().ifBlank { null } else selectedWorkspace
+                                vm.create(cwd = targetCwd) { onOpen(it) }
                             },
                         ) {
                             Text("创建并进入")
@@ -626,39 +661,110 @@ private fun SurfaceBanner(
 }
 
 /**
- * 工作区分组标题。
+ * 工作区分组标题与折叠卡片（P1）。
  *
- * 借鉴 MiniMax 的 `rc_workspace_section_item`：一个分组头 + 数量，
- * 目录名用等宽字体（是路径，不是标题）。
+ * 参照客户端与 MiniMax 工作台折叠树：
+ * - 明确的工作区名称（WSL 友好名 / Windows 盘符路径名）
+ * - 运行中徽标（如果有运行中的会话）
+ * - 会话与子代理计数
+ * - 折叠/展开箭头与点击反馈
  */
 @Composable
-private fun WorkspaceHeader(workspace: String?, count: Int) {
-    Row(
-        Modifier.padding(top = DshTheme.m.md, bottom = DshTheme.m.xs),
-        verticalAlignment = Alignment.CenterVertically,
+private fun WorkspaceHeader(
+    group: WorkspaceGroup,
+    isExpanded: Boolean,
+    onToggle: () -> Unit,
+) {
+    Surface(
+        onClick = onToggle,
+        shape = RoundedCornerShape(12.dp),
+        color = if (group.isRunning) MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.35f)
+        else MaterialTheme.colorScheme.surfaceContainerLow,
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(top = DshTheme.m.sm, bottom = 2.dp)
+            .border(
+                1.dp,
+                if (group.isRunning) MaterialTheme.colorScheme.primary.copy(alpha = 0.35f)
+                else MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.6f),
+                RoundedCornerShape(12.dp),
+            ),
     ) {
-        DshIcon(
-            DshIcons.Folder,
-            contentDescription = null,
-            tint = MaterialTheme.colorScheme.onSurfaceVariant,
-            size = 14.dp,
-        )
-        Spacer(Modifier.width(6.dp))
-        Text(
-            text = workspace?.let { shortPath(it) } ?: "未关联目录",
-            style = MaterialTheme.typography.labelMedium,
-            fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-            modifier = Modifier.weight(1f, fill = false),
-        )
-        Spacer(Modifier.width(DshTheme.m.sm))
-        Text(
-            text = "$count",
-            style = MaterialTheme.typography.labelSmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
-        )
+        Column(
+            Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 12.dp, vertical = 10.dp),
+        ) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween,
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.weight(1f, fill = false),
+                ) {
+                    DshIcon(
+                        DshIcons.Folder,
+                        contentDescription = null,
+                        tint = if (group.isRunning) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                        size = 18.dp,
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    Text(
+                        text = group.displayName,
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.SemiBold,
+                        color = MaterialTheme.colorScheme.onSurface,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    if (group.isRunning) {
+                        MetaTag(
+                            text = "运行中 ${group.runningCount}",
+                            tint = MaterialTheme.colorScheme.primary,
+                            background = MaterialTheme.colorScheme.primaryContainer,
+                        )
+                        Spacer(Modifier.width(6.dp))
+                    }
+                    Text(
+                        text = "${group.sessions.size} 会话" + if (group.subagents.isNotEmpty()) " · ${group.subagents.size} 子代理" else "",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.75f),
+                    )
+                }
+
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    if (group.latestUpdatedAt > 0) {
+                        Text(
+                            text = relativeTime(group.latestUpdatedAt),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
+                        )
+                        Spacer(Modifier.width(6.dp))
+                    }
+                    DshIcon(
+                        if (isExpanded) DshIcons.ChevronUp else DshIcons.ChevronDown,
+                        contentDescription = if (isExpanded) "折叠" else "展开",
+                        size = 16.dp,
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+
+            if (group.subtitle.isNotBlank() && group.subtitle != group.displayName) {
+                Spacer(Modifier.height(3.dp))
+                Text(
+                    text = group.subtitle,
+                    style = MaterialTheme.typography.labelSmall,
+                    fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.65f),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+        }
     }
 }
 

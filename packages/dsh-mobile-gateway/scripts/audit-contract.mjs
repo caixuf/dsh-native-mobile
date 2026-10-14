@@ -117,9 +117,8 @@ console.log('\n信封形状专项：');
 const envelopes = readFileSync(join(appSrc, 'net', 'Envelopes.kt'), 'utf8');
 const checks = [
   ['client-request 含 type/rpcId/method/payload', ['"type"', '"rpcId"', '"method"', '"payload"'].every((k) => envelopes.includes(k))],
-  ['client-response 含 type/rpcId/result', ['TYPE_CLIENT_RESPONSE', '"rpcId"', '"result"'].every((k) => envelopes.includes(k))],
-  // 官方契约 §1.4：result 必须是 { ok, value }，不是裸业务对象。
-  ['client-response 的 result 包了 { ok, value } 信封', envelopes.includes('put("ok", true)') && envelopes.includes('put("value", value)')],
+  ['不再产出已废弃的 client-response', !envelopes.includes('TYPE_CLIENT_RESPONSE')],
+  ['审批/提问走 $events/result clientRequest', envelopes.includes('$events/result') && envelopes.includes('clientRequest')],
 ];
 for (const [label, pass] of checks) {
   console.log(`  ${pass ? 'ok' : '!!'} ${label}`);

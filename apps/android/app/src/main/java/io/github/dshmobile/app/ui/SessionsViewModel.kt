@@ -18,6 +18,10 @@ data class SessionsUiState(
     val rows: List<SessionRow> = emptyList(),
     /** 被折叠起来的子代理会话（默认不显示，用户可展开）。 */
     val subagentRows: List<SessionRow> = emptyList(),
+    /** 聚合后的工作区组列表（按运行态与活跃时间排序）。 */
+    val workspaceGroups: List<WorkspaceGroup> = emptyList(),
+    /** 当前处于展开状态的工作区 cwd 集合。 */
+    val expandedWorkspaces: Set<String?> = emptySet(),
     val showSubagents: Boolean = false,
     val loading: Boolean = true,
     val error: String? = null,
@@ -36,6 +40,19 @@ class SessionsViewModel(private val connProvider: () -> DshConnection?) : ViewMo
     /** 切换「显示子代理会话」。 */
     fun toggleSubagents() {
         _state.update { it.copy(showSubagents = !it.showSubagents) }
+    }
+
+    /** 展开或折叠特定工作区。 */
+    fun toggleWorkspace(cwd: String?) {
+        _state.update { current ->
+            val next = current.expandedWorkspaces.toMutableSet()
+            if (next.contains(cwd)) {
+                next.remove(cwd)
+            } else {
+                next.add(cwd)
+            }
+            current.copy(expandedWorkspaces = next)
+        }
     }
 
     fun load() {
@@ -71,27 +88,31 @@ class SessionsViewModel(private val connProvider: () -> DshConnection?) : ViewMo
                         updatedAt = JsonRender.long(item, "updatedAt", "createdAt", "time") ?: 0L,
                         running = JsonRender.bool(item, "running") ?: false,
                         // ⚠️ 判据只能用 `origin`，**不能**写成 `origin == "subagent" || parent != null`。
-                        //
-                        // 实测（2026-10-13 公网，69 条）：`origin == "subagent"` 的 44 条
-                        // **全部**带 parentSessionId，且**全部**打不开（回 durable parent 错误）；
-                        // 但反向不成立 —— 有 1 条带 `parentSessionId` 却**没有** `origin`，
-                        // 它是 `session.fork` 出来的**普通会话**，用裸 sessionId 打开
-                        // **正常返回 records**。若按 `parent != null` 也折叠，就会把这条
-                        // 本来能正常打开的会话藏进「子代理」里，属于误伤。
                         isSubagent = origin == "subagent",
                         parentSessionId = parent,
-                        // 工作区：主机 `session.list` 的 `cwd` 字段（实测存在，
-                        // 例如 "C:\\Users\\…\\Downloads\\aiwork"）。
-                        // 这是「事情在哪台电脑的哪个目录里跑」的唯一真相来源。
+                        // 工作区：主机 `session.list` 的 `cwd` 字段（实测存在）。
                         workspace = JsonRender.str(item, "cwd")
                             ?: JsonRender.str(values ?: item, "cwd"),
                     )
                 }
-                // 主列表只放普通会话；子代理会话单独收着，默认不显示。
-                _state.update {
-                    it.copy(
-                        rows = all.filterNot { r -> r.isSubagent },
-                        subagentRows = all.filter { r -> r.isSubagent },
+                val normalRows = all.filterNot { r -> r.isSubagent }
+                val saRows = all.filter { r -> r.isSubagent }
+                val groups = WorkspaceFormatter.groupSessions(normalRows, saRows)
+
+                _state.update { current ->
+                    // 默认展开：有运行中会话的组优先展开；若都空闲，默认展开最新的第一组
+                    val initialExpanded = if (current.expandedWorkspaces.isEmpty()) {
+                        val runningCwds = groups.filter { it.runningCount > 0 }.map { it.cwd }.toSet()
+                        if (runningCwds.isNotEmpty()) runningCwds else setOf(groups.firstOrNull()?.cwd)
+                    } else {
+                        current.expandedWorkspaces
+                    }
+
+                    current.copy(
+                        rows = normalRows,
+                        subagentRows = saRows,
+                        workspaceGroups = groups,
+                        expandedWorkspaces = initialExpanded,
                         loading = false,
                     )
                 }
@@ -124,19 +145,42 @@ class SessionsViewModel(private val connProvider: () -> DshConnection?) : ViewMo
                         preview = JsonRender.str(item, "snippet", "preview") ?: "",
                         updatedAt = JsonRender.long(item, "updatedAt") ?: 0L,
                         running = false,
+                        workspace = JsonRender.str(item, "cwd"),
                     )
                 }
-                _state.update { it.copy(rows = rows, loading = false) }
+                val groups = WorkspaceFormatter.groupSessions(rows, emptyList())
+                _state.update { current ->
+                    // 搜索态下自动展开所有包含命中项的工作区（Task 10）
+                    val searchExpanded = groups.map { it.cwd }.toSet()
+                    current.copy(
+                        rows = rows,
+                        workspaceGroups = groups,
+                        expandedWorkspaces = searchExpanded,
+                        loading = false,
+                    )
+                }
             }.onFailure { error -> _state.update { it.copy(error = error.message) } }
         }
     }
 
     fun create(cwd: String? = null, onCreated: (SessionRow) -> Unit) {
+        fun addRow(row: SessionRow) {
+            _state.update { current ->
+                val nextRows = listOf(row) + current.rows
+                val nextGroups = WorkspaceFormatter.groupSessions(nextRows, current.subagentRows)
+                current.copy(
+                    rows = nextRows,
+                    workspaceGroups = nextGroups,
+                    expandedWorkspaces = current.expandedWorkspaces + setOf(cwd),
+                )
+            }
+            onCreated(row)
+        }
+
         val c = conn
         if (c == null) {
             val row = SessionRow("local-${System.currentTimeMillis()}", "随身遥控会话", "按住说话测试", System.currentTimeMillis(), false, workspace = cwd)
-            _state.update { it.copy(rows = listOf(row) + it.rows) }
-            onCreated(row)
+            addRow(row)
             return
         }
         viewModelScope.launch {
@@ -158,13 +202,11 @@ class SessionsViewModel(private val connProvider: () -> DshConnection?) : ViewMo
                 val id = JsonRender.str(value.jsonObject, "sessionId")
                     ?: "session-${System.currentTimeMillis()}"
                 val row = SessionRow(id, "新会话", "", System.currentTimeMillis(), false, workspace = cwd)
-                _state.update { it.copy(rows = listOf(row) + it.rows) }
-                onCreated(row)
+                addRow(row)
             }.onFailure { error ->
                 _state.update { it.copy(error = error.message) }
                 val row = SessionRow("local-${System.currentTimeMillis()}", "随身遥控会话", "按住说话测试", System.currentTimeMillis(), false, workspace = cwd)
-                _state.update { it.copy(rows = listOf(row) + it.rows) }
-                onCreated(row)
+                addRow(row)
             }
         }
     }
