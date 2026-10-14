@@ -9,3 +9,5 @@ packages:
 # vite 依赖 esbuild 的原生二进制，必须允许其构建脚本。
 allowBuilds:
   esbuild: true
+  # electron 的 postinstall 会下载平台二进制；pnpm 默认拦构建脚本，必须放行。
+  electron: true

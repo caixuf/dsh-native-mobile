@@ -1,5 +1,6 @@
 import { LinkState, PendingPrompt, SessionRow, ChatLine } from '../types';
 import { Envelopes } from './envelopes';
+import { DEMO_MODE } from './demo';
 
 export interface HostRequestItem {
   rpcId: string;
@@ -150,6 +151,9 @@ export const WS_MUX = '/mobile-gateway/remote.mux';
 export const EVENT_STREAM_ENDPOINT = '$events';
 export const EVENT_RESULT_ENDPOINT = '$events/result';
 
+// 演示模式开关（定义见 ./demo.ts —— 它被 connection/store/pairing 三处共用）
+export { DEMO_MODE } from './demo';
+
 export class DshConnection {
   private baseUrl: string;
   private token: string;
@@ -190,7 +194,7 @@ export class DshConnection {
     this.notifyState({ type: 'connecting', attempt: this.attempt });
 
     // If demo token or local demo host, activate robust simulated mode
-    if (this.baseUrl.includes('demo') || this.token.includes('demo')) {
+    if (DEMO_MODE) {
       setTimeout(() => {
         if (!this.isStopped) {
           this.eventClientId = 'mock-client-' + Math.random().toString(36).slice(2, 8);
@@ -217,8 +221,25 @@ export class DshConnection {
 
   private connectReal() {
     try {
-      const wsUrl = this.baseUrl.replace(/^http/, 'ws') + WS_MUX;
-      const ws = new WebSocket(wsUrl);
+      const wsBase = this.baseUrl.replace(/^http/, 'ws') + WS_MUX;
+      // 🔴 令牌必须走 **query 参数**，不能指望请求头（2026-10-14 修复）
+      //
+      // 浏览器的 `new WebSocket(url)` **不支持自定义请求头** —— 这是 Web 规范限制，
+      // 不是实现疏漏。所以 `Authorization: Bearer` 在渲染进程里**根本发不出去**。
+      //
+      // 原来的写法是 `new WebSocket(wsUrl)`，既无头也无 query →
+      // 网关 `handleUpgrade` 拿不到令牌 → 直接 **401 拒绝**，
+      // 结果是**事件流永远连不上**（而后面的 `session.list` 探测又是走 fetch 带头的，
+      // 所以会看到「HTTP 能通、事件流不通」这种很迷惑的现象）。
+      //
+      // 网关的 `readToken()` 支持两种来源：`Authorization` 头 **或** `?token=` 查询参数
+      // （见 packages/dsh-mobile-gateway/lib/bridge.mjs）。渲染进程只能用后者。
+      //
+      // ⚠️ 已知代价：30 天有效的**完全控制凭据会进 URL** —— 会落到反代/隧道访问日志
+      // （本项目的公网链路是 Caddy + FRP）、以及 devtools 记录里。
+      // 正确的长期做法是**把连接放到 Electron 主进程**（Node 侧 WebSocket 可以带头），
+      // 渲染进程经 IPC 订阅事件 —— 见 docs/design.md §2.4.1。
+      const ws = new WebSocket(`${wsBase}?token=${encodeURIComponent(this.token)}`);
       this.socket = ws;
 
       ws.onopen = () => {
@@ -333,7 +354,7 @@ export class DshConnection {
 
   public async call(method: string, args: Record<string, unknown> = {}): Promise<unknown> {
     // If running in demo mode or offline simulated fallback
-    if (this.baseUrl.includes('demo') || this.token.includes('demo')) {
+    if (DEMO_MODE) {
       return this.handleMockCall(method, args);
     }
 
@@ -363,7 +384,7 @@ export class DshConnection {
   }
 
   public async respond(eventId: string, outcome: Record<string, unknown>): Promise<boolean> {
-    if (this.baseUrl.includes('demo') || this.token.includes('demo')) {
+    if (DEMO_MODE) {
       return true;
     }
     const clientId = this.eventClientId;

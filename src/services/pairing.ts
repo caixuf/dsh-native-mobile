@@ -1,4 +1,5 @@
 import { HostRecord } from '../types';
+import { DEMO_MODE } from './demo';
 
 export interface PairingTarget {
   baseUrl: string;
@@ -41,8 +42,13 @@ export const PairingClient = {
   ): Promise<HostRecord> {
     const cleanUrl = baseUrl.replace(/\/+$/, '');
 
-    // Allow mock demo account for instant onboarding
-    if (cleanUrl.includes('demo') || username.toLowerCase() === 'demo') {
+    // 🔴 演示模式才允许伪造凭据（2026-10-14 修正）
+    //
+    // 原判据是 `cleanUrl.includes('demo') || username === 'demo'`，
+    // 会**在本地凭空造一个 token**，用户以为登录成功了 —— 实际**什么都没发生**，
+    // 没有任何鉴权、没有触达电脑。这是最危险的一类"假成功"。
+    // 现在只在显式 `VITE_DEMO_MODE=true` 时启用。
+    if (DEMO_MODE && (cleanUrl.includes('demo') || username.toLowerCase() === 'demo')) {
       return {
         id: 'host-' + Date.now(),
         label: `${username} 的电脑 (Demo)`,
@@ -87,7 +93,11 @@ export const PairingClient = {
   async pair(baseUrl: string, code: string, deviceName: string): Promise<HostRecord> {
     const cleanUrl = baseUrl.replace(/\/+$/, '');
 
-    if (cleanUrl.includes('demo') || code.toLowerCase().includes('demo') || code === '123456') {
+    // 🔴 演示模式才允许伪造凭据（2026-10-14 修正）
+    //
+    // 原判据含 `code === '123456'` —— 用户真输入这个码会拿到**本地伪造的 token**，
+    // 界面显示"配对成功"，但实际上**从未与电脑通信**。
+    if (DEMO_MODE && (cleanUrl.includes('demo') || code.toLowerCase().includes('demo') || code === '123456')) {
       return {
         id: 'host-' + Date.now(),
         label: `已配对工作电脑 (Demo)`,
