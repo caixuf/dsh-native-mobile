@@ -705,7 +705,11 @@ private fun WorkspaceHeader(
             ) {
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
-                    modifier = Modifier.weight(1f, fill = false),
+                    // `weight(1f)`（fill 默认 true）：内层精确吃满「除右侧时间/箭头之外」
+                    // 的全部宽度。**不能写 `fill = false`** —— 那会让内层宽度不受
+                    // 外层 `SpaceBetween` 约束，于是右侧的时间紧贴在计数文字后面
+                    // （模拟器实测：「2 会话 · 6 子代理14 分钟前」粘成一坨）。
+                    modifier = Modifier.weight(1f),
                 ) {
                     DshIcon(
                         DshIcons.Folder,
@@ -721,12 +725,14 @@ private fun WorkspaceHeader(
                         color = MaterialTheme.colorScheme.onSurface,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
-                        // 🔴 名字**主动让位**（2026-10-14 真机修复）。
+                        // 🔴 名字负责**吸收挤压**（2026-10-14 模拟器实测第二轮修正）。
                         //
-                        // Compose 的 Row 里，带 weight 的子项**最后**测量；不给 weight
-                        // 的子项先按固有宽度占位。所以让名字带 weight 后：
-                        // 计数文字与「运行中」徽章先拿到它们的固有宽度，**剩下的**才归名字，
-                        // 名字过长时自己省略 —— 而不是把计数文字挤成竖排单列。
+                        // Compose 的 Row 里，带 weight 的子项**最后**测量：徽章与计数
+                        // 先按固有宽度占位，剩下的才归名字，名字过长时自己省略。
+                        //
+                        // 上一轮我把 weight 加在了**内层 Row 自身**上并配 `fill = false`，
+                        // 那是错的 —— 内层不受外层约束，右侧时间就贴上来了。
+                        // weight 要用在**名字**上，让信息层级正确：组名 > 计数 > 时间。
                         modifier = Modifier.weight(1f, fill = false),
                     )
                     Spacer(Modifier.width(8.dp))
@@ -747,18 +753,22 @@ private fun WorkspaceHeader(
                         },
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.75f),
-                        // 🔴 必须限制单行 + 省略号（2026-10-14 真机发现）。
+                        // 🔴 单行 + 省略号（2026-10-14 真机发现）。
                         //
-                        // 这是 Row 里**最后一个**没有宽度约束的子项。当它前面多出
-                        // 「运行中 N」徽章时，剩余宽度被挤到接近 0，Compose 会把每个
-                        // 汉字**单独折行**——真机上表现为「2 会话 · 5 子代理」竖着排成
-                        // 一列 7 行，非常难看。
-                        //
-                        // 组名那行有 maxLines=1 + Ellipsis，这行漏了，所以只有"运行中"
-                        // 的组才会露馅（aiwork 组没有徽章，显示正常）。
+                        // 这是 Row 里最后一个子项。当前面多出「运行中 N」徽章时，
+                        // 剩余宽度可能被挤到接近 0，Compose 会把每个汉字**单独折行**
+                        // ——真机表现为「2 会话 · 5 子代理」竖排成 7 行，非常难看。
+                        // 加 maxLines/overflow 后最差也只是省略号。
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
                     )
+                    // 计数与右侧时间之间的保底间距。
+                    //
+                    // 内层 Row 现在带 `weight(1f)` 会吃满剩余宽度，若最右子项不参与
+                    // 挤压，时间就会**紧贴**在「子代理」后面（模拟器实测：
+                    // 「2 会话 · 6 子代理14 分钟前」粘成一坨）。这里给一段固定间距，
+                    // 保证即使计数占满也有视觉分隔。
+                    Spacer(Modifier.width(8.dp))
                 }
 
                 Row(verticalAlignment = Alignment.CenterVertically) {

@@ -129,8 +129,21 @@ object ConnectionHub {
             conn.state.collect { s ->
                 when (s) {
                     is LinkState.Ready -> startServiceIfNeeded()
-                    is LinkState.Disconnected -> stopServiceIfNeeded()
-                    else -> Unit // Connecting / Degraded：保持现状，不反复起停
+                    // 🔴 `Disconnected` **绝不停止服务**（2026-10-14 模拟器实测抓到的自造 bug）。
+                    //
+                    // 原实现在这里调 `stopServiceIfNeeded()` —— 那是**逻辑反转**：
+                    // 前台服务的全部意义就是「断线时保住进程，好让重连能发生」。
+                    // 一断线就停服务，等于**一旦掉线就永远回不来**（进程随 Activity
+                    // 一起被回收，再没人发起重连）。
+                    //
+                    // 实测现象：连接掉了一次后就再也连不上，顶部一直红着
+                    // 「未连接到电脑」，而前台服务在 `dumpsys activity services`
+                    // 里查不到 —— 服务被自己停掉了。
+                    //
+                    // 只有用户**主动断开**（切主机 / 删除主机 → `detach()`）才该停服务。
+                    is LinkState.Disconnected -> Unit
+                    // Connecting / Degraded：保持现状，不反复起停（避免通知闪烁）
+                    else -> Unit
                 }
             }
         }

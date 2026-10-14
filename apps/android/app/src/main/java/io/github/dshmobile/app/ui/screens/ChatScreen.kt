@@ -17,6 +17,8 @@ import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.rememberScrollState
 import io.github.dshmobile.app.ui.WorkspaceFormatter
 import io.github.dshmobile.app.ui.AmbientWallpaper
+import io.github.dshmobile.app.ui.GlassCard
+import io.github.dshmobile.app.ui.PulseDot
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -591,92 +593,105 @@ private fun ExecutionContextBar(
     val clipboardManager = androidx.compose.ui.platform.LocalClipboardManager.current
     var showDialog by remember { mutableStateOf(false) }
 
-    Row(
+    Box(
         Modifier
             .fillMaxWidth()
-            .background(MaterialTheme.colorScheme.surfaceContainer)
-            .clickable { showDialog = true }
-            .padding(horizontal = DshTheme.m.gutter, vertical = DshTheme.m.sm),
-        verticalAlignment = Alignment.CenterVertically,
+            .padding(horizontal = DshTheme.m.gutter, vertical = 6.dp),
     ) {
-        // 左：设备身份（图标 + 名字 + 状态）
-        Row(
-            verticalAlignment = Alignment.CenterVertically,
-            modifier = Modifier.weight(1f, fill = false),
+        GlassCard(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clickable { showDialog = true },
+            shape = RoundedCornerShape(14.dp),
+            backgroundColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.82f),
+            borderColor = if (running) MaterialTheme.colorScheme.primary.copy(alpha = 0.45f)
+                         else MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.6f),
         ) {
-            Box(
-                Modifier
-                    .size(26.dp)
-                    .background(
-                        if (running) busyColor.copy(alpha = 0.14f)
-                        else MaterialTheme.colorScheme.surfaceContainerHighest,
-                        RoundedCornerShape(8.dp),
-                    ),
-                contentAlignment = Alignment.Center,
-            ) {
-                DshIcon(
-                    DshIcons.Desktop,
-                    contentDescription = null,
-                    tint = if (running) busyColor else MaterialTheme.colorScheme.onSurfaceVariant,
-                    size = 15.dp,
-                )
-            }
-            Spacer(Modifier.width(DshTheme.m.sm))
-            Column {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text(
-                        text = displayHost,
-                        style = MaterialTheme.typography.labelLarge,
-                        color = MaterialTheme.colorScheme.onSurface,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                    )
-                    Spacer(Modifier.width(6.dp))
-                    Box(
-                        Modifier
-                            .size(6.dp)
-                            .background(
-                                if (running) busyColor else DshTheme.online,
-                                CircleShape,
-                            ),
-                    )
-                }
-                Text(
-                    text = if (running) "正在这台电脑上执行任务…" else "远程守护中 · 点击看详情",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = if (running) busyColor else MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 1,
-                )
-            }
-        }
-
-        // 右：工作区目录（有才显示）
-        workspace?.takeIf { it.isNotBlank() }?.let { dir ->
-            Spacer(Modifier.width(DshTheme.m.sm))
             Row(
                 Modifier
-                    .background(
-                        MaterialTheme.colorScheme.surfaceContainerHighest,
-                        RoundedCornerShape(6.dp),
-                    )
-                    .padding(horizontal = 8.dp, vertical = 4.dp),
+                    .fillMaxWidth()
+                    .padding(horizontal = 12.dp, vertical = 8.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                DshIcon(
-                    DshIcons.Folder,
-                    contentDescription = null,
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                    size = 12.dp,
-                )
-                Spacer(Modifier.width(4.dp))
-                Text(
-                    text = shortPath(dir),
-                    style = MaterialTheme.typography.labelSmall,
-                    fontFamily = FontFamily.Monospace,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
+                // 左：设备身份（图标 + 名字 + 呼吸状态脉冲）
+                Box(
+                    Modifier
+                        .size(32.dp)
+                        .background(
+                            if (running) MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.75f)
+                            else MaterialTheme.colorScheme.surfaceContainerHighest,
+                            RoundedCornerShape(10.dp),
+                        ),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    DshIcon(
+                        DshIcons.Desktop,
+                        contentDescription = null,
+                        tint = if (running) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                        size = 17.dp,
+                    )
+                }
+                Spacer(Modifier.width(10.dp))
+                Column(Modifier.weight(1f, fill = false)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            text = displayHost,
+                            style = MaterialTheme.typography.labelLarge,
+                            fontWeight = FontWeight.SemiBold,
+                            color = MaterialTheme.colorScheme.onSurface,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                        Spacer(Modifier.width(6.dp))
+                        PulseDot(
+                            color = if (running) MaterialTheme.colorScheme.primary else DshTheme.online,
+                            size = 6.dp,
+                            pulseScale = if (running) 2.2f else 1.6f,
+                        )
+                    }
+                    Text(
+                        text = if (running) "正在电脑原生环境执行任务…" else "远程守护中 · 点击看详情",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = if (running) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.75f),
+                        maxLines = 1,
+                    )
+                }
+
+                // 右：工作区目录（有才显示）
+                workspace?.takeIf { it.isNotBlank() }?.let { dir ->
+                    Spacer(Modifier.width(8.dp))
+                    Row(
+                        Modifier
+                            .background(
+                                MaterialTheme.colorScheme.surfaceContainerHighest.copy(alpha = 0.8f),
+                                RoundedCornerShape(8.dp),
+                            )
+                            .border(
+                                1.dp,
+                                MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f),
+                                RoundedCornerShape(8.dp),
+                            )
+                            .padding(horizontal = 8.dp, vertical = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        DshIcon(
+                            DshIcons.Folder,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.primary,
+                            size = 12.dp,
+                        )
+                        Spacer(Modifier.width(4.dp))
+                        Text(
+                            text = shortPath(dir),
+                            style = MaterialTheme.typography.labelSmall,
+                            fontFamily = FontFamily.Monospace,
+                            fontWeight = FontWeight.Medium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
+                }
             }
         }
     }

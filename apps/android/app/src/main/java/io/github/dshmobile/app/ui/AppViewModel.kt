@@ -81,10 +81,6 @@ data class HostsUiState(
  */
 class AppViewModel(private val store: HostStore) : ViewModel() {
 
-    private companion object {
-        const val TAG = "DSH_APP"
-    }
-
     private val _state = MutableStateFlow(HostsUiState())
     val state: StateFlow<HostsUiState> = _state.asStateFlow()
 
@@ -304,6 +300,9 @@ class AppViewModel(private val store: HostStore) : ViewModel() {
     }
 
     companion object {
+        /** 日志 tag（连接层诊断用）。 */
+        private const val TAG = "DSH_APP"
+
         fun deviceName(): String {
             val model = Build.MODEL ?: "Android"
             return model.trim().ifEmpty { "Android" }
