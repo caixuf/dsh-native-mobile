@@ -8,6 +8,12 @@ import { Envelopes } from './services/envelopes';
 import { NativeBridge } from './services/native-bridge';
 import type { NativeRelayStatus } from './services/native-bridge';
 import { fetchChatPage } from './lib/session-page';
+import { collectMessageText, isDialogEvent, isToolEvent } from './lib/session-page';
+import {
+  readArchivedIds,
+  setArchivedId,
+  writeArchivedIds,
+} from './lib/session-groups';
 import { currentDeviceName, getOrCreateDeviceId, uniqueDeviceName } from './services/device';
 import { HostsScreen } from './components/screens/HostsScreen';
 import { PairScreen } from './components/screens/PairScreen';
@@ -55,26 +61,8 @@ const withDeviceSuffix = (name: string): string => {
   }
 };
 
-/** `session.page` 的一条记录（真主机返回形状，见 docs/api-contract.md）。 */
-interface ChatPageRecord {
-  seq?: number;
-  event?: {
-    type?: string;
-    seq?: number;
-    data?: {
-      name?: string;
-      callId?: string;
-      arguments?: string;
-      result?: string;
-      isError?: boolean;
-      message?: { content?: Array<{ text?: string }> };
-    };
-  };
-}
-
-interface ChatPageResponse {
-  records?: ChatPageRecord[];
-}
+// `session.page` 的记录类型由 lib/session-page.ts 定义（那里也是构造请求的地方），
+// 这里不再重复声明 —— 之前重复过一次，结果两边的字段漂移，类型检查才发现。
 
 /**
  * 真主机下发的文案字段可能是**多语言对象** `{en, zh}`（实测：`displayReason`）。
@@ -137,6 +125,18 @@ export const App: React.FC = () => {
 
   /** 运行中排队的指令（发送失败会退回队首并计数）。 */
   const [queued, setQueued] = useState<QueuedPrompt[]>([]);
+
+  /** 聊天页的读取错误（子代理读不到、网络失败等）——必须让用户看见，不能只 console.warn。 */
+  const [chatError, setChatError] = useState<string | null>(null);
+
+  /** 本机归档的会话 id（真主机没有 archive 端点，UI 已如实标注"仅本机归档"）。 */
+  const [archivedIds, setArchivedIds] = useState<string[]>(() => {
+    try {
+      return readArchivedIds(localStorage);
+    } catch {
+      return [];
+    }
+  });
 
   const connRef = useRef<DshConnection | null>(null);
   const advanceTimerRef = useRef<number | null>(null);
@@ -356,19 +356,41 @@ export const App: React.FC = () => {
       // 两者的请求构造/错误处理抽在 lib/session-page.ts，由
       // scripts/test-session-page.mjs 钉死（含真主机原文报文）。
       const res = await fetchChatPage((method, args) => conn.call(method, args), session);
+
+      // 🔴 切会话竞态：请求飞在路上时用户可能已经切走，
+      // 旧会话的记录会短暂写进新会话的界面（真机实测串台 2–3 秒）。
+      if (currentSessionRef.current?.sessionId !== session.sessionId) return;
+
       const records = res?.records || [];
       const lines: ChatLine[] = [];
 
       records.forEach((rec, idx) => {
         const ev = rec.event;
         if (!ev) return;
-        const kind = ev.type || 'assistant/message';
+        const kind = ev.type || '';
+
+        // 🔴 P0：只渲染真正的对话事件。旧实现把所有记录都当气泡，
+        // 于是**整段系统提示词**（含内部工具说明）被渲染成助手消息。
+        if (!isDialogEvent(kind)) return;
+
         const data = ev.data;
         const role = kind.startsWith('user') ? 'user' : 'assistant';
+
+        // 🔴 P0：取**所有** text 段并跳过 reasoning。
+        // 旧实现写死 `content[0].text`，模型先输出思考时就把**私有推理当回答显示**，
+        // 真正的正文被吞掉 —— 表现为间歇性"答非所问"。
+        //
+        // 而且两种事件的载荷形状**不一样**（真主机实测）：
+        //   assistant/message → { message: { content: [...] } }
+        //   user/message      → { content: [...] }        ← 没有 message 包装！
+        // 只读 `data.message.content` 会让**用户自己发的指令渲染成空气泡**。
         const text =
-          data?.message?.content?.[0]?.text ||
+          collectMessageText(data?.message?.content ?? data?.content) ||
           (data?.result ? String(data.result) : '') ||
           '';
+
+        // 工具事件即使正文为空也要渲染；普通消息为空则不入列表（避免空卡）
+        if (!isToolEvent(kind) && !text) return;
 
         lines.push({
           key: `line-${rec.seq || idx}`,
@@ -384,8 +406,20 @@ export const App: React.FC = () => {
       });
 
       setChatLines(lines);
+      setChatError(null);
     } catch (err) {
+      // 🔴 F4：不能再只 console.warn。
+      // 子代理会话在当前主机上**无法通过 session.page 读取**（实测 8 种 address 形状全被拒：
+      // `kind:'subagent'` 不在 wire schema 里；用 `kind:'session'` 则要求 subagent delivery）。
+      // 旧实现把异常吞掉，用户点进去只看到**空聊天页且没有任何错误** —— 又一次静默失败。
       console.warn('Failed to fetch chat page', err);
+      const message = (err as Error)?.message ?? '未知错误';
+      setChatError(
+        session.isSubagent
+          ? `子代理会话在当前主机上无法直接读取（主机要求 subagent delivery）：${message}。请打开它的父会话查看。`
+          : `读取会话记录失败：${message}`,
+      );
+      if (currentSessionRef.current?.sessionId === session.sessionId) setChatLines([]);
     }
   };
 
@@ -463,9 +497,30 @@ export const App: React.FC = () => {
   };
 
   const handleOpenSession = (session: SessionRow) => {
+    // 切会话就停止上一轮的跟踪，避免把 A 会话的轮询结果写进 B 会话
+    stopTurnWatch();
+    setRunning(false);
     setCurrentSession(session);
     setRoute('chat');
+    // 先清空：否则上一会话的消息会短暂串台（真机实测 2–3 秒，F5）
+    setChatLines([]);
+    setChatError(null);
     loadChatPage(session);
+  };
+
+  useEffect(() => stopTurnWatch, []);
+
+  /** 本机归档（真主机无 archive 端点；仅隐藏并持久化在设备上）。 */
+  const applyArchive = (session: SessionRow, archived: boolean) => {
+    setArchivedIds((prev) => {
+      const next = setArchivedId(prev, session.sessionId, archived);
+      try {
+        writeArchivedIds(next, localStorage);
+      } catch {
+        /* 存不下也不影响本次会话内的隐藏 */
+      }
+      return next;
+    });
   };
 
   const handleCreateSession = async (cwd?: string) => {
@@ -529,6 +584,77 @@ export const App: React.FC = () => {
     }
   };
 
+  /** 发送后跟踪本轮执行：轮询刷新 + 用主机权威的 running 标记决定何时停。 */
+  const pollTimerRef = useRef<number | null>(null);
+
+  const stopTurnWatch = () => {
+    if (pollTimerRef.current !== null) {
+      window.clearInterval(pollTimerRef.current);
+      pollTimerRef.current = null;
+    }
+  };
+
+  /**
+   * 发完指令后盯着这一轮，直到主机说它不跑了。
+   *
+   * 🔴 为什么不能只靠事件流刷新：实测（验证者的整 app 端到端第 9 步）
+   * 新建会话里主机已经写了回复，**App 界面却一直不更新** ——
+   * 只靠 emit 事件 + 发送后两次固定轮询（0/1.5s）根本覆盖不了真实生成耗时。
+   * 这里改成：边转边刷（2.5s），并用 `session/list` 的 `running` 标记作为**权威终止信号**
+   * （主机会如实告诉你这个会话还在不在跑），有上限兜底，切换会话即停。
+   */
+  const startTurnWatch = (session: SessionRow) => {
+    stopTurnWatch();
+    let ticks = 0;
+    // 🔴 只在**见过 running=true 之后的 false**才算"这一轮结束"。
+    // 踩过的坑：刚发完指令时主机可能还报 running=false（轮次尚未真正开始），
+    // 一见 false 就停轮询 → 回复随后到达却再也没人取，界面永远停在"执行中"。
+    let seenRunning = false;
+    let falseStreak = 0;
+
+    pollTimerRef.current = window.setInterval(() => {
+      ticks += 1;
+      const conn = connRef.current;
+      if (!conn) {
+        stopTurnWatch();
+        return;
+      }
+      void loadChatPage(session);
+
+      if (ticks % 3 === 0) {
+        void (async () => {
+          try {
+            const res = (await conn.call('session.list', { _request: {} })) as {
+              items?: Array<{ sessionId?: string; running?: boolean }>;
+            };
+            const row = res?.items?.find((i) => i.sessionId === session.sessionId);
+            if (!row) return;
+            if (row.running === true) {
+              seenRunning = true;
+              falseStreak = 0;
+              return;
+            }
+            falseStreak += 1;
+            // 真实转换（跑过再停），或一直没跑起来但已连续多次报 false（约 15s）
+            if ((seenRunning && row.running === false) || falseStreak >= 5) {
+              setRunning(false);
+              void loadChatPage(session);
+              stopTurnWatch();
+            }
+          } catch {
+            /* 忽略：下一拍再试 */
+          }
+        })();
+      }
+
+      // 上限兜底：最长盯 5 分钟，避免异常情况下无限轮询
+      if (ticks > 300) {
+        setRunning(false);
+        stopTurnWatch();
+      }
+    }, 1000);
+  };
+
   /**
    * 真正把一条指令发出去。
    *
@@ -568,13 +694,9 @@ export const App: React.FC = () => {
       setRunning(true);
       setSending(false);
 
-      // Refresh chat；真正的实时更新靠事件流（见 handleStreamTick），
-      // 这里几次兜底轮询只是为了首屏尽快有反馈。
+      // Refresh chat；真正的实时更新靠事件流 + 下面的 turn watch
       loadChatPage(currentSession);
-      setTimeout(() => loadChatPage(currentSession), 1500);
-      // 目前没有可靠的"本轮结束"信号（事件流里的终态事件尚未定名），
-      // 先沿用既有的 3s 复位；队列发送失败会退回队首并计数，不会静默丢。
-      window.setTimeout(() => setRunning(false), 3000);
+      startTurnWatch(currentSession);
       return true;
     } catch (err) {
       setPreparing(false);
@@ -753,6 +875,10 @@ export const App: React.FC = () => {
         onPress: () => setRoute('hosts'),
       };
     }
+    // 聊天页读取失败（子代理读不到 / 网络失败）必须可见 —— 否则用户只看到空历史。
+    if (chatError) {
+      return { text: chatError, onPress: () => setChatError(null) };
+    }
     if (hosts.length === 0) return null;
     const platform = NativeBridge.platform();
     if (platform === 'web') {
@@ -769,7 +895,13 @@ export const App: React.FC = () => {
     }
     if (relayStatus.configured && !relayStatus.notificationsEnabled) {
       return {
-        text: '通知权限未开启：审批到了手机也不会提醒你。请在系统设置里允许本应用发送通知。',
+        text: '通知权限未开启：审批到了手机也不会提醒你。点这里去系统设置里允许通知。',
+        // 真能跳系统设置页（壳提供）；桌面/浏览器里返回 false，点了也只是重试。
+        onPress: () => {
+          if (!NativeBridge.openNotificationSettings()) {
+            setRelayStatus(NativeBridge.status());
+          }
+        },
       };
     }
     if (relayStatus.lastError) {
@@ -795,6 +927,64 @@ export const App: React.FC = () => {
       if (activeHostId) startHostConnection(activeHostId);
     });
   }, [activeHostId]);
+
+  /**
+   * Android 壳的返回键。
+   *
+   * 🔴 之前真机上**在会话列表按返回会直接退出 App**（WebView 无历史 → super → finish）。
+   * 现在由网页决定：抽屉开着先关抽屉；chat/pair/hosts 各回上一级；
+   * 只有根页面（sessions）才返回 false 交给壳（壳会二次确认再退出）。
+   */
+  const backHandlerRef = useRef<() => boolean>(() => false);
+  useEffect(() => {
+    backHandlerRef.current = () => {
+      if (drawerOpen) {
+        setDrawerOpen(false);
+        return true;
+      }
+      if (route === 'chat') {
+        setRoute('sessions');
+        return true;
+      }
+      if (route === 'pair') {
+        setRoute(hosts.length > 0 ? 'hosts' : 'sessions');
+        return true;
+      }
+      if (route === 'hosts') {
+        setRoute('sessions');
+        return true;
+      }
+      return false; // sessions：交给壳（首次提示、再按才退出）
+    };
+  });
+  useEffect(() => {
+    NativeBridge.installBackHandler(() => backHandlerRef.current());
+  }, []);
+
+  /** 把路由告诉壳，让它的返回键判定有依据。 */
+  useEffect(() => {
+    NativeBridge.setRoute({ route, drawerOpen });
+  }, [route, drawerOpen]);
+
+  /** 点通知进来 → 跳到对应会话（壳会推，也可能需要网页主动取一次）。 */
+  const deepLinkRef = useRef<(link: { eventId?: string; sessionId?: string }) => boolean>(() => false);
+  useEffect(() => {
+    deepLinkRef.current = (link) => {
+      const sessionId = link?.sessionId;
+      if (!sessionId) return false;
+      const target = [...sessions, ...subagentSessions].find((s) => s.sessionId === sessionId);
+      if (!target) return false;
+      setPendingPrompt(null);
+      handleOpenSession(target);
+      return true;
+    };
+  }, [sessions, subagentSessions]);
+
+  useEffect(() => {
+    NativeBridge.installDeepLinkHandler((link) => deepLinkRef.current(link));
+    const pending = NativeBridge.takePendingDeepLink();
+    if (pending?.pending) deepLinkRef.current(pending);
+  }, []);
 
   return (
     <div className="flex h-screen w-screen overflow-hidden bg-[#090a0f] text-[#f8fafc] font-sans">
@@ -900,6 +1090,9 @@ export const App: React.FC = () => {
             subagentSessions={subagentSessions}
             searchResults={searchResults}
             loading={sessionsLoading}
+            archivedIds={archivedIds}
+            onArchive={(s) => applyArchive(s, true)}
+            onUnarchive={(s) => applyArchive(s, false)}
             onOpen={handleOpenSession}
             onRefresh={() => loadSessions()}
             onSearch={handleSearchSessions}

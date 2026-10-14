@@ -381,6 +381,26 @@ function chatInfo() {
 function hasAssistantText(t) {
   return qsa('.specular-card').some(function (c) { return txtOf(c).indexOf(t) >= 0; });
 }
+/**
+ * 每张助手卡片的**正文**（去掉固定标题）。
+ *
+ * 为什么要精确到"正文"：hasAssistantText 会被两种情况骗过 ——
+ *   ① 会话标题里就含那串字（聊天页 header 也参与 innerText）；
+ *   ② 模型的 reasoning 里复述了那串字。
+ * 所以判定"正文有没有渲染出来"必须用 assistantBodies() 做**相等**比较。
+ */
+function assistantBodies() {
+  const header = 'DeepSeek 远程执行响应';
+  return qsa('.specular-card').filter(function (c) {
+    return txtOf(c).indexOf(header) >= 0;
+  }).map(function (c) {
+    const t = txtOf(c);
+    return flat(t.slice(t.indexOf(header) + header.length));
+  }).filter(function (t) { return t; });
+}
+function userBubbleTexts() {
+  return qsa('[class*="rounded-br-xs"]').map(function (e) { return flat(txtOf(e)); });
+}
 function queueInfo() {
   const bar = document.querySelector('section[aria-label="待发消息队列"]');
   if (!bar) return { present: false, text: '', removeLabels: [], retryLabels: [] };
@@ -614,6 +634,102 @@ async function revokeDevice(deviceId) {
   await gatewayPost('/mobile-gateway/manage/api/revoke', { deviceId }).catch(() => {});
 }
 
+// ── 宿主侧真值（用 App 自己的令牌直连主机）───────────────────────────────────
+//
+// 为什么需要它：只靠"页面里有没有那串字"判定"回复有没有渲染出来"会被骗 ——
+// 会话标题、以及模型 reasoning 里复述的同一串字都会命中。
+// 所以这里从**宿主记录**里取"真正的正文"，再要求 App 把它**原样渲染成卡片正文**。
+
+async function activeHostRecord() {
+  const dump = await pageFn('return localStorageDump();');
+  let hosts = [];
+  try {
+    hosts = JSON.parse(dump.dsh_hosts_v1 || '[]');
+  } catch {
+    hosts = [];
+  }
+  const active = hosts.find((h) => h.id === dump.dsh_active_host_id) || hosts[0];
+  if (!active) throw new Error('设备上没有主机记录，取不到宿主侧真值');
+  return active;
+}
+
+async function hostRpc(method, args) {
+  const host = await activeHostRecord();
+  const i = method.indexOf('.');
+  const ep = i < 0 ? method : `${method.slice(0, i)}/${method.slice(i + 1)}`;
+  const res = await fetch(`${host.baseUrl}/mobile-gateway/api/${ep}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${host.token}` },
+    body: JSON.stringify({ type: 'client-request', rpcId: 'e2e' + Date.now(), method: ep, payload: { args } }),
+  });
+  const json = await res.json().catch(() => null);
+  if (!json?.result?.ok) throw new Error(`宿主 ${method} 失败：${JSON.stringify(json?.result?.error ?? `HTTP ${res.status}`)}`);
+  return json.result.value;
+}
+
+/** 取某会话的一页记录（自动处理 `past cursor N` 探针重试，与 App 同一条路径）。 */
+async function hostPageRecords(sessionId) {
+  const address = { kind: 'session', sessionId };
+  try {
+    const v = await hostRpc('session.page', { request: { address, throughSeq: 1000000, maxMessages: 50 } });
+    return v.records || [];
+  } catch (err) {
+    const m = /past cursor (\d+)/.exec(String(err.message));
+    if (!m) throw err;
+    const v = await hostRpc('session.page', { request: { address, throughSeq: Number(m[1]), maxMessages: 50 } });
+    return v.records || [];
+  }
+}
+
+/**
+ * 找到"确实包含我们这条 prompt"的那个会话，并取回助手记录的**分块真实内容**。
+ * 这是判定的 ground truth：`replyText` 必须原样出现在 App 的助手卡片正文里。
+ */
+async function findReplyTruth(promptText, { timeout = 90000, expectSessionId = null } = {}) {
+  const deadline = Date.now() + timeout;
+  let last = null;
+  for (;;) {
+    let items = [];
+    try {
+      items = (await hostRpc('session.list', { _request: {} })).items || [];
+    } catch (err) {
+      last = { listError: err.message };
+      await sleep(1500);
+      continue;
+    }
+    const candidates = items
+      .filter((s) => s.origin !== 'subagent' && (!expectSessionId || s.sessionId === expectSessionId))
+      .sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0))
+      .slice(0, 6);
+    for (const s of candidates) {
+      let recs = [];
+      try {
+        recs = await hostPageRecords(s.sessionId);
+      } catch {
+        continue;
+      }
+      const hasPrompt = recs.some(
+        (r) => r.event?.type === 'user/message' && JSON.stringify(r.event.data || {}).includes(promptText),
+      );
+      if (!hasPrompt) continue;
+      const asst = recs.filter((r) => r.event?.type === 'assistant/message');
+      last = { sessionId: s.sessionId, title: s.projections?.values?.title, assistantRecords: asst.length };
+      if (!asst.length) continue;
+      const parts = asst[asst.length - 1].event?.data?.message?.content || [];
+      const replyText = parts.filter((p) => p.type === 'text').map((p) => p.text || '').join('\n').trim();
+      const reasoningText = parts.filter((p) => p.type === 'reasoning').map((p) => p.text || '').join('\n').trim();
+      if (!replyText) continue;
+      return { sessionId: s.sessionId, title: s.projections?.values?.title, partTypes: parts.map((p) => p.type), replyText, reasoningText };
+    }
+    if (Date.now() > deadline) {
+      const e = new Error('从宿主侧等不到"带正文的 assistant 记录"');
+      e.evidence = last;
+      throw e;
+    }
+    await sleep(1500);
+  }
+}
+
 // ── localStorage 注入 ───────────────────────────────────────────────────────
 async function seedHosts(hosts, activeId) {
   const payload = JSON.stringify(JSON.stringify(hosts));
@@ -672,17 +788,31 @@ async function ensurePairedRealHost() {
 }
 
 // ── 会话列表 / 聊天页的通用动作 ─────────────────────────────────────────────
-async function waitSessionsScreen({ timeout = 30000 } = {}) {
+
+/**
+ * 等"列表真的加载完"。
+ *
+ * ⚠️ 踩过的坑：「暂无匹配的遥控会话」这个空态在**还没连上**时也会渲染，
+ * 只凭它判定会读到假空态，于是脚本会在"连接中 (1)"的页面上去找分组 → 假失败。
+ * 所以空态必须叠加「双向流就绪」，并且重启类场景一律走它。
+ */
+async function waitReadyWithSessions({ expectCards = false, timeout = 45000 } = {}) {
+  await until(
+    '链路就绪（会话列表页要显示「双向流就绪」）',
+    `(function(){ const t = bodyText(); return { ok: t.indexOf('遥控会话') >= 0 && t.indexOf('双向流就绪') >= 0, pill: flat(txtOf(qs('header'))).slice(0, 80) }; })()`,
+    { timeout, interval: 400 },
+  );
+  if (expectCards) {
+    return until(
+      '会话卡片渲染出来',
+      `(function(){ const c = sessionCards(); return { ok: c.length > 0, cards: c.length, body: flat(bodyText()).slice(0, 160) }; })()`,
+      { timeout, interval: 500 },
+    );
+  }
   return until(
-    '会话列表就绪（标题 + 分组或空态）',
-    `(function(){
-      const t = bodyText();
-      const groups = groupPanels();
-      const summary = /\\d+ 个工作区/.test(t);
-      const empty = t.indexOf('暂无匹配的遥控会话') >= 0 || t.indexOf('没有匹配的会话') >= 0;
-      return { ok: t.indexOf('遥控会话') >= 0 && (groups.length > 0 || summary || empty), groups: groups.length, summary: summary, empty: empty, text: flat(t).slice(0, 240) };
-    })()`,
-    { timeout },
+    '工作区分组渲染出来',
+    `(function(){ const g = groupPanels(); return { ok: g.length > 0, groups: g.length, body: flat(bodyText()).slice(0, 160) }; })()`,
+    { timeout, interval: 500 },
   );
 }
 
@@ -886,7 +1016,40 @@ async function startFakeHost({ mode = 'ui', eventId = 'ev-e2e-fixed-1', emitDela
 
   return {
     state,
-    stop: () => new Promise((resolve) => wss.close(() => server.close(() => resolve()))),
+    /**
+     * 关掉假主机。
+     *
+     * ⚠️ 不能直接 `wss.close(cb)`：那会**等所有客户端断开**，而 app 的 WebView
+     * 与原生中继正连着它（它们不会主动断）—— 实测会把整个脚本永久挂住。
+     * 所以先 `terminate()` 掉所有客户端，并给一个 3s 兜底。
+     */
+    stop: () =>
+      new Promise((resolve) => {
+        let done = false;
+        const finish = () => {
+          if (done) return;
+          done = true;
+          resolve();
+        };
+        try {
+          for (const client of wss.clients) {
+            try {
+              client.terminate();
+            } catch {
+              /* 已经断了 */
+            }
+          }
+        } catch {
+          /* ignore */
+        }
+        try {
+          if (typeof server.closeAllConnections === 'function') server.closeAllConnections();
+        } catch {
+          /* ignore */
+        }
+        wss.close(() => server.close(() => finish()));
+        setTimeout(finish, 3000).unref?.();
+      }),
   };
 }
 
@@ -909,7 +1072,7 @@ async function seedFakeHost() {
 }
 
 // ── 场景：整 app 链路 ───────────────────────────────────────────────────────
-async function scenarioChain({ pin, pinDisplay, clean }) {
+async function scenarioChain({ clean }) {
   const info = {};
 
   await step('preflight：adb / 模拟器 / 真网关都可用', async () => {
@@ -937,7 +1100,12 @@ async function scenarioChain({ pin, pinDisplay, clean }) {
     return res.info;
   });
 
-  await step(`铸真配对码（PIN ${pinDisplay}）并填进配对页（6 位 PIN 输入框）`, async () => {
+  await step('铸真配对码并填进配对页（6 位 PIN 输入框）', async () => {
+    // ⚠️ 必须**在这里**才铸码：网关只保留**一枚**有效配对码，
+    // 再铸一枚会让上一枚立刻变成「配对码不匹配」（真机实测：mint#1→403 mismatch，mint#2→200）。
+    // 所以铸码与点击之间不能有别的铸码动作（包括人工在别的终端铸码）。
+    const mint = await mintPairing();
+    const pin = mint.pin;
     await pageFn(`const b = byText('button', '一次性配对码'); clickEl(b); return true;`);
     await sleep(200);
     await pageFn(`const inputs = qsa('input'); const urlEl = inputs.filter(function (i) { return /^https?:/.test(i.value); })[0];
@@ -947,7 +1115,8 @@ return true;`);
     const p = await page('pairInfo()');
     expect(p.baseUrl === GATEWAY, `网关地址没写进去（实际 ${p.baseUrl}）`, p);
     expect(p.pins.join('') === pin, `6 位 PIN 没填对（实际 ${p.pins.join('')}）`, p);
-    evidence({ baseUrl: p.baseUrl, pins: p.pins.join(''), hiddenCodeInput: p.code });
+    evidence({ pinDisplay: mint.pinDisplay, baseUrl: p.baseUrl, pins: p.pins.join(''), hiddenCodeInput: p.code });
+    info.pin = pin;
     return p;
   });
 
@@ -1026,33 +1195,66 @@ return setNativeValue(el, ${JSON.stringify(cwd)});`);
       expect(set === cwd, `新建会话的 cwd 没写进去（实际 ${set}）`, { set });
       await pageFn(`const b = byText('button', '创建会话'); if (!b) throw new Error('找不到「创建会话」按钮'); clickEl(b); return true;`);
       const res = await until('进入新会话聊天页', `(function(){ const c = chatInfo(); return { ok: c.onChat, info: c }; })()`, { timeout: 25000 });
-      evidence({ cwd, chat: res.info });
-      return res.info;
+      const immediate = res.info;
+      // ⚠️ 刚进聊天页时时间线里可能**还是上一个会话的消息**：
+      // App 切会话只 setCurrentSession+loadChatPage，直到 fetch 回来才 setChatLines，
+      // 期间旧 lines 照旧渲染（实测 immediate.assistantCards=224 → settled=3）。
+      // 这里等本会话自己的历史落定，否则后面"回复是否新增"的基线是错的。
+      const settled = await until(
+        '新会话自己的历史落定（时间线不再是上一个会话的内容）',
+        `(function(){ const c = chatInfo(); return { ok: c.assistantCards <= 6 && c.userBubbles <= 1, info: c }; })()`,
+        { timeout: 20000, interval: 300 },
+      );
+      evidence({ cwd, immediateOnOpen: immediate, settled: settled.info, staleCardsOnOpen: immediate.specularCards });
+      return settled.info;
     });
 
-    await step(`发送一条 ASCII 指令并等到回复（哨兵 ${SENTINEL}）`, async () => {
-      const before = await page('chatInfo()');
+    await step('发送 ASCII 指令 → 我的指令可见 + 助手正文原样渲染（判定基准取宿主记录）', async () => {
       const prompt = `Reply with exactly: ${SENTINEL}`;
+      const before = await page('chatInfo()');
       await pageFn(`const ta = document.querySelector('textarea[aria-label="输入遥控指令"]'); setNativeValue(ta, ${JSON.stringify(prompt)}); return ta.value;`);
       await pageFn(`const b = document.querySelector('button[aria-label="发送"]') || document.querySelector('button[aria-label="加入待发队列"]'); if (!b) throw new Error('找不到发送按钮'); clickEl(b); return true;`);
-      const accepted = await until(
-        '主机接受了这条 prompt（出现执行中或已回复）',
-        `(function(){ const c = chatInfo(); return { ok: c.hasRunningBadge || hasAssistantText(${JSON.stringify(SENTINEL)}), info: c }; })()`,
-        { timeout: 20000 },
-      );
-      note(`prompt 已被接受：${truncate(accepted.info, 220)}`);
-      const reply = await until(
-        `助手回复里出现 ${SENTINEL}`,
-        `(function(){ const c = chatInfo(); return { ok: hasAssistantText(${JSON.stringify(SENTINEL)}), info: c }; })()`,
-        { timeout: 150000, interval: 1500 },
-      );
-      expect(reply.info.assistantCards > before.assistantCards, '助手卡片数量没有增加', { before, after: reply.info });
+
+      // ⚠️ 判定基准必须是**宿主记录里的正文**：
+      // 只查"页面里有没有那串字"会被两种情况骗过 —— ① 会话标题里含同一串字；
+      // ② 模型 reasoning 里复述了同一串字。两者都实测命中过。
+      const truth = await findReplyTruth(prompt);
+      note(`宿主真值：content 分块=[${truth.partTypes.join(',')}] 正文=${JSON.stringify(truncate(truth.replyText, 60))}`);
+      if (truth.reasoningText) note(`同一记录的 reasoning=${JSON.stringify(truncate(truth.reasoningText, 80))}`);
+      await sleep(1500); // 给 UI 反应时间
+      const obsRaw = await pageFn(`return { bubbles: userBubbleTexts(), bodies: assistantBodies(), info: chatInfo() };`);
+      // 只留前 160 字做证据：助手卡片正文里可能整段系统提示词（那本身也是一个发现）
+      const obs = {
+        bubbles: obsRaw.bubbles.slice(-6),
+        bodies: obsRaw.bodies.slice(-6).map((b) => truncate(b, 160)),
+        info: obsRaw.info,
+      };
+
+      const bubbleOk = obs.bubbles.indexOf(prompt) >= 0;
+      const replyOk = obs.bodies.indexOf(truth.replyText) >= 0;
+      const problems = [];
+      if (!bubbleOk) {
+        problems.push(
+          `我发出的指令没有渲染成用户气泡：实测 ${obs.bubbles.length} 个用户气泡，文本是 ${JSON.stringify(obs.bubbles)}` +
+            `（user/message 记录的文本在 data.content[0].text，而 App 读的是 data.message.content[0].text → 永远取不到）`,
+        );
+      }
+      if (!replyOk) {
+        problems.push(
+          `助手正文没有原样渲染：宿主正文=${JSON.stringify(truncate(truth.replyText, 60))}，content 分块=[${truth.partTypes.join(',')}]，` +
+            `App 渲染出的助手卡正文=${JSON.stringify(obs.bodies)}（content[0] 若是 reasoning，App 就会把推理当回答）`,
+        );
+      }
       evidence({
-        sent: prompt,
+        prompt,
+        hostTruth: { sessionId: truth.sessionId, partTypes: truth.partTypes, replyText: truncate(truth.replyText, 80), reasoningText: truncate(truth.reasoningText, 80) },
+        renderedUserBubbles: obs.bubbles,
+        renderedAssistantBodies: obs.bodies,
         before: { assistantCards: before.assistantCards, userBubbles: before.userBubbles },
-        after: reply.info,
       });
-      return reply.info;
+      expect(problems.length === 0, problems.join('  ／  '), { truth, obs });
+      info.reply = { truth, obs };
+      return { truth, obs };
     });
   }
 
@@ -1092,7 +1294,7 @@ async function scenarioCollapse() {
     await attach({ fresh: true });
     const prep = await ensurePairedRealHost();
     await reload();
-    await waitSessionsScreen();
+    await waitReadyWithSessions({ timeout: 60000 });
     evidence({ host: prep.host.id, deviceId: prep.host.deviceId, minted: prep.minted });
     return prep;
   });
@@ -1134,7 +1336,7 @@ if (!bs.length) throw new Error('找不到组标题 ' + ${JSON.stringify(label)}
   });
 
   await step(`重开 app 后「${target.label}」仍然是折叠的（不是回落到默认展开）`, async () => {
-    await waitSessionsScreen();
+    await waitReadyWithSessions({ timeout: 60000 });
     const g = await readGroup(target.label);
     expect(g, `重开后找不到组：${target.label}`, g);
     expect(
@@ -1166,8 +1368,11 @@ async function scenarioArchive() {
   await step('准备：真网关主机 + 重启 + 展开全部工作区', async () => {
     await attach({ fresh: true });
     await ensurePairedRealHost();
+    // 🔴 归档是**本机持久状态**，本场景会真的写它，跑之前必须清干净：
+    // 否则第二次运行会"再归档一张卡" → 断言 length===1 永远失败（真机实测踩到）。
+    await pageFn(`localStorage.removeItem('dsh.sessions.archived.v1'); return true;`);
     await reload();
-    await waitSessionsScreen();
+    await waitReadyWithSessions({ expectCards: true, timeout: 60000 });
     await expandAllGroups();
     await sleep(400);
     const cards = await page('sessionCards()');
@@ -1177,6 +1382,18 @@ async function scenarioArchive() {
   });
 
   await step('点「归档」→ 卡片从分组消失、出现在「已归档」区', async () => {
+    // 先单独确认"入口存在"：SessionCard 的归档按钮只在 onArchive/onUnarchive 有传时才渲染，
+    // 所以"找不到按钮"要报成**集成缺口**，而不是报成语义异常。
+    const entry = await pageFn(`return { archiveButtons: qsa('button[aria-label^="归档会话 "]').length,
+  restoreButtons: qsa('button[aria-label^="恢复会话 "]').length,
+  cards: sessionCards().length };`);
+    expect(
+      entry.archiveButtons > 0,
+      `会话卡片上没有任何「归档」按钮（卡片 ${entry.cards} 个）—— SessionCard 的归档按钮仅在 ` +
+        `onArchive/onUnarchive 被传入时渲染，而 App.tsx 渲染 <SessionsScreen ... /> 时**没有传**这两个回调（也没传 archivedIds），` +
+        `所以本机归档功能在真 app 里**不可达**（T1 的逻辑与组件都写好了，接线漏了）。`,
+      entry,
+    );
     const info = await pageFn(`const b = qs('button[aria-label^="归档会话 "]');
 if (!b) throw new Error('找不到归档按钮');
 const archiveLabel = b.getAttribute('aria-label');
@@ -1192,7 +1409,21 @@ return { archived: localStorage.getItem('dsh.sessions.archived.v1'),
   section: collapsedPanels().filter(function (g) { return /已归档会话/.test(g.label); }),
   body: flat(bodyText()).slice(0, 220) };`);
     expect(state.archived && JSON.parse(state.archived).length === 1, `归档后 localStorage 归档 id 不对：${state.archived}`, state);
-    expect(state.stillVisible === false, '归档后卡片仍然在工作区分组里（归档没隐藏它）', state);
+
+    // ⚠️ 不能用 `sessionCards()` 判断"是否还留在工作区分组"：归档区**也**渲染会话卡片
+    // （同样带「打开会话」按钮），所以那样判会永远为真（真机实测踩到）。
+    // 正确的判据是：这张卡片是否已经落进「已归档」面板里。
+    const moved = await pageFn(`const b = qsa('button[aria-label^="打开会话 "]').filter(function (x) {
+  return x.getAttribute('aria-label') === ${JSON.stringify(info.openLabel)}; })[0];
+if (!b) return { found: false, inArchived: false };
+let n = b, depth = 0, inArchived = false;
+while (n && depth < 12) { const t = flat(txtOf(n)); if (/^已归档/.test(t)) { inArchived = true; break; } n = n.parentElement; depth++; }
+return { found: true, inArchived: inArchived };`);
+    expect(
+      moved.found && moved.inArchived,
+      '归档后卡片没有移动到「已归档」区（可能仍留在工作区分组里）',
+      { moved, state },
+    );
     expect(state.section.length > 0, '归档后没有出现「已归档」区', state);
     evidence({ archive: info, localStorage: state.archived, section: state.section, stillVisible: state.stillVisible });
     out.archivedLabel = info.archiveLabel;
@@ -1203,15 +1434,24 @@ return { archived: localStorage.getItem('dsh.sessions.archived.v1'),
 
   await step('真重启 app 后归档仍然隐藏（本机归档已落盘）', async () => {
     await attach({ fresh: true });
-    await waitSessionsScreen();
-    const state = await pageFn(`const openLabels = sessionCards().map(function (c) { return c.label; });
+    await waitReadyWithSessions({ expectCards: true, timeout: 60000 });
+    const state = await pageFn(`const label = ${JSON.stringify(out.openLabel)};
+const buttons = qsa('button[aria-label^="打开会话 "]').filter(function (x) { return x.getAttribute('aria-label') === label; });
+function inArchived(el) { let n = el, d = 0; while (n && d < 12) { const t = flat(txtOf(n)); if (/^已归档/.test(t)) return true; n = n.parentElement; d++; } return false; }
 return { archived: localStorage.getItem('dsh.sessions.archived.v1'),
   section: collapsedPanels().filter(function (g) { return /已归档会话/.test(g.label); }),
-  visible: openLabels.length,
-  stillVisible: openLabels.indexOf(${JSON.stringify(out.openLabel)}) >= 0 };`);
+  visible: qsa('button[aria-label^="打开会话 "]').length,
+  matchCount: buttons.length,
+  allInArchived: buttons.length > 0 && buttons.every(inArchived) };`);
     expect(state.archived && JSON.parse(state.archived).length === 1, `重启后 localStorage 归档 id 丢失：${state.archived}`, state);
     expect(state.section.length > 0, '重启后「已归档」区不见了', state);
-    expect(state.stillVisible === false, '重启后归档的会话又出现在工作区组里', state);
+    // ⚠️ 同 step 2：归档区**也**渲染会话卡片，所以不能用"标签还在不在总列表里"判断，
+    // 否则永远为真（真机实测踩到）。要判断这张卡是否**只**落在「已归档」面板里。
+    expect(
+      state.matchCount >= 1 && state.allInArchived,
+      '重启后归档的会话又出现在工作区组里',
+      state,
+    );
     evidence(state);
     out.afterRestart = state;
     return state;
@@ -1253,7 +1493,7 @@ async function scenarioQueue() {
       await attach({ fresh: true });
       await seedFakeHost();
       await reload();
-      await waitSessionsScreen();
+      await waitReadyWithSessions({ expectCards: true, timeout: 45000 });
       evidence({ fakeHost: { port: FAKE_HOST_PORT, listCalls: fake.state.listCalls, connections: fake.state.connections } });
       return true;
     });
@@ -1429,7 +1669,7 @@ async function scenarioApproval() {
       await attach({ fresh: true });
       await seedFakeHost();
       await reload();
-      await waitSessionsScreen();
+      await waitReadyWithSessions({ timeout: 45000 });
       evidence({ connections: fake.state.connections, openFrames: fake.state.openFrames });
       return true;
     });
@@ -1556,8 +1796,7 @@ async function main() {
     consoleLogs = [];
     log(`\n${C.b}── 场景 ${name} ──${C.x}`);
     try {
-      const mint = name === 'chain' ? await mintPairing() : null;
-      const out = await runScenario(name, { pin: mint?.pin, pinDisplay: mint?.pinDisplay, clean: !KEEP_STATE && name === 'chain' });
+      const out = await runScenario(name, { clean: !KEEP_STATE && name === 'chain' });
       results.push({ scenario: name, ok: true, steps: steps.map((s) => ({ ...s })), output: out });
     } catch (err) {
       results.push({

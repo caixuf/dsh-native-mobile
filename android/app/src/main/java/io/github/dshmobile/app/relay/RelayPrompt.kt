@@ -19,6 +19,13 @@ data class RelayPrompt(
     val isApproval: Boolean,
     val questionId: String?,
     val options: List<String>,
+    /**
+     * 审批所属会话（真主机 `waterfall.request.sessionId`）。
+     *
+     * 通知被**点击**（不是按钮）时，壳靠它把用户直接送到出事的那个会话；
+     * 取不到就是 null —— 那就只把 App 拉到前台，不能瞎跳。
+     */
+    val sessionId: String? = null,
 ) {
     /** 通知正文：Windows/macOS 都会截断长文，超长正文等于没正文。 */
     val notificationBody: String get() = PromptClassifier.truncate(body, PromptClassifier.MAX_BODY)
@@ -51,6 +58,14 @@ object PromptClassifier {
         }
         return map.values.filterIsInstance<String>().firstOrNull { it.isNotBlank() }
     }
+
+    /**
+     * 审批所属的会话 id：`sessionId`，回落 `address.sessionId`
+     * （与 `src/App.tsx` 的 `handleHostRequest` **同一判据** —— 两端取不到就会一端能跳、一端不能）。
+     */
+    fun sessionId(request: Map<String, Any?>): String? =
+        MiniJson.str(request, "sessionId")?.takeIf { it.isNotBlank() }
+            ?: MiniJson.str(MiniJson.obj(request["address"]), "sessionId")?.takeIf { it.isNotBlank() }
 
     /**
      * @return 需要用户作答的提示；**eventId 为空时返回 null** ——
@@ -97,6 +112,7 @@ object PromptClassifier {
             isApproval = isApproval,
             questionId = MiniJson.str(first, "id"),
             options = options,
+            sessionId = sessionId(request),
         )
     }
 }

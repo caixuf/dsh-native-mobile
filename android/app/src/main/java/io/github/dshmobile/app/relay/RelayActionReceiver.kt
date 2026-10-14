@@ -102,6 +102,8 @@ object RelayDecision {
             store.markAnswered(eventId)
             store.rememberLastError(null)
             manager.cancel(RelayNotifications.notificationId(eventId))
+            // 通知栏答掉的那一项不再算"待处理"：状态查询与前台文案同源。
+            ApprovalRelayService.noteApprovalSettled()
             Log.i(TAG, "应答已送达，通知已撤回（该事件不会再重复弹）")
             return true
         }

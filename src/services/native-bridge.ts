@@ -70,6 +70,20 @@ interface AndroidBridge {
   reconnect(): string;
   status(): string;
   isAnswered(eventId: string): boolean;
+  /** 上报当前路由与抽屉开合（壳的返回键判定要用）。 */
+  setRoute(json: string): string;
+  /** 消费式取待处理深链（通知点击带进来的会话 id）。 */
+  takePendingDeepLink(): string;
+  /** 打开系统通知设置页。 */
+  openNotificationSettings(): string;
+}
+
+/** 壳会调用的两个 window 钩子（由网页安装）。 */
+declare global {
+  interface Window {
+    dshHandleBack?: () => boolean;
+    dshNativeOnDeepLink?: (link: { eventId?: string; sessionId?: string }) => boolean;
+  }
 }
 
 /** Electron 壳通过 preload 的 contextBridge 注入。 */
@@ -270,6 +284,84 @@ export const NativeBridge = {
       return typeof off === 'function' ? off : () => undefined;
     } catch {
       return () => undefined;
+    }
+  },
+
+  // ── Android 壳：返回键 / 路由上报 / 深链 / 通知设置 ───────────────────────
+
+  /**
+   * 把当前路由告诉原生壳。
+   *
+   * 壳的返回键策略依赖它：不知道路由就只能在"问网页"和"退出"之间二选一。
+   * 之前 `onBackPressed` 直接 `super` → **在会话列表按返回就退出 App**（真机实测）。
+   */
+  setRoute(state: { route: string; drawerOpen: boolean }): void {
+    const bridge = androidBridge();
+    if (!bridge || typeof bridge.setRoute !== 'function') return;
+    try {
+      bridge.setRoute(JSON.stringify(state));
+    } catch {
+      /* 上报失败不影响网页 */
+    }
+  },
+
+  /**
+   * 安装返回键处理器。壳会调 `window.dshHandleBack()`：
+   * 返回 `true` = 网页处理了（关抽屉/回上一级）；`false` = 在根页面，交给壳。
+   */
+  installBackHandler(handler: () => boolean): void {
+    if (typeof window === 'undefined' || !androidBridge()) return;
+    window.dshHandleBack = () => {
+      try {
+        return handler() === true;
+      } catch (err) {
+        console.warn('[native] 返回键处理失败', err);
+        return false;
+      }
+    };
+  },
+
+  /**
+   * 安装深链处理器（点通知进来时跳到对应会话）。
+   * 返回 true 表示已处理，壳才会消费掉这条深链。
+   */
+  installDeepLinkHandler(handler: (link: { eventId?: string; sessionId?: string }) => boolean): void {
+    if (typeof window === 'undefined' || !androidBridge()) return;
+    window.dshNativeOnDeepLink = (link) => {
+      try {
+        return handler(link ?? {}) === true;
+      } catch (err) {
+        console.warn('[native] 深链处理失败', err);
+        return false;
+      }
+    };
+  },
+
+  /** 消费式取待处理深链（页面刚启动、壳还没推时用）。 */
+  takePendingDeepLink(): { pending: boolean; eventId?: string; sessionId?: string } | null {
+    const bridge = androidBridge();
+    if (!bridge || typeof bridge.takePendingDeepLink !== 'function') return null;
+    try {
+      const parsed = JSON.parse(bridge.takePendingDeepLink() || '{}') as {
+        pending?: boolean;
+        eventId?: string;
+        sessionId?: string;
+      };
+      return { pending: parsed.pending === true, eventId: parsed.eventId, sessionId: parsed.sessionId };
+    } catch {
+      return null;
+    }
+  },
+
+  /** 打开系统通知设置页（通知未授权时给用户一个真正的入口）。 */
+  openNotificationSettings(): boolean {
+    const bridge = androidBridge();
+    if (!bridge || typeof bridge.openNotificationSettings !== 'function') return false;
+    try {
+      const raw = bridge.openNotificationSettings() || '{}';
+      return JSON.parse(raw)?.ok !== false;
+    } catch {
+      return false;
     }
   },
 };

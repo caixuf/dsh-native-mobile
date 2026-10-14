@@ -1144,13 +1144,15 @@ console.log('\n[9c] App 源码静态守护（应答形状 + 旧通道不得回�
         && /EVENT_RESULT_ENDPOINT\s*=\s*'\$events\/result'/.test(connTs),
       'connection.ts 事件流 endpoint 常量不符',
     );
-    // ⚠️ 这一行原来是**硬编码 `true`** 的占位断言（Kotlin 侧那条 `Dispatchers.IO`
-    // 检查在 Web 栈没有一一对应物）。**恒真的断言等于没有断言** —— 它只会让这一行
-    // 看起来是绿的，正是本项目一路在打的「假成功」。现在换成真能红的等价守护：
-    // Web 栈的对应风险是同步阻塞式 XHR 卡死渲染线程。
+    // ⚠️ 这条断言要盯的是**性质**（RPC 走异步、不存在同步阻塞调用），
+    // 不是某个字面量写法。第一版写死了 `/await fetch\(/`，结果 T3 把调用点改成
+    // `await this.fetchImpl(...)`（为了可注入 fetch 替身）时它就假红了 ——
+    // 断言实现细节的测试，会在一次无害重构后变成噪音。
     check(
       'RPC 走异步 fetch，且不存在同步阻塞式 XHR（Web 栈的等价守护）',
-      /await fetch\(/.test(connTs) && !/async\s*=\s*false/.test(connTs),
+      /await\s+(this\.)?(fetchImpl|fetch)\s*\(/.test(connTs) &&
+        !/async\s*=\s*false/.test(connTs) &&
+        !/\.open\(\s*[^)]*,\s*false\s*\)/.test(connTs),
       'connection.ts 出现同步阻塞调用，会卡住渲染线程',
     );
     check(

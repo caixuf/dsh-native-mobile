@@ -12,8 +12,12 @@
 
 import {
   CURSOR_PROBE,
+  collectMessageText,
+  collectReasoningText,
   cursorFromError,
   fetchChatPage,
+  isDialogEvent,
+  isToolEvent,
   pageRequest,
   sessionAddress,
 } from '../src/lib/session-page.ts';
@@ -155,6 +159,87 @@ await checkAsync('重试次数上限为 2（不允许多次重试把主机打爆
     /* 预期抛错 */
   }
   eq(calls, 2);
+});
+
+// ── §4 正文提取与事件过滤（P0：reasoning 被当成回答 / 系统提示词被当气泡）──────
+
+check('P0：模型先输出 reasoning 时，必须取到真正的正文', () => {
+  // 这是**真主机实测的原文载荷**，不要改写
+  const content = [
+    { type: 'reasoning', text: 'The user asks to reply exactly with a token. Just reply.' },
+    { type: 'text', text: 'E2E-REPLY-7719' },
+  ];
+  eq(collectMessageText(content), 'E2E-REPLY-7719', '取 content[0].text 会把私有推理当回答');
+  eq(collectReasoningText(content), 'The user asks to reply exactly with a token. Just reply.');
+});
+
+check('P0：多个 text 段全部拼接（不只取第一段）', () => {
+  eq(
+    collectMessageText([
+      { type: 'text', text: '第一段' },
+      { type: 'reasoning', text: '思考' },
+      { type: 'text', text: '第二段' },
+    ]),
+    '第一段\n\n第二段',
+  );
+});
+
+check('正文提取的兼容形状', () => {
+  eq(collectMessageText('裸字符串'), '裸字符串', 'content 直接是字符串');
+  eq(collectMessageText([{ text: '未标类型也算正文' }]), '未标类型也算正文');
+  eq(collectMessageText([{ type: 'output_text', text: 'output' }]), 'output');
+  eq(collectMessageText([{ type: 'image', url: 'x' }]), '', '图片段没有正文');
+  eq(collectMessageText([{ type: 'text', text: '   ' }]), '', '空白段不算');
+  eq(collectMessageText(null), '');
+  eq(collectMessageText(undefined), '');
+  eq(collectMessageText(123), '');
+});
+
+check('P0：user/message 的正文在 data.content（没有 message 包装）', () => {
+  // 真主机实测形状：user 事件是 {content:[{type:'text',text:'…'}]}，
+  // 而 assistant 事件是 {message:{content:[…]}}。只读 message.content 会让
+  // **用户自己发的指令渲染成空气泡**（验证者实测 5 个气泡文本全空）。
+  const userEvent = { content: [{ type: 'text', text: 'Reply with exactly: E2E-PING-OK' }] };
+  const assistantEvent = {
+    message: { content: [{ type: 'reasoning', text: '思考' }, { type: 'text', text: 'E2E-PING-OK' }] },
+  };
+  eq(collectMessageText(userEvent.content), 'Reply with exactly: E2E-PING-OK');
+  eq(
+    collectMessageText(assistantEvent.message.content),
+    'E2E-PING-OK',
+    'assistant 必须跳过 reasoning 取正文',
+  );
+  // App 里的取值顺序：先 message.content，再回落 content
+  const pick = (data) => collectMessageText(data?.message?.content ?? data?.content);
+  eq(pick(userEvent), 'Reply with exactly: E2E-PING-OK', 'user 走顶层 content');
+  eq(pick(assistantEvent), 'E2E-PING-OK', 'assistant 走 message.content');
+  eq(pick({}), '');
+});
+
+check('P0：只有 reasoning 时正文为空（宁可空，也不能把推理当回答）', () => {
+  eq(collectMessageText([{ type: 'reasoning', text: '只有思考' }]), '');
+});
+
+check('P0：system/message 不得渲染成对话气泡（整段系统提示词）', () => {
+  eq(isDialogEvent('system/message'), false, '系统提示词不该出现在聊天时间线');
+  eq(isDialogEvent('user/message'), true);
+  eq(isDialogEvent('assistant/message'), true);
+  eq(isDialogEvent('tool/call'), true);
+  eq(isDialogEvent('tool/result'), true);
+});
+
+check('内部事件类型一律不渲染', () => {
+  for (const kind of ['step/start', 'step/end', 'llm/retry', 'llm/retry-started', 'turn/end', 'request/created']) {
+    eq(isDialogEvent(kind), false, `${kind} 不该渲染`);
+  }
+  eq(isDialogEvent(''), false);
+  eq(isDialogEvent('some/future-thing'), false, '不认识的类型宁可不渲染');
+});
+
+check('工具事件判定', () => {
+  eq(isToolEvent('tool/call'), true);
+  eq(isToolEvent('tool/result'), true);
+  eq(isToolEvent('assistant/message'), false);
 });
 
 // ── 汇总 ────────────────────────────────────────────────────────────────────

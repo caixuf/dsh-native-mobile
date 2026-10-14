@@ -54,6 +54,7 @@ class ApprovalRelayService : Service() {
     private var stopped = false
     private var reconnectScheduled = false
     private var foregroundStarted = false
+    private var lastBackoffSeconds = 0
 
     override fun onCreate() {
         super.onCreate()
@@ -83,7 +84,8 @@ class ApprovalRelayService : Service() {
             log("未配对 → 不启动")
             // 没配对就没有可守的东西。前台通知先立住再退出，避免
             // startForegroundService 后 5 秒内没 startForeground 被判 ANR。
-            updateForeground("未配对：请先在 App 里连接电脑")
+            state = STATE_STOPPED
+            refreshForeground(configured = false)
             stopSelf()
             return START_NOT_STICKY
         }
@@ -92,7 +94,7 @@ class ApprovalRelayService : Service() {
 
         stopped = false
         state = STATE_CONNECTING
-        updateForeground("正在连接电脑…")
+        refreshForeground()
 
         // 配置可能刚刚变化（重新配对/换主机）：取消待执行的重连，强制连一次。
         handler.removeCallbacksAndMessages(null)
@@ -120,6 +122,7 @@ class ApprovalRelayService : Service() {
         if (stopped) return
         val baseUrl = store.baseUrl ?: return
         val token = store.token ?: return
+        lastBackoffSeconds = 0
         log("连接中：${RelayClient.wsUrl(baseUrl)}（令牌走 Authorization 头，不进 URL）")
 
         // 🔴 令牌走请求头。原生端做得到，WebView 做不到（浏览器规范不允许
@@ -140,7 +143,7 @@ class ApprovalRelayService : Service() {
             store.rememberLastError(null)
             state = STATE_HANDSHAKING
             log("WS 已建立，发送 open 帧（endpoint=\$events）")
-            updateForeground("已连接 · 等待审批")
+            refreshForeground()
             // open 帧必须**精确 4 键**，否则网关以 1008 关闭连接。
             webSocket.send(ApprovalContract.openEventStream("s-${System.currentTimeMillis()}"))
         }
@@ -182,7 +185,8 @@ class ApprovalRelayService : Service() {
         store.rememberLastError(reason)
         state = STATE_RETRYING
         log("第 $attempt 次重连将在 ${backoff / 1000}s 后（原因：$reason）")
-        updateForeground("重连中（第 $attempt 次，${backoff / 1000}s 后）")
+        lastBackoffSeconds = (backoff / 1000).toInt()
+        refreshForeground()
         handler.postDelayed({
             reconnectScheduled = false
             if (!stopped) connect()
@@ -201,7 +205,7 @@ class ApprovalRelayService : Service() {
         val message = "${RelayClient.httpMessage(code)} —— 请在 App 里重新配对"
         store.rememberLastError(message)
         log("令牌失效（HTTP $code）→ **停止重连**并要求重新配对（不重试：重试一万次也不会成功）")
-        updateForeground("已停止：设备令牌失效")
+        refreshForeground()
 
         val enabled = RelayNotifications.notificationsEnabled(this)
         log("通知是否可用=$enabled（false 表示审批到了手机也不会显示）")
@@ -235,8 +239,10 @@ class ApprovalRelayService : Service() {
                 store.rememberLastError(null)
                 state = STATE_CONNECTED
                 attempt = 0
+                // 新连接：上一轮的待审批计数不再可信（可能已经在通知栏答过）。
+                resetPendingApprovals()
                 log("事件流就绪，clientId=${event.clientId}（应答必须带上它）")
-                updateForeground("已连接 · 等待审批")
+                refreshForeground()
             }
 
             is EventMessage.Waterfall -> onWaterfall(event)
@@ -246,6 +252,8 @@ class ApprovalRelayService : Service() {
                 store.forgetAnswered(event.eventId)
                 NotificationManagerCompat.from(this)
                     .cancel(RelayNotifications.notificationId(event.eventId))
+                noteApprovalSettled()
+                refreshForeground()
             }
 
             is EventMessage.Emit, EventMessage.Ignored -> Unit
@@ -269,7 +277,8 @@ class ApprovalRelayService : Service() {
         if (!RelayNotifications.notificationsEnabled(this)) {
             store.rememberLastError("通知权限未开启 —— 审批已到达手机，但无法提醒你")
             log("⚠️ 收到审批 ${prompt.eventId} 但通知未授权 → 用户什么都看不到")
-            updateForeground("通知未授权 · 审批无法提醒")
+            // 状态仍是 connected，但文案必须把"通知未授权"说出来（由状态+通知授权推导）。
+            refreshForeground()
             return
         }
 
@@ -278,11 +287,34 @@ class ApprovalRelayService : Service() {
             RelayNotifications.approval(this, prompt),
         )
         log("已弹审批通知 eventId=${prompt.eventId} isApproval=${prompt.isApproval} 按钮数=${if (prompt.needsAllowReject) 2 else prompt.options.size}")
-        updateForeground("有审批待处理")
+        noteApprovalPosted()
+        refreshForeground()
     }
 
     // ── 前台通知 ────────────────────────────────────────────────────────────
 
+    /**
+     * 由**状态**推导文案并刷新前台通知（`status()` 与通知栏因此不可能互相矛盾）。
+     *
+     * [configured] 只用于"根本没配对"这一个场景：此时状态仍是 stopped，
+     * 但用户需要看到的是"先去配对"。
+     */
+    private fun refreshForeground(configured: Boolean = store.isConfigured()) {
+        updateForeground(
+            RelayStatusText.foreground(
+                ForegroundStatus(
+                    state = state,
+                    configured = configured,
+                    notificationsEnabled = RelayNotifications.notificationsEnabled(this),
+                    pendingApprovals = pendingApprovals,
+                    attempt = attempt,
+                    backoffSeconds = lastBackoffSeconds,
+                )
+            )
+        )
+    }
+
+    /** 只允许 [refreshForeground] 调用：文案不能由调用点随手写死。 */
     private fun updateForeground(text: String) {
         val notification = RelayNotifications.foreground(this, text)
         if (!foregroundStarted) {
@@ -314,16 +346,40 @@ class ApprovalRelayService : Service() {
         const val ACTION_START = "io.github.dshmobile.app.relay.START"
         const val ACTION_STOP = "io.github.dshmobile.app.relay.STOP"
 
-        const val STATE_STOPPED = "stopped"
-        const val STATE_CONNECTING = "connecting"
-        const val STATE_HANDSHAKING = "handshaking"
-        const val STATE_CONNECTED = "connected"
-        const val STATE_RETRYING = "retrying"
-        const val STATE_AUTH_FAILED = "auth-failed"
+        // 🔴 状态字符串的**唯一定义处**在 RelayStates（纯 Kotlin，JVM 可直接测）。
+        // 这里只是别名：通知文案也由 RelayStates 推导，两处不可能漂移。
+        const val STATE_STOPPED = RelayStates.STOPPED
+        const val STATE_CONNECTING = RelayStates.CONNECTING
+        const val STATE_HANDSHAKING = RelayStates.HANDSHAKING
+        const val STATE_CONNECTED = RelayStates.CONNECTED
+        const val STATE_RETRYING = RelayStates.RETRYING
+        const val STATE_AUTH_FAILED = RelayStates.AUTH_FAILED
 
         /** 供状态查询用。进程内可见即可，不需要跨进程。 */
         @Volatile
         var state: String = STATE_STOPPED
+
+        /**
+         * 已弹通知、还没结算的审批数。
+         *
+         * 与 [state] 一样是进程内状态：`status()` 与前台通知文案都读它，
+         * 所以"通知栏说有 1 项待办、状态查询说 0 项"这种矛盾不会出现。
+         */
+        @Volatile
+        var pendingApprovals: Int = 0
+            private set
+
+        fun noteApprovalPosted() {
+            pendingApprovals += 1
+        }
+
+        fun noteApprovalSettled() {
+            pendingApprovals = (pendingApprovals - 1).coerceAtLeast(0)
+        }
+
+        fun resetPendingApprovals() {
+            pendingApprovals = 0
+        }
 
         fun start(context: Context) {
             val intent = Intent(context, ApprovalRelayService::class.java).setAction(ACTION_START)

@@ -164,7 +164,17 @@ export const SessionsScreen: React.FC<Props> = ({
   // ── 归档（仅本机）──
   const applyArchive = (session: SessionRow, archived: boolean) => {
     const next = setArchivedId(archivedList, session.sessionId, archived);
-    if (!archiveControlled) setInternalArchived(next);
+    if (archiveControlled) {
+      // 🔴 受控模式：**只通知，不落盘**。
+      // 旧实现无条件 writeArchivedIds(...)，于是组件与调用方成了**两个写入方**：
+      // 外部（比如清空 localStorage、或另一台设备的状态）被覆盖回组件内存里的旧值，
+      // 表现为"删掉的归档 id 自己又回来了"（真机 E2E 实测到）。
+      // 单一写入方是调用方的责任（App.tsx 的 applyArchive 会 setState + 落盘）。
+      if (archived) onArchive?.(session);
+      else onUnarchive?.(session);
+      return;
+    }
+    setInternalArchived(next);
     writeArchivedIds(next, storage);
     if (archived) onArchive?.(session);
     else onUnarchive?.(session);

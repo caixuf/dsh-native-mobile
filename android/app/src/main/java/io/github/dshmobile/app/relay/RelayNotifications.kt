@@ -68,9 +68,23 @@ object RelayNotifications {
     fun notificationsEnabled(context: Context): Boolean =
         NotificationManagerCompat.from(context).areNotificationsEnabled()
 
-    private fun openApp(context: Context, requestCode: Int): PendingIntent {
+    /**
+     * 打开 App。带 [link] 时把会话 id 一起放进 intent extra ——
+     * 用户点审批通知是**想看那个会话**，不是想看会话列表。
+     *
+     * `FLAG_ACTIVITY_SINGLE_TOP` 不能省：没有它，App 已经在运行时点通知会
+     * **重建** Activity（`CLEAR_TOP` + 标准 launchMode），既丢页面状态，
+     * `onNewIntent` 也不会被调用。
+     */
+    private fun openApp(context: Context, requestCode: Int, link: PendingDeepLink.Link? = null): PendingIntent {
         val intent = Intent(context, MainActivity::class.java).apply {
-            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK or
+                Intent.FLAG_ACTIVITY_CLEAR_TOP or
+                Intent.FLAG_ACTIVITY_SINGLE_TOP
+            if (link != null) {
+                putExtra(NativeDeepLink.EXTRA_SESSION_ID, link.sessionId)
+                putExtra(NativeDeepLink.EXTRA_EVENT_ID, link.eventId)
+            }
         }
         return PendingIntent.getActivity(
             context,
@@ -111,7 +125,9 @@ object RelayNotifications {
             .setAutoCancel(true)
             .setOnlyAlertOnce(false)
             .setWhen(System.currentTimeMillis())
-            .setContentIntent(openApp(context, notificationId(prompt.eventId)))
+            // 点正文 = 「把那个会话拿给我看」，**绝不等于同意**（同意只能按按钮）。
+            // 有 sessionId 就带进 intent，让 App 直接跳到出事的会话。
+            .setContentIntent(openApp(context, notificationId(prompt.eventId), deepLink(prompt)))
 
         if (prompt.needsAllowReject) {
             builder.addAction(
@@ -159,6 +175,16 @@ object RelayNotifications {
             .build()
 
     fun notificationId(eventId: String): Int = 0x5000 + (eventId.hashCode() and 0x0FFF)
+
+    /**
+     * 审批通知的深链。
+     *
+     * 载荷里没有 `sessionId` 时返回 null：**宁可只把 App 拉到前台，也不能瞎跳**
+     * （跳到错误会话比停在列表更难排查）。
+     */
+    private fun deepLink(prompt: RelayPrompt): PendingDeepLink.Link? =
+        prompt.sessionId?.takeIf { it.isNotBlank() }
+            ?.let { PendingDeepLink.Link(eventId = prompt.eventId, sessionId = it) }
 
     private fun action(
         context: Context,
