@@ -100,7 +100,21 @@ export class DeviceStore {
       const raw = await readFile(this.#file, 'utf8');
       const parsed = JSON.parse(raw);
       if (parsed && typeof parsed === 'object' && Array.isArray(parsed.devices)) {
-        this.#state = { version: 2, devices: parsed.devices, pairing: parsed.pairing ?? null };
+        // 🔴 必须把 `credentials` 一起载入，漏掉会让**账号密码在重启后丢失**。
+        //
+        // 真实事故（2026-10-14 重启后实测）：原实现只取 devices / pairing，
+        // 把 credentials 直接丢掉。表现是重启后管理面板的用户名为空、
+        // `login` 返回 `no-credentials`（手机端登录失败），
+        // 而**磁盘上的凭据其实完好** —— 极难排查，因为文件看起来没问题。
+        //
+        // 教训：凡是 state 的字段，load 与 persist 必须成对处理；
+        // 新增字段时两边都要动，否则就会"存了但读不回来"。
+        this.#state = {
+          version: 3,
+          devices: parsed.devices,
+          pairing: parsed.pairing ?? null,
+          credentials: parsed.credentials ?? null,
+        };
       }
     } catch (error) {
       if (error?.code !== 'ENOENT') {
