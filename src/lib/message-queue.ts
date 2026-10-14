@@ -274,3 +274,125 @@ export function createQueueId(now: number, seq: number, prefix: string = 'q'): s
   const n = Number.isFinite(seq) ? Math.floor(seq) : 0;
   return `${prefix}-${ts}-${n}`;
 }
+
+// ── 超长消息折叠（聊天可读性）────────────────────────────────────────────────
+//
+// 真机实测：打开一个 agent 会话时，一条 1.2 万字的用户消息（runtime context）
+// 整块渲染，屏幕瞬间被淹没。折叠逻辑必须是**纯函数**，UI 只负责渲染。
+//
+// 阈值口径（都是"超过才折叠"）：
+//   - 字数 > 600（按 **码点** 计，避免把 emoji/代理对从中间切开）
+//   - 或行数 > 12
+// 折叠后展示前 6 行、且最多 600 字（两条上限取更短的那个）。
+
+/** 触发折叠的字数上限。 */
+export const COLLAPSE_CHAR_THRESHOLD = 600;
+/** 触发折叠的行数上限。 */
+export const COLLAPSE_LINE_THRESHOLD = 12;
+/** 折叠态展示的行数。 */
+export const COLLAPSE_PREVIEW_LINES = 6;
+/** 折叠态最多展示的字符数（防止"一行 600 字"把预览也撑爆）。 */
+export const COLLAPSE_PREVIEW_CHARS = 600;
+
+export interface CollapseThresholds {
+  charThreshold?: number;
+  lineThreshold?: number;
+}
+
+export interface CollapseOptions extends CollapseThresholds {
+  maxLines?: number;
+  maxChars?: number;
+}
+
+export interface CollapsePreview {
+  /** 是否需要折叠。false 时 `preview === 规范化后的原文`。 */
+  collapsed: boolean;
+  /** 折叠态应渲染的预览文本（已把 CRLF 归一为 LF）。 */
+  preview: string;
+  hiddenChars: number;
+  hiddenLines: number;
+  totalChars: number;
+  totalLines: number;
+  /** 折叠后仍可见的行数（预览实际行数，≤ maxLines）。 */
+  previewLines: number;
+}
+
+/** 按**码点**计字数：`'👍'.length === 2` 但这里算 1，切预览时不会切出半个 emoji。 */
+export function countChars(text: string | null | undefined): number {
+  if (typeof text !== 'string' || text === '') return 0;
+  return Array.from(text).length;
+}
+
+/** 行数：空串算 0 行；`a\nb` 算 2 行；CRLF 归一后统计。 */
+export function countLines(text: string | null | undefined): number {
+  if (typeof text !== 'string' || text === '') return 0;
+  return text.replace(/\r\n?/g, '\n').split('\n').length;
+}
+
+/** 单条正文是否需要折叠（字数超限或行数超限）。 */
+export function shouldCollapse(
+  text: string | null | undefined,
+  options: CollapseThresholds = {},
+): boolean {
+  const charThreshold = options.charThreshold ?? COLLAPSE_CHAR_THRESHOLD;
+  const lineThreshold = options.lineThreshold ?? COLLAPSE_LINE_THRESHOLD;
+  const total = typeof text === 'string' ? text.replace(/\r\n?/g, '\n') : '';
+  return countChars(total) > charThreshold || countLines(total) > lineThreshold;
+}
+
+/**
+ * 计算折叠预览。**不修改入参**，任何输入（null/undefined/空串/超长）都返回结构化结果。
+ */
+export function collapsePreview(
+  text: string | null | undefined,
+  options: CollapseOptions = {},
+): CollapsePreview {
+  const normalized = typeof text === 'string' ? text.replace(/\r\n?/g, '\n') : '';
+  const totalChars = countChars(normalized);
+  const totalLines = countLines(normalized);
+  const collapsed = shouldCollapse(normalized, options);
+
+  if (!collapsed) {
+    return {
+      collapsed: false,
+      preview: normalized,
+      hiddenChars: 0,
+      hiddenLines: 0,
+      totalChars,
+      totalLines,
+      previewLines: totalLines,
+    };
+  }
+
+  const maxLines = Math.max(1, Math.floor(options.maxLines ?? COLLAPSE_PREVIEW_LINES));
+  const maxChars = Math.max(1, Math.floor(options.maxChars ?? COLLAPSE_PREVIEW_CHARS));
+
+  let preview = normalized.split('\n').slice(0, maxLines).join('\n');
+  if (countChars(preview) > maxChars) {
+    preview = Array.from(preview).slice(0, maxChars).join('');
+  }
+
+  const previewChars = countChars(preview);
+  const previewLines = countLines(preview);
+
+  return {
+    collapsed: true,
+    preview,
+    hiddenChars: Math.max(0, totalChars - previewChars),
+    hiddenLines: Math.max(0, totalLines - previewLines),
+    totalChars,
+    totalLines,
+    previewLines,
+  };
+}
+
+/**
+ * 折叠按钮文案：始终带上**总字数**（用户要据此判断"值不值得展开"）。
+ * 非折叠态返回空串（调用方据此不渲染按钮）。
+ */
+export function expandLabel(result: CollapsePreview): string {
+  if (!result.collapsed) return '';
+  const chars = `共 ${result.totalChars} 字`;
+  if (result.hiddenLines > 0) return `展开全部（${chars} / ${result.totalLines} 行）`;
+  return `展开全部（${chars}）`;
+}

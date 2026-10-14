@@ -10,6 +10,7 @@ import {
   Terminal,
   Wrench,
 } from 'lucide-react';
+import { copyToClipboard } from './clipboard';
 
 interface Props {
   toolName?: string | null;
@@ -55,33 +56,10 @@ function stringifyValue(value: unknown): string {
   }
 }
 
-/** 复制到剪贴板：优先 async clipboard，失败回退 execCommand；任何异常都不冒泡。 */
-async function copyToClipboard(text: string): Promise<boolean> {
-  try {
-    const clipboard = typeof navigator !== 'undefined' ? navigator.clipboard : undefined;
-    if (clipboard && typeof clipboard.writeText === 'function') {
-      await clipboard.writeText(text);
-      return true;
-    }
-  } catch {
-    // 非安全上下文 / 权限被拒 —— 落回 execCommand
-  }
-  try {
-    if (typeof document === 'undefined') return false;
-    const area = document.createElement('textarea');
-    area.value = text;
-    area.setAttribute('readonly', '');
-    area.style.position = 'fixed';
-    area.style.opacity = '0';
-    document.body.appendChild(area);
-    area.select();
-    const done = document.execCommand('copy');
-    document.body.removeChild(area);
-    return done;
-  } catch {
-    return false;
-  }
-}
+/**
+ * 复制按钮（共用 `./clipboard` 的实现：async clipboard → execCommand 回退）。
+ * 这里再包一层"已复制/失败"的视觉反馈。
+ */
 
 const CopyButton: React.FC<{ text: string; label: string }> = ({ text, label }) => {
   const [copied, setCopied] = useState(false);

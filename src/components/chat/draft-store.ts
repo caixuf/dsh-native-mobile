@@ -163,3 +163,58 @@ export function listDraftSessionIds(storage: DraftStorage = resolveStorage()): s
   }
   return ids;
 }
+
+// ── 折叠展开状态（按消息 key 记住；切走会话再回来不丢）──────────────────────
+//
+// 只存"展开过的 message key"列表：
+//   - 默认折叠是**大多数**（超长消息几乎都是 runtime context，没人想一直看），
+//     记录例外比记录全集小得多；
+//   - 有上限，避免长会话把 localStorage 塞满（超限丢最旧的）。
+
+export const EXPANDED_PREFIX = 'dsh_chat_expanded_v1';
+export const EXPANDED_MAX_KEYS = 200;
+
+/** 存储键：按会话隔离。 */
+export function expandedKey(sessionId: string): string {
+  const id = typeof sessionId === 'string' && sessionId.trim() !== '' ? sessionId.trim() : 'default';
+  return `${EXPANDED_PREFIX}:${id}`;
+}
+
+/** 读取该会话里"被手动展开过"的消息 key（顺序 = 记录顺序，末尾最新）。 */
+export function loadExpandedKeys(
+  sessionId: string,
+  storage: DraftStorage = resolveStorage(),
+): string[] {
+  try {
+    const raw = storage.getItem(expandedKey(sessionId));
+    if (!raw) return [];
+    const parsed: unknown = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed
+      .filter((key): key is string => typeof key === 'string' && key !== '')
+      .slice(-EXPANDED_MAX_KEYS);
+  } catch (error) {
+    console.warn('[draft] 展开状态读取失败（按未展开处理）：', error);
+    return [];
+  }
+}
+
+/** 保存展开状态；空集合 = 删除键（不留垃圾）。返回是否成功落盘。 */
+export function saveExpandedKeys(
+  sessionId: string,
+  keys: Iterable<string>,
+  storage: DraftStorage = resolveStorage(),
+): boolean {
+  try {
+    const list: string[] = [];
+    for (const key of keys) {
+      if (typeof key === 'string' && key !== '') list.push(key);
+    }
+    if (list.length === 0) storage.removeItem(expandedKey(sessionId));
+    else storage.setItem(expandedKey(sessionId), JSON.stringify(list.slice(-EXPANDED_MAX_KEYS)));
+    return true;
+  } catch (error) {
+    console.warn('[draft] 展开状态写入失败（本次会话内仍然有效）：', error);
+    return false;
+  }
+}

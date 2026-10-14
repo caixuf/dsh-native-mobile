@@ -1,23 +1,32 @@
 /**
- * 待发队列 + 草稿持久化 回归测试（零依赖，手写断言）。
+ * 待发队列 + 草稿持久化 + 超长消息折叠 回归测试（零依赖，手写断言）。
  *
  * 运行：`node --experimental-strip-types scripts/test-message-queue.mjs`
  * （**故意不依赖** `scripts/ts-resolve-hook.mjs`：直接 import 相对路径的 .ts）
  *
- * 🔴 覆盖的是三个真实事故对应的不变量：
+ * 🔴 覆盖的是四个真实事故对应的不变量：
  *  1. 运行中排队不能丢消息、不能乱序（入队顺序 / 上限淘汰 / 出队重排）；
  *  2. 失败**绝不丢用户打的字**（失败项保留、失败项不被上限淘汰、重试仍带原文）；
- *  3. 草稿按会话隔离且异常不炸（privacy mode / 配额满时 localStorage 会抛）。
+ *  3. 草稿按会话隔离且异常不炸（privacy mode / 配额满时 localStorage 会抛）；
+ *  4. 1.2 万字 runtime context 不许整块淹没屏幕（折叠阈值/预览/展开记忆）。
  */
 
 import {
+  COLLAPSE_CHAR_THRESHOLD,
+  COLLAPSE_LINE_THRESHOLD,
+  COLLAPSE_PREVIEW_CHARS,
+  COLLAPSE_PREVIEW_LINES,
   DEFAULT_QUEUE_LIMIT,
   MAX_ITEM_TEXT,
   applyLimit,
   clearFailed,
+  collapsePreview,
+  countChars,
+  countLines,
   createQueueId,
   dedupeById,
   enqueue,
+  expandLabel,
   failedCount,
   markFailed,
   moveQueued,
@@ -27,21 +36,29 @@ import {
   removeQueued,
   resequence,
   retryQueued,
+  shouldCollapse,
   takeNext,
 } from '../src/lib/message-queue.ts';
 import {
   DRAFT_PREFIX,
+  EXPANDED_MAX_KEYS,
   clearDraft,
   createMemoryStorage,
   draftKey,
+  expandedKey,
   listDraftSessionIds,
   loadDraft,
+  loadExpandedKeys,
   saveDraft,
+  saveExpandedKeys,
 } from '../src/components/chat/draft-store.ts';
+import { copyToClipboard } from '../src/components/chat/clipboard.ts';
 
 let passed = 0;
 let failed = 0;
 const failures = [];
+/** 异步用例（例如剪贴板回退）会挂在这里，报告前统一 await。 */
+const pendingChecks = [];
 
 function check(name, fn) {
   try {
@@ -51,6 +68,23 @@ function check(name, fn) {
     failed += 1;
     failures.push({ name, message: err && err.message ? err.message : String(err) });
   }
+}
+
+/** 异步版 check：必须 await 完成后再统计（否则失败会被吞掉）。 */
+function checkAsync(name, fn) {
+  pendingChecks.push(
+    Promise.resolve()
+      .then(fn)
+      .then(
+        () => {
+          passed += 1;
+        },
+        (err) => {
+          failed += 1;
+          failures.push({ name, message: err && err.message ? err.message : String(err) });
+        },
+      ),
+  );
 }
 
 function eq(actual, expected, msg) {
@@ -433,6 +467,7 @@ const read = (rel) => readFileSync(join(repoRoot, rel), 'utf8');
 const CHAT_SCREEN = 'src/components/screens/ChatScreen.tsx';
 const QUEUE_BAR = 'src/components/chat/QueuedMessagesBar.tsx';
 const TOOL_CARD = 'src/components/chat/DisclosureToolCard.tsx';
+const COLLAPSIBLE_MESSAGE = 'src/components/chat/CollapsibleMessage.tsx';
 
 /** 极简括号平衡检查：跳过字符串/模板串/注释后统计 ()[]{} （能抓住大部分语法事故）。 */
 function unbalancedReason(source) {
@@ -472,7 +507,15 @@ function unbalancedReason(source) {
 }
 
 check('源码语法自检：改动过的源文件括号平衡（轻量，代替打包器）', () => {
-  for (const rel of [CHAT_SCREEN, QUEUE_BAR, TOOL_CARD, 'src/components/chat/draft-store.ts', 'src/lib/message-queue.ts']) {
+  for (const rel of [
+    CHAT_SCREEN,
+    QUEUE_BAR,
+    TOOL_CARD,
+    COLLAPSIBLE_MESSAGE,
+    'src/components/chat/draft-store.ts',
+    'src/components/chat/clipboard.ts',
+    'src/lib/message-queue.ts',
+  ]) {
     const reason = unbalancedReason(read(rel));
     eq(reason, null, `${rel}: ${reason}`);
   }
@@ -619,8 +662,86 @@ function openingTags(source, tagName) {
   return tags;
 }
 
-check('触控目标：输入区/队列条/工具卡的交互按钮 ≥44px', () => {
-  for (const rel of [CHAT_SCREEN, QUEUE_BAR, TOOL_CARD]) {
+check('无障碍：图标按钮必须有 aria-label，队列条/工具卡/折叠消息按钮全带标签', () => {
+  const chat = stripComments(read(CHAT_SCREEN));
+  ok(/aria-label="返回会话列表"/.test(chat), '返回按钮是纯图标，必须有 aria-label');
+  ok(/aria-label="打开会话菜单"/.test(chat), '菜单按钮是纯图标，必须有 aria-label');
+
+  for (const rel of [QUEUE_BAR, TOOL_CARD, COLLAPSIBLE_MESSAGE]) {
+    for (const tag of openingTags(read(rel), 'button')) {
+      ok(
+        /aria-label=/.test(tag),
+        `${rel} 有按钮缺少 aria-label: ${tag.replace(/\s+/g, ' ').slice(0, 90)}`,
+      );
+    }
+  }
+});
+
+// ── T7：聊天可读性（折叠 / 滚动到底 / 流式光标 / 消息复制）──────────────────
+
+check('🔴 T7 超长消息必须接上折叠组件（用户 + 助手两条路径）', () => {
+  const chat = stripComments(read(CHAT_SCREEN));
+  const collapsibleTags = openingTags(chat, 'CollapsibleMessage');
+  eq(collapsibleTags.length, 2, '用户消息与助手消息都要走 CollapsibleMessage');
+  ok(/mode="plain"/.test(chat), '用户原文走字符级预览（6 行 line-clamp）');
+  ok(/mode="markdown"/.test(chat), '助手富文本走高度裁剪（保住代码块/表格布局）');
+  ok(/expandedKeys\.has\(key\)/.test(chat), '展开状态必须按消息 key 查');
+  ok(/loadExpandedKeys\(sessionId\)/.test(chat) && /saveExpandedKeys\(sessionId/.test(chat),
+    '展开状态要按会话持久化（切走再回来不丢）');
+
+  const card = read(COLLAPSIBLE_MESSAGE);
+  ok(/data-collapsed=/.test(card) && /data-full-chars=/.test(card),
+    '要暴露 data-collapsed / data-full-chars，方便 e2e 判定"是否真的折叠了"');
+  ok(/WebkitLineClamp/.test(card), '纯文本模式必须用 line-clamp 精确裁 6 行');
+  ok(/maxHeight: collapsedMaxHeightPx/.test(card), 'markdown 模式必须用 maxHeight 裁剪');
+  ok(/collapsePreview\(text\)/.test(card), '折叠判定必须来自纯函数，不能在组件里手写');
+  ok(/copyToClipboard/.test(card), '消息级复制要复用 clipboard 工具');
+  ok(/onContextMenu/.test(card), '移动端长按要能唤出复制操作条');
+  ok(/sr-only/.test(card) || /aria-label/.test(card), '流式光标/按钮要有可访问名');
+});
+
+check('🔴 T7 自动跟随：只在用户本来就在底部时才滚，且给「跳到最新」', () => {
+  const chat = stripComments(read(CHAT_SCREEN));
+  ok(/followBottomRef/.test(chat), '必须有用"是否贴底"控制的跟随开关');
+  ok(/onScroll=\{handleTimelineScroll\}/.test(chat), '时间线必须监听滚动');
+  ok(/if \(followBottomRef\.current\) scrollToBottom\(\)/.test(chat),
+    '自动滚动必须被 followBottomRef 门控（不能无条件 scrollIntoView）');
+  ok(/aria-label="跳到最新消息"/.test(chat), '跳转按钮要有 aria-label');
+  ok(/jumpToLatest/.test(chat), '点击后要回到底部并恢复跟随');
+  ok(/distance < 80/.test(chat), '要有贴底容差，避免手指抖动误判');
+});
+
+check('🔴 T7 流式光标：仅 running + liveConnected 时显示，且挂在最后一条消息尾部', () => {
+  const chat = stripComments(read(CHAT_SCREEN));
+  ok(/const showStreamCursor = running && liveConnected === true;/.test(chat),
+    '链路断开时不能假装还在输出（必须要求 liveConnected === true）');
+  ok(/showCursor=\{isLastMessage\}/.test(chat), '光标只挂最后一条消息');
+  ok(/lastMessageKey/.test(chat), '要能定位最后一条消息类行（跳过工具卡）');
+  ok(/animate-pulse/.test(chat), '用 Tailwind 内置动画，不新增样式/依赖');
+});
+
+check('来源契约：新文件零新增运行时依赖（只允许 react / lucide-react / 相对路径）', () => {
+  const allowed = new Set(['react', 'lucide-react']);
+  for (const rel of [
+    CHAT_SCREEN,
+    QUEUE_BAR,
+    TOOL_CARD,
+    COLLAPSIBLE_MESSAGE,
+    'src/components/chat/draft-store.ts',
+    'src/components/chat/clipboard.ts',
+    'src/lib/message-queue.ts',
+  ]) {
+    const src = read(rel);
+    for (const m of src.matchAll(/from\s+'([^']+)'/g)) {
+      const spec = m[1];
+      if (spec.startsWith('.') || spec.startsWith('node:')) continue;
+      ok(allowed.has(spec), `${rel} 引入了未授权依赖: ${spec}`);
+    }
+  }
+});
+
+check('触控目标：输入区/队列条/工具卡/折叠消息的交互按钮 ≥44px', () => {
+  for (const rel of [CHAT_SCREEN, QUEUE_BAR, TOOL_CARD, COLLAPSIBLE_MESSAGE]) {
     const tags = openingTags(read(rel), 'button');
     ok(tags.length > 0, `${rel} 应包含按钮`);
     for (const tag of tags) {
@@ -634,24 +755,205 @@ check('触控目标：输入区/队列条/工具卡的交互按钮 ≥44px', () 
   }
 });
 
-check('无障碍：图标按钮必须有 aria-label，队列条/工具卡按钮全带标签', () => {
-  const chat = stripComments(read(CHAT_SCREEN));
-  ok(/aria-label="返回会话列表"/.test(chat), '返回按钮是纯图标，必须有 aria-label');
-  ok(/aria-label="打开会话菜单"/.test(chat), '菜单按钮是纯图标，必须有 aria-label');
+// ── 超长消息折叠（真机事故：1.2 万字 runtime context 整块淹没屏幕）────────────
 
-  for (const rel of [QUEUE_BAR, TOOL_CARD]) {
-    for (const tag of openingTags(read(rel), 'button')) {
-      ok(
-        /aria-label=/.test(tag),
-        `${rel} 有按钮缺少 aria-label: ${tag.replace(/\s+/g, ' ').slice(0, 90)}`,
-      );
-    }
-  }
+check('折叠阈值：短消息不折叠，超 600 字或超 12 行才折叠', () => {
+  eq(shouldCollapse('短消息'), false);
+  eq(shouldCollapse(''), false);
+  eq(shouldCollapse(null), false);
+  eq(shouldCollapse(undefined), false);
+
+  // 边界：正好 600 字 / 12 行 → 不折叠（"超过"才折）
+  eq(shouldCollapse('a'.repeat(COLLAPSE_CHAR_THRESHOLD)), false, '600 字整不该折叠');
+  eq(shouldCollapse('a'.repeat(COLLAPSE_CHAR_THRESHOLD + 1)), true, '601 字要折叠');
+  eq(shouldCollapse(Array.from({ length: COLLAPSE_LINE_THRESHOLD }, () => 'x').join('\n')), false);
+  eq(
+    shouldCollapse(Array.from({ length: COLLAPSE_LINE_THRESHOLD + 1 }, () => 'x').join('\n')),
+    true,
+    '13 行要折叠',
+  );
+
+  // 多行但总字数少、总字数多但只有一行，两条都要各自触发
+  eq(shouldCollapse(Array.from({ length: 20 }, () => '短').join('\n')), true);
+  eq(shouldCollapse('一'.repeat(2000)), true);
 });
+
+check('🔴 折叠预览：1.2 万字 runtime context 只暴露 6 行 / ≤600 字', () => {
+  const huge = Array.from({ length: 240 }, (_, i) => `第 ${i + 1} 行：这是一段很长的运行上下文内容`).join('\n');
+  const result = collapsePreview(huge);
+
+  eq(result.collapsed, true);
+  eq(result.totalLines, 240);
+  eq(result.hiddenLines, 240 - COLLAPSE_PREVIEW_LINES);
+  ok(result.preview.split('\n').length <= COLLAPSE_PREVIEW_LINES, '预览不能超过 6 行');
+  ok(countChars(result.preview) <= COLLAPSE_PREVIEW_CHARS, '预览不能超过 600 字');
+  ok(result.preview.startsWith('第 1 行'), '预览必须从原文开头开始');
+  ok(result.hiddenChars > 0, '必须报告被折叠的字数');
+  eq(
+    countChars(result.preview) + result.hiddenChars,
+    result.totalChars,
+    '可见 + 隐藏 = 总数（不许悄悄吞字）',
+  );
+});
+
+check('折叠预览：短消息原样返回、标记未折叠', () => {
+  const result = collapsePreview('就一句话');
+  eq(result.collapsed, false);
+  eq(result.preview, '就一句话');
+  eq(result.hiddenChars, 0);
+  eq(result.hiddenLines, 0);
+  eq(result.totalChars, 4);
+  eq(result.totalLines, 1);
+  eq(expandLabel(result), '', '未折叠时不该有展开文案');
+});
+
+check('折叠预览：单行超长文本按字数截断（行数仍算 1）', () => {
+  const oneLine = 'x'.repeat(5000);
+  const result = collapsePreview(oneLine);
+  eq(result.collapsed, true);
+  eq(result.totalLines, 1);
+  eq(result.hiddenLines, 0, '单行文本没有"隐藏行"');
+  eq(countChars(result.preview), COLLAPSE_PREVIEW_CHARS);
+  eq(result.hiddenChars, 5000 - COLLAPSE_PREVIEW_CHARS);
+  ok(expandLabel(result).includes('共 5000 字'), `文案要带总字数: ${expandLabel(result)}`);
+});
+
+check('🔴 折叠按**码点**切：emoji / 代理对不会被切成半个字符', () => {
+  const emojis = '👍'.repeat(700);
+  eq(countChars(emojis), 700, '码点计数而不是 UTF-16 长度');
+  const result = collapsePreview(emojis);
+  eq(result.collapsed, true);
+  eq(countChars(result.preview), COLLAPSE_PREVIEW_CHARS);
+  ok(!result.preview.includes('\uFFFD'), '预览里不能出现替换字符（半个 emoji）');
+  eq(countChars(result.preview) + result.hiddenChars, 700);
+});
+
+check('折叠：CRLF 归一为 LF，行数统计一致', () => {
+  eq(countLines('a\r\nb\rc'), 3, 'CRLF / CR 都算换行');
+  const crlf = Array.from({ length: 20 }, (_, i) => `行${i}`).join('\r\n');
+  const result = collapsePreview(crlf);
+  eq(result.collapsed, true);
+  eq(result.totalLines, 20);
+  ok(!result.preview.includes('\r'), '预览里不该残留 \\r');
+});
+
+check('折叠：空串/null/undefined 不炸且不折叠', () => {
+  for (const bad of ['', null, undefined, '   ', '\n\n\n']) {
+    const result = collapsePreview(bad);
+    eq(result.collapsed, false, `${JSON.stringify(bad)} 不该折叠`);
+    eq(result.hiddenChars, 0);
+  }
+  eq(countChars(null), 0);
+  eq(countChars(undefined), 0);
+  eq(countLines(null), 0);
+});
+
+check('折叠：阈值可覆盖（不同场景不同口径）', () => {
+  const text = 'a'.repeat(100);
+  eq(shouldCollapse(text, { charThreshold: 50 }), true);
+  eq(shouldCollapse(text, { charThreshold: 500 }), false);
+  const result = collapsePreview(text, { charThreshold: 50, maxLines: 1, maxChars: 10 });
+  eq(result.collapsed, true);
+  eq(countChars(result.preview), 10);
+});
+
+check('折叠文案：带总字数（有隐藏行时补上行数）', () => {
+  const text = Array.from({ length: 30 }, () => 'xx').join('\n');
+  const label = expandLabel(collapsePreview(text));
+  ok(label.includes(`共 ${countChars(text)} 字`), `要报告总字数: ${label}`);
+  ok(label.includes(`${countLines(text)} 行`), `要报告总行数: ${label}`);
+  ok(label.startsWith('展开全部（'), '固定前缀，便于 UI/测试对齐');
+});
+
+// ── 展开状态按消息 key 记住（切走会话再回来不丢）────────────────────────────
+
+check('展开状态：按会话隔离持久化，切走再回来仍在', () => {
+  const store = createMemoryStorage();
+  saveExpandedKeys('s1', ['line-3', 'line-9'], store);
+  saveExpandedKeys('s2', ['line-1'], store);
+
+  eq(loadExpandedKeys('s1', store), ['line-3', 'line-9'], '顺序也要保住');
+  eq(loadExpandedKeys('s2', store), ['line-1']);
+  eq(loadExpandedKeys('s3', store), [], '没记录的会话为空');
+  eq(expandedKey('s1') === expandedKey('s2'), false);
+  eq(expandedKey(''), 'dsh_chat_expanded_v1:default');
+});
+
+check('展开状态：空集合删除键，坏数据按"全折叠"处理', () => {
+  const store = createMemoryStorage();
+  saveExpandedKeys('s', ['a'], store);
+  saveExpandedKeys('s', [], store);
+  eq(loadExpandedKeys('s', store), [], '空集合要删键，不留垃圾');
+
+  // 坏数据是**预期要吞掉**的情况，临时静音 warn（同时断言确实告警了）
+  const realWarn = console.warn;
+  const warned = [];
+  console.warn = (...args) => warned.push(args[0]);
+  try {
+    store.setItem(expandedKey('s'), '{不是 JSON');
+    eq(loadExpandedKeys('s', store), [], '坏 JSON 不炸，按未展开');
+    store.setItem(expandedKey('s'), JSON.stringify([1, null, '', 'ok']));
+    eq(loadExpandedKeys('s', store), ['ok'], '非字符串项被过滤');
+  } finally {
+    console.warn = realWarn;
+  }
+  eq(warned.length, 1, '坏 JSON 必须 warn 而不是静默（否则用户以为状态记住了）');
+});
+
+check('展开状态：超出上限丢最旧的，防 localStorage 被长会话塞满', () => {
+  const store = createMemoryStorage();
+  const many = Array.from({ length: EXPANDED_MAX_KEYS + 20 }, (_, i) => `line-${i}`);
+  saveExpandedKeys('s', many, store);
+  const loaded = loadExpandedKeys('s', store);
+  eq(loaded.length, EXPANDED_MAX_KEYS);
+  eq(loaded[loaded.length - 1], `line-${EXPANDED_MAX_KEYS + 19}`, '保留最新的');
+  eq(loaded.includes('line-0'), false, '最旧的被丢');
+});
+
+check('展开状态：存储抛异常时不炸（离线/配额满）', () => {
+  const boom = {
+    getItem() {
+      throw new Error('SecurityError');
+    },
+    setItem() {
+      throw new Error('QuotaExceededError');
+    },
+    removeItem() {
+      throw new Error('SecurityError');
+    },
+  };
+  const realWarn = console.warn;
+  console.warn = () => {};
+  let threw = false;
+  try {
+    eq(loadExpandedKeys('s', boom), []);
+    eq(saveExpandedKeys('s', ['a'], boom), false);
+  } catch {
+    threw = true;
+  } finally {
+    console.warn = realWarn;
+  }
+  ok(!threw, '展开状态读写异常不能冒泡到 UI');
+});
+
+// ── 剪贴板回退（消息复制 / 工具卡复制共用）──────────────────────────────────
+
+checkAsync('剪贴板：Node（无 navigator/document）下返回 false 而不是抛错', async () => {
+  const done = await copyToClipboard('要复制的内容');
+  eq(done, false, '没有 DOM/clipboard 时如实返回 false（UI 显示"复制失败"）');
+});
+
+checkAsync('剪贴板：非字符串输入不炸', async () => {
+  eq(await copyToClipboard(null), false);
+  eq(await copyToClipboard(undefined), false);
+  eq(await copyToClipboard(123), false);
+});
+
+await Promise.all(pendingChecks);
 
 // ── 报告 ────────────────────────────────────────────────────────────────────
 
-console.log('\n  待发队列 / 草稿持久化 单元测试');
+console.log('\n  待发队列 / 草稿 / 折叠 单元测试');
 console.log(`  ${'─'.repeat(46)}`);
 for (const f of failures) {
   console.log(`  ✗ ${f.name}\n    ${f.message.split('\n').join('\n    ')}`);

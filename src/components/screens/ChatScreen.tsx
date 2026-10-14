@@ -12,6 +12,7 @@ import {
   Sparkles,
   Terminal,
   RefreshCw,
+  ChevronDown,
   X,
 } from 'lucide-react';
 import { ChatLine, PendingPrompt, TaskStep } from '../../types';
@@ -20,7 +21,8 @@ import { DisclosureToolCard } from '../chat/DisclosureToolCard';
 import { TaskProgressCard } from '../chat/TaskProgressCard';
 import { VoiceRecordingOverlay } from '../chat/VoiceRecordingOverlay';
 import { QueuedMessagesBar } from '../chat/QueuedMessagesBar';
-import { clearDraft, loadDraft, saveDraft } from '../chat/draft-store';
+import { CollapsibleMessage } from '../chat/CollapsibleMessage';
+import { clearDraft, loadDraft, loadExpandedKeys, saveDraft, saveExpandedKeys } from '../chat/draft-store';
 import { ConnectionDot } from '../common/ConnectionDot';
 import { DeepSeekLogo } from '../common/DeepSeekLogo';
 import type { QueuedMessage } from '../../lib/message-queue';
@@ -81,21 +83,48 @@ export const ChatScreen: React.FC<Props> = ({
   const [voiceOpen, setVoiceOpen] = useState(false);
   const [sendError, setSendError] = useState<string | null>(null);
   const [draftNotice, setDraftNotice] = useState<string | null>(null);
+  /** 被手动展开过的消息 key（按会话持久化；默认折叠是大多数）。 */
+  const [expandedKeys, setExpandedKeys] = useState<Set<string>>(() => new Set(loadExpandedKeys(sessionId)));
+  /** 长按激活的消息 key（移动端没有 hover，用长按唤出操作条）。 */
+  const [activeMessageKey, setActiveMessageKey] = useState<string | null>(null);
+  /** 用户上滑看历史时出现「跳到最新」。 */
+  const [showJumpToLatest, setShowJumpToLatest] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const timelineRef = useRef<HTMLDivElement>(null);
+  /** 自动跟随开关：只在用户**本来就在底部**时为真，避免把读历史的人拽走。 */
+  const followBottomRef = useRef(true);
   // 当前会话 + 当前输入的最新值（用于 await 期间切会话 / 卸载时的正确处理）
   const activeSessionRef = useRef(sessionId);
   const inputRef = useRef(inputText);
   inputRef.current = inputText;
 
-  const scrollToBottom = () => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  const scrollToBottom = (behavior: ScrollBehavior = 'smooth') => {
+    messagesEndRef.current?.scrollIntoView({ behavior, block: 'end' });
   };
 
+  /** 滚动位置 → 是否贴底（80px 容差：手指抖动/惯性不算"离开底部"）。 */
+  const handleTimelineScroll = () => {
+    const el = timelineRef.current;
+    if (!el) return;
+    const distance = el.scrollHeight - el.scrollTop - el.clientHeight;
+    const atBottom = distance < 80;
+    followBottomRef.current = atBottom;
+    setShowJumpToLatest((prev) => (prev === !atBottom ? prev : !atBottom));
+  };
+
+  const jumpToLatest = () => {
+    followBottomRef.current = true;
+    setShowJumpToLatest(false);
+    scrollToBottom('smooth');
+  };
+
+  // 🔴 自动跟随只在"本来就在底部"时生效（原来无条件 scrollIntoView，
+  //    用户上滑读历史时每条流式增量都会把他拽回底部）。
   useEffect(() => {
-    scrollToBottom();
+    if (followBottomRef.current) scrollToBottom();
   }, [lines, running, preparing]);
 
-  // 切会话：恢复该会话的草稿，并给出**可见**提示（静默恢复 = 没恢复）
+  // 切会话：恢复该会话的草稿与展开状态，并给出**可见**提示（静默恢复 = 没恢复）
   useEffect(() => {
     activeSessionRef.current = sessionId;
     const restored = loadDraft(sessionId);
@@ -103,7 +132,28 @@ export const ChatScreen: React.FC<Props> = ({
     inputRef.current = restored.text;
     setDraftNotice(restored.restored ? '已恢复上次未发送的草稿' : null);
     setSendError(null);
+    setExpandedKeys(new Set(loadExpandedKeys(sessionId)));
+    setActiveMessageKey(null);
+    // 换会话一律先贴底（否则新会话会停在上一会话的滚动位置）
+    followBottomRef.current = true;
+    setShowJumpToLatest(false);
+    const frame =
+      typeof requestAnimationFrame === 'function'
+        ? requestAnimationFrame(() => scrollToBottom('auto'))
+        : 0;
+    return () => {
+      if (frame && typeof cancelAnimationFrame === 'function') cancelAnimationFrame(frame);
+    };
   }, [sessionId]);
+
+  /** 折叠/展开并**按会话持久化**（切走再回来不丢）。 */
+  const toggleExpanded = (key: string) => {
+    const next = new Set(expandedKeys);
+    if (next.has(key)) next.delete(key);
+    else next.add(key);
+    setExpandedKeys(next);
+    saveExpandedKeys(sessionId, next);
+  };
 
   // 离开会话 / 卸载：把当前输入落盘（"退出不丢"）
   useEffect(() => {
@@ -223,6 +273,21 @@ export const ChatScreen: React.FC<Props> = ({
     if (item) void handleSendText(item.text);
   };
 
+  /** 消息 key：与下方 map 完全一致（折叠状态/流式光标都按它定位）。 */
+  const lineKeyOf = (line: ChatLine, index: number) => line.key || `idx-${index}`;
+
+  /** 最后一条"消息类"行（跳过工具卡）—— 流式光标挂在它尾部。 */
+  let lastMessageKey: string | null = null;
+  for (let i = lines.length - 1; i >= 0; i -= 1) {
+    const kind = lines[i].kind;
+    if (kind === 'tool/call' || kind === 'tool/result') continue;
+    lastMessageKey = lineKeyOf(lines[i], i);
+    break;
+  }
+
+  /** 流式光标：仅"实时链路健康 + 任务在跑"时显示（链路断了不假装还在输出）。 */
+  const showStreamCursor = running && liveConnected === true;
+
   const preparingStages = [
     '唤醒远程守护进程…',
     '加载桌面环境知识与工具…',
@@ -296,18 +361,25 @@ export const ChatScreen: React.FC<Props> = ({
       </header>
 
       {/* 2. Chat Timeline */}
-      <div className="flex-1 overflow-y-auto px-4 py-4 space-y-4 max-w-2xl w-full mx-auto pb-36">
+      <div
+        ref={timelineRef}
+        onScroll={handleTimelineScroll}
+        className="flex-1 overflow-y-auto px-4 py-4 space-y-4 max-w-2xl w-full mx-auto pb-36"
+      >
         {/* Task Progress Summary if steps exist */}
         {steps.length > 0 && <TaskProgressCard steps={steps} running={running} />}
 
         {/* Messages */}
         {lines.map((line, idx) => {
+          const key = lineKeyOf(line, idx);
+          const isLastMessage = showStreamCursor && key === lastMessageKey;
+
           if (line.kind === 'tool/call') {
             // 结果可能在后续的 tool/result 事件里（App 按 seq 逐条映射），这里配对回来
             const paired = line.toolCallId ? resultByCallId.get(line.toolCallId) : undefined;
             const result = line.toolResult ?? paired?.toolResult ?? paired?.text ?? undefined;
             return (
-              <div key={line.key || idx} className="my-1.5">
+              <div key={key} className="my-1.5">
                 <DisclosureToolCard
                   toolName={line.toolName}
                   toolArgs={line.toolArgs}
@@ -326,7 +398,7 @@ export const ChatScreen: React.FC<Props> = ({
               if (callLine) return null;
             }
             return (
-              <div key={line.key || idx} className="my-1.5">
+              <div key={key} className="my-1.5">
                 <DisclosureToolCard
                   toolName={line.toolName ?? '工具结果'}
                   toolArgs={line.toolArgs}
@@ -339,18 +411,27 @@ export const ChatScreen: React.FC<Props> = ({
           }
 
           if (line.role === 'user') {
+            // 超长用户消息（runtime context 动辄上万字）默认折叠为 6 行 + 复制
             return (
-              <div key={line.key || idx} className="flex justify-end my-1">
-                <div className="max-w-[84%] px-4 py-2.5 rounded-2xl rounded-br-xs bg-gradient-to-r from-[#2563eb] to-[#3b82f6] text-white text-[14.5px] leading-relaxed shadow-[0_0_20px_rgba(59,130,246,0.3)] break-words border border-white/10">
-                  {line.text}
-                </div>
-              </div>
+              <CollapsibleMessage
+                key={key}
+                messageKey={key}
+                text={line.text}
+                mode="plain"
+                align="end"
+                expanded={expandedKeys.has(key)}
+                onToggleExpand={toggleExpanded}
+                active={activeMessageKey === key}
+                onActivate={setActiveMessageKey}
+                showCursor={isLastMessage}
+                bodyClassName="max-w-[84%] px-4 py-2.5 rounded-2xl rounded-br-xs bg-gradient-to-r from-[#2563eb] to-[#3b82f6] text-white text-[14.5px] leading-relaxed shadow-[0_0_20px_rgba(59,130,246,0.3)] break-words border border-white/10"
+              />
             );
           }
 
           if (line.role === 'system') {
             return (
-              <div key={line.key || idx} className="flex justify-center my-2">
+              <div key={key} className="flex justify-center my-2">
                 <span className="px-3 py-1 rounded-full text-[11.5px] text-[#94a3b8] bg-[#141824] border border-white/[0.08]">
                   {line.text}
                 </span>
@@ -358,19 +439,33 @@ export const ChatScreen: React.FC<Props> = ({
             );
           }
 
-          // Assistant message: Obsidian Studio Specular Card
+          // Assistant message: Obsidian Studio Specular Card（超长正文同样折叠）
           return (
-            <div key={line.key || idx} className="my-2.5 specular-card p-4 rounded-3xl border border-white/10 shadow-xl">
-              <div className="flex items-center gap-2 mb-2.5 pb-2 border-b border-white/[0.08]">
-                <div className="w-5 h-5 rounded-lg bg-gradient-to-br from-[#1e293b] to-[#0f172a] border border-white/10 flex items-center justify-center p-0.5 shadow-inner">
-                  <DeepSeekLogo size={14} variant="brand" />
+            <CollapsibleMessage
+              key={key}
+              messageKey={key}
+              text={line.text}
+              mode="markdown"
+              align="start"
+              expanded={expandedKeys.has(key)}
+              onToggleExpand={toggleExpanded}
+              active={activeMessageKey === key}
+              onActivate={setActiveMessageKey}
+              showCursor={isLastMessage}
+              bodyClassName="my-2.5 w-full specular-card p-4 rounded-3xl border border-white/10 shadow-xl"
+              header={
+                <div className="flex items-center gap-2 mb-2.5 pb-2 border-b border-white/[0.08]">
+                  <div className="w-5 h-5 rounded-lg bg-gradient-to-br from-[#1e293b] to-[#0f172a] border border-white/10 flex items-center justify-center p-0.5 shadow-inner">
+                    <DeepSeekLogo size={14} variant="brand" />
+                  </div>
+                  <span className="text-[12px] font-bold text-white tracking-wide">DeepSeek 远程执行响应</span>
                 </div>
-                <span className="text-[12px] font-bold text-white tracking-wide">DeepSeek 远程执行响应</span>
-              </div>
+              }
+            >
               <div className="text-[#f1f5f9] leading-relaxed">
                 <MarkdownView content={line.text} />
               </div>
-            </div>
+            </CollapsibleMessage>
           );
         })}
 
@@ -467,12 +562,34 @@ export const ChatScreen: React.FC<Props> = ({
           </div>
         )}
 
+        {/* 只有工具卡时才需要独立的流式光标（消息类行自己会带） */}
+        {showStreamCursor && lastMessageKey === null && (
+          <div className="flex items-center gap-2 px-1" role="status">
+            <span className="inline-block w-[7px] h-[15px] rounded-[2px] bg-[#38bdf8] animate-pulse" />
+            <span className="text-[11.5px] text-[#64748b]">正在输出…</span>
+          </div>
+        )}
+
         <div ref={messagesEndRef} />
       </div>
 
       {/* 3. Floating Composer Dock */}
       <div className="fixed bottom-0 left-0 right-0 z-20 bg-gradient-to-t from-[#090a0f] via-[#090a0f]/95 to-transparent pt-6 pb-5 px-4">
         <div className="max-w-2xl mx-auto">
+          {/* 上滑看历史时才出现；点了回底部并恢复自动跟随 */}
+          {showJumpToLatest && (
+            <div className="flex justify-center mb-2">
+              <button
+                type="button"
+                onClick={jumpToLatest}
+                aria-label="跳到最新消息"
+                className="flex items-center gap-1.5 min-h-[44px] px-4 rounded-full bg-[#141824]/95 border border-[#3b82f6]/40 text-[#93c5fd] text-[12px] font-medium shadow-lg hover:bg-[#1e2538] backdrop-blur-sm cursor-pointer studio-tap"
+              >
+                <ChevronDown size={14} />
+                <span>跳到最新</span>
+              </button>
+            </div>
+          )}
           {/* Live event stream status: 断开时明说，不静默假装正常 */}
           {liveConnected === false && (
             <div

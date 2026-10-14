@@ -1774,6 +1774,255 @@ async function scenarioApproval() {
   return out;
 }
 
+// ── 场景：T7 聊天可读性（超长消息折叠）──────────────────────────────────────
+async function scenarioReadability() {
+  const out = {};
+
+  const target = await step('找一个含超长用户消息的真实会话（判定基准取宿主记录）', async () => {
+    await attach({ fresh: true });
+    await ensurePairedRealHost();
+    const list = await hostRpc('session/list', { _request: {} });
+    const items = (list && list.items ? list.items : [])
+      .filter((s) => s.origin !== 'subagent')
+      .sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0))
+      .slice(0, 12);
+    let found = null;
+    for (const s of items) {
+      let recs = [];
+      try {
+        recs = await hostPageRecords(s.sessionId);
+      } catch {
+        continue;
+      }
+      let longest = '';
+      for (const r of recs) {
+        if (r.event?.type !== 'user/message') continue;
+        const c = r.event?.data?.content ?? r.event?.data?.message?.content;
+        if (!Array.isArray(c)) continue;
+        const text = c
+          .filter((p) => p && (p.type === undefined || p.type === 'text') && typeof p.text === 'string')
+          .map((p) => p.text)
+          .join('\n');
+        if (text.length > longest.length) longest = text;
+      }
+      if (longest.length > 600) {
+        found = { sessionId: s.sessionId, title: s.projections?.values?.title, chars: longest.length };
+        break;
+      }
+    }
+    expect(
+      !!found,
+      `最近 ${items.length} 个会话里找不到超过 600 字的用户消息，无法验证折叠（需要一条长消息做样本）`,
+      { scanned: items.length, titles: items.map((s) => s.projections?.values?.title).slice(0, 6) },
+    );
+    evidence(found);
+    out.target = found;
+    return found;
+  });
+
+  await step('打开该会话 → 超长消息**默认折叠**（data-collapsed=true，全文不进 DOM）', async () => {
+    await reload();
+    await waitReadyWithSessions({ expectCards: true, timeout: 60000 });
+    await expandAllGroups();
+    await sleep(400);
+
+    let present = await pageFn(`return !!qs('[data-session-id="${target.sessionId}"]');`);
+    if (!present) {
+      // 目标会话可能落在每组 12 条上限之外：把所有「显示更多」都点开
+      for (let i = 0; i < 12; i += 1) {
+        const clicked = await pageFn(`const b = qsa('button').filter(function (x) { return /显示更多/.test(txtOf(x)); })[0];
+if (!b) return false; clickEl(b); return true;`);
+        if (!clicked) break;
+        await sleep(300);
+      }
+      present = await pageFn(`return !!qs('[data-session-id="${target.sessionId}"]');`);
+    }
+    expect(present, `该会话的卡片没有渲染出来（sid=${target.sessionId}）`, { target });
+
+    await pageFn(`const c = qs('[data-session-id="${target.sessionId}"]');
+const b = c && c.querySelector('button[aria-label^="打开会话 "]');
+if (!b) throw new Error('找不到「打开会话」按钮'); clickEl(b); return true;`);
+
+    const collapsed = await until(
+      '聊天页出现折叠消息',
+      `(function(){ const els = qsa('[data-collapsed="true"]');
+        return { ok: els.length >= 1, info: chatInfo(), collapsedCount: els.length,
+          fullChars: els[0] ? Number(els[0].getAttribute('data-full-chars')) : null }; })()`,
+      { timeout: 25000 },
+    );
+    expect(
+      Number(collapsed.fullChars) > 600,
+      `折叠标记的中文长度不对（data-full-chars=${collapsed.fullChars}）`,
+      collapsed,
+    );
+    // 折叠的意义就是"全文不进 DOM"：预览必须明显短于全文
+    const previewLen = await pageFn(`const el = qs('[data-collapsed="true"]');
+return el ? flat(txtOf(el)).length : -1;`);
+    expect(
+      previewLen > 0 && previewLen < Number(collapsed.fullChars) * 0.6,
+      `折叠后渲染的文本仍然太长（预览 ${previewLen} 字 vs 全文 ${collapsed.fullChars} 字）—— 全文多半还在 DOM 里`,
+      { previewLen, fullChars: collapsed.fullChars },
+    );
+    evidence({ collapsed, previewLen });
+    out.collapsed = { ...collapsed, previewLen };
+    return collapsed;
+  });
+
+  await step('点「展开全部」→ 全文进 DOM（data-expanded=true）', async () => {
+    const before = await pageFn(`return { collapsed: qsa('[data-collapsed="true"]').length,
+  expanded: qsa('[data-expanded="true"]').length };`);
+    await pageFn(`const b = qs('button[aria-label^="展开全部"]');
+if (!b) throw new Error('没有「展开全部」按钮'); clickEl(b); return true;`);
+    await sleep(600);
+    const after = await pageFn(`return { collapsed: qsa('[data-collapsed="true"]').length,
+  expanded: qsa('[data-expanded="true"]').length };`);
+    expect(
+      after.expanded > before.expanded,
+      `点「展开全部」后 data-expanded 没有增加（${JSON.stringify(before)} → ${JSON.stringify(after)}）`,
+      { before, after },
+    );
+    evidence({ before, after });
+    out.expanded = after;
+    return after;
+  });
+
+  return out;
+}
+
+// ── 场景：T6 会话管理（每组渲染上限 / 操作菜单 / 重命名）────────────────────
+async function scenarioSessionOps() {
+  const out = {};
+  const NEW_TITLE = 'E2E 重命名验证 ' + Math.floor(Date.now() / 1000);
+
+  await step('准备：真网关主机 + 重启 + 展开全部工作区', async () => {
+    await attach({ fresh: true });
+    await ensurePairedRealHost();
+    await reload();
+    await waitReadyWithSessions({ expectCards: true, timeout: 60000 });
+    await expandAllGroups();
+    await sleep(500);
+    const summary = await pageFn(`return { cards: sessionCards().length,
+  more: qsa('button').filter(function (b) { return /显示更多/.test(txtOf(b)); }).length };`);
+    evidence(summary);
+    return summary;
+  });
+
+  await step('每组默认只渲染 12 条，且有「显示更多（还剩 N 条）」', async () => {
+    const cap = await pageFn(`const more = qsa('button').filter(function (b) { return /显示更多/.test(txtOf(b)); });
+return { cards: sessionCards().length, more: more.length, moreTexts: more.map(function (b) { return flat(txtOf(b)); }).slice(0, 4) };`);
+    expect(
+      cap.more > 0,
+      `没有任何「显示更多」按钮（渲染 ${cap.cards} 张卡）—— 说明这台主机每个组都不超过 12 条，无法验证上限`,
+      cap,
+    );
+    expect(
+      /还剩\s*\d+\s*条/.test(cap.moreTexts.join(' ')),
+      `「显示更多」文案里没有剩余条数：${JSON.stringify(cap.moreTexts)}`,
+      cap,
+    );
+    evidence(cap);
+    return cap;
+  });
+
+  await step('点「显示更多」→ 该组渲染出更多卡片', async () => {
+    const before = await pageFn(`return { cards: sessionCards().length };`);
+    await pageFn(`const b = qsa('button').filter(function (x) { return /显示更多/.test(txtOf(x)); })[0];
+if (!b) throw new Error('没有「显示更多」按钮'); clickEl(b); return true;`);
+    await sleep(600);
+    const after = await pageFn(`return { cards: sessionCards().length,
+  more: qsa('button').filter(function (b) { return /显示更多/.test(txtOf(b)); }).length };`);
+    expect(
+      after.cards > before.cards,
+      `点了「显示更多」但卡片数没有增加（${before.cards} → ${after.cards}）`,
+      { before, after },
+    );
+    evidence({ before, after });
+    return after;
+  });
+
+  await step('卡片「更多操作」→ 菜单出现且条目齐全（重命名/复制 id/归档…）', async () => {
+    await pageFn(`const b = qs('button[aria-label^="更多操作 "]');
+if (!b) throw new Error('没有「更多操作」按钮'); clickEl(b); return true;`);
+    await sleep(350);
+    const menu = await pageFn(`const d = qs('[data-testid="session-action-menu"]');
+return { open: !!d, text: d ? flat(txtOf(d)) : null,
+  actions: qsa('[data-action]').map(function (x) { return x.getAttribute('data-action'); }) };`);
+    expect(menu.open, '操作菜单没有打开', menu);
+    for (const label of ['重命名', '复制会话 id', '本地归档']) {
+      expect((menu.text || '').indexOf(label) >= 0, `菜单里没有「${label}」：${menu.text}`, menu);
+    }
+    expect(menu.actions.indexOf('rename') >= 0, `菜单缺少 rename 条目：${JSON.stringify(menu.actions)}`, menu);
+    evidence(menu);
+    out.menu = menu;
+    return menu;
+  });
+
+  await step('重命名一次性会话 → 卡片就地更新，且**宿主真值**同步', async () => {
+    // 在宿主上新建一个一次性会话（不改用户既有会话），随后用真机 UI 给它改名
+    const created = await hostRpc('session/create', { request: { cwd: ROOT } });
+    const sid = created && created.sessionId;
+    expect(!!sid, `宿主没有返回新会话 id：${JSON.stringify(created)}`, created);
+
+    await reload();
+    await waitReadyWithSessions({ expectCards: true, timeout: 60000 });
+    await expandAllGroups();
+    await sleep(600);
+
+    // 卡片自带 `data-session-id`，用它精确定位。
+    // ⚠️ 不要用标题定位：新建的会话标题是"未命名会话"，多跑几次就不唯一（实测踩到）。
+    const probe = await pageFn(`const sid = ${JSON.stringify(sid)};
+const card = qs('[data-session-id="' + sid + '"]');
+const ids = qsa('[data-session-id]').map(function (x) { return x.getAttribute('data-session-id'); });
+return { sid, found: !!card, renderedIds: ids.slice(0, 10), renderedCount: ids.length,
+  inBody: flat(bodyText()).indexOf(sid) >= 0 };`);
+    expect(
+      probe.found,
+      `新建的会话卡片没有渲染出来（sid=${sid}）。当前渲染的 id 前 10 个=${JSON.stringify(probe.renderedIds)}` +
+        `（可能落在每组 12 条的上限之外）`,
+      probe,
+    );
+    evidence({ probe });
+
+    await pageFn(`const card = qs('[data-session-id="${sid}"]');
+if (!card) throw new Error('找不到会话卡片'); 
+const b = card.querySelector('button[aria-label^="更多操作 "]');
+if (!b) throw new Error('卡片上没有「更多操作」按钮'); clickEl(b); return true;`);
+    await sleep(350);
+    await pageFn(`const item = qs('[data-action="rename"]'); if (!item) throw new Error('菜单里没有 rename'); clickEl(item); return true;`);
+    await sleep(350);
+    await pageFn(`const input = qs('#dsh-rename-input'); if (!input) throw new Error('没有重命名输入框');
+setNativeValue(input, ${JSON.stringify(NEW_TITLE)}); return true;`);
+    await pageFn(`const btn = qsa('button').filter(function (b) { return flat(txtOf(b)) === '保存'; })[0];
+if (!btn) throw new Error('没有「保存」按钮'); clickEl(btn); return true;`);
+
+    // 判定基准取**宿主记录**：UI 乐观更新不算数
+    let hostTitle = null;
+    const deadline = Date.now() + 20000;
+    while (Date.now() < deadline) {
+      try {
+        const list = await hostRpc('session/list', { _request: {} });
+        const row = (list && list.items ? list.items : []).find((s) => s.sessionId === sid);
+        hostTitle = (row && row.projections && row.projections.values && row.projections.values.title) || null;
+        if (hostTitle === NEW_TITLE) break;
+      } catch {
+        /* 继续等 */
+      }
+      await sleep(800);
+    }
+    await sleep(500);
+    const ui = await pageFn(`return { hasNewTitle: qsa('button[aria-label^="打开会话 "]').some(function (b) { return b.getAttribute('aria-label').indexOf(${JSON.stringify(NEW_TITLE)}) >= 0; }),
+  cards: sessionCards().length };`);
+
+    expect(hostTitle === NEW_TITLE, `宿主的会话标题没有改成「${NEW_TITLE}」（实际 ${JSON.stringify(hostTitle)}）`, { sid, hostTitle });
+    expect(ui.hasNewTitle, '卡片没有就地显示新标题', { sid, ui });
+    evidence({ sid, hostTitle, ui, newTitle: NEW_TITLE });
+    out.rename = { sid, hostTitle, ui };
+    return { sid, hostTitle };
+  });
+
+  return out;
+}
+
 // ── 收尾：把设备指回真网关（并验证令牌真的有效）─────────────────────────────
 async function ensureRealHost() {
   const prep = await ensurePairedRealHost();
@@ -1791,12 +2040,16 @@ async function runScenario(name, ctx) {
       return scenarioArchive();
     case 'queue':
       return scenarioQueue();
+    case 'session-ops':
+      return scenarioSessionOps();
+    case 'readability':
+      return scenarioReadability();
     case 'bad-token':
       return scenarioBadToken();
     case 'approval':
       return scenarioApproval();
     default:
-      throw new Error(`未知场景：${name}（可选 chain|collapse|archive|queue|bad-token|approval|all）`);
+      throw new Error(`未知场景：${name}（可选 chain|collapse|archive|queue|session-ops|readability|bad-token|approval|all）`);
   }
 }
 
@@ -1809,7 +2062,7 @@ async function main() {
   ADB = adbInfo.bin;
   note(`adb = ${ADB} (${adbInfo.version})`);
 
-  const list = SCENARIO === 'all' ? ['chain', 'collapse', 'archive', 'queue', 'bad-token', 'approval'] : [SCENARIO];
+  const list = SCENARIO === 'all' ? ['chain', 'collapse', 'archive', 'queue', 'session-ops', 'readability', 'bad-token', 'approval'] : [SCENARIO];
   const results = [];
   let failed = null;
 
