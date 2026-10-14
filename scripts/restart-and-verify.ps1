@@ -39,7 +39,20 @@ Start-Sleep -Seconds 5
 # ---- 2. relaunch ----
 if (-not (Test-Path $dshExe)) { Log "DSH executable missing: $dshExe"; exit 1 }
 Log 'launching DSH...'
-Start-Process -FilePath $dshExe
+# Launch via System.Diagnostics.Process, NOT Start-Process.
+#
+# Why: when this script runs as a child of DSH, DSH's proxy policy publishes BOTH
+# casings of every proxy variable (http_proxy + HTTP_PROXY, etc.; see
+# @deepseek-ai/dsh-http-proxy in app.asar). PowerShell 5.1's Environment is a
+# case-insensitive dictionary, so it sees those pairs as duplicate keys and
+# Start-Process throws before doing anything:
+#     Add failed: key "NO_PROXY" already exists ("no_proxy")
+# System.Diagnostics.ProcessStartInfo does not rebuild that dictionary, so it
+# launches fine under the same environment. Verified on this machine 2026-10-14.
+$psi = New-Object System.Diagnostics.ProcessStartInfo
+$psi.FileName = $dshExe
+$psi.UseShellExecute = $true
+[void][System.Diagnostics.Process]::Start($psi)
 Start-Sleep -Seconds 25
 
 # ---- 3. wait for the port ----
