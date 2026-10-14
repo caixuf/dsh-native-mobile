@@ -10,6 +10,12 @@ apps/android/build/
 apps/android/app/build/
 *.apk
 
+# 🔴 签名密钥与密码：绝不提交（本仓库是 public）。
+# 模板见 apps/android/keystore.properties.example
+*.jks
+*.keystore
+apps/android/keystore.properties
+
 # IDE
 .idea/
 *.iml
