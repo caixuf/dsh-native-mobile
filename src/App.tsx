@@ -966,6 +966,18 @@ export const App: React.FC = () => {
         },
       };
     }
+    // 在线但队列里还有东西（上次断线留下的）—— 也要让用户看得见、能立刻补发。
+    if (outbox.pending > 0 || outbox.failed > 0) {
+      return {
+        text:
+          outbox.failed > 0
+            ? `待发 ${outbox.pending} 条，另有 ${outbox.failed} 条发送失败。点这里立即重试。`
+            : `有 ${outbox.pending} 条指令等待补发。点这里立即发送。`,
+        onPress: () => {
+          void connRef.current?.flushOutbox();
+        },
+      };
+    }
     if (hosts.length === 0) return null;
     const platform = NativeBridge.platform();
     if (platform === 'web') {

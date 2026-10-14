@@ -1594,6 +1594,20 @@ return { value: ta.value, disabled: ta.disabled, sendLabel: sendBtn ? sendBtn.ge
         destroyedPromptSockets: fake.state.destroyedPromptSockets,
       });
       out.draft = { path: inOutbox ? 'queued' : 'draft-kept', inputValue: res.info.inputValue, notice: res.notice };
+
+      // 轻提示 5s 自消 —— 之后必须还有一条**持久**的「待发 N 条」指示，
+      // 否则用户会以为刚才那条消息凭空消失了（比丢字更让人不安）。
+      await sleep(6000);
+      const strip = await pageFn(`const b = qsa('button').filter(function (x) { return /(等待补发|待发\\s*\\d+\\s*条|发送失败)/.test(flat(txtOf(x))); })[0];
+return { found: !!b, text: b ? flat(txtOf(b)) : null,
+  statusNow: (function(){ const s = document.querySelector('[role="status"]'); return s ? flat(txtOf(s)) : null; })(),
+  outbox: localStorage.getItem('dsh_outbox_v1') };`);
+      expect(
+        strip.found,
+        `轻提示消失后没有「待发 N 条」的持久指示（role=status 现在=${JSON.stringify(strip.statusNow)}）—— 用户会以为消息没了`,
+        strip,
+      );
+      evidence({ persistentStrip: strip });
       return res.info;
     });
 
