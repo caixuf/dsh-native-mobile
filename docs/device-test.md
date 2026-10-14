@@ -1034,8 +1034,9 @@ NotificationRecord(pkg=io.github.dshmobile.app id=22816 importance=4
   android.title=String (工具调用需要批准)
 ```
 
-截图：`.scratch/relay-final.png`（通知标题「工具调用需要批准」、正文为假主机下发的理由、
-「允许一次 / 拒绝」两个按钮，下方是常驻的「DSH 遥控 · 有审批待处理」）。
+截图：`docs/evidence/relay-e2e-2026-10-14.png`（通知标题「工具调用需要批准」、
+正文为假主机下发的理由、「允许一次 / 拒绝」两个按钮，下方是常驻的
+「DSH 遥控 · 有审批待处理」）。
 
 ### 3. 点击 → 回执 → 假主机校验通过
 
