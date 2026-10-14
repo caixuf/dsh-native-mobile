@@ -11,6 +11,13 @@
  *   4. 归档是**仅本机**的：能隐藏、能恢复、不丢会话；
  *   5. 子代理必须落进它自己的工作区组，而不是混进主会话；
  *   6. 远端搜索结果单独成组，且不能和本地结果重复占两行。
+ *
+ * T6 追加（2026-10-15）：真主机实测 8 工作区 / 129 会话（desktop 组 41 条），
+ * 所以还要盯：
+ *   7. 每组**默认只渲染 12 条**，而 running / 搜索命中**必须留在上限内**；
+ *   8. **重命名就地更新**（含连续改名的 echo 语义）与 fork 出来的本地新行；
+ *   9. 操作菜单的条目判定（取消运行只在 running、归档文案如实写"仅本机"）；
+ *  10. 新建会话的工作区候选只来自已知路径（不让用户手打）。
  */
 
 import { readFileSync } from 'node:fs';
@@ -21,19 +28,32 @@ import {
   ARCHIVE_NOTE,
   ARCHIVE_STORAGE_KEY,
   COLLAPSE_STORAGE_KEY,
+  DEFAULT_GROUP_LIMIT,
   SEARCH_GROUP_KEY,
+  SESSION_ACTION_LABELS,
+  SHOW_LESS_LABEL,
   UNKNOWN_WORKSPACE_KEY,
+  applyRenameEcho,
+  applySessionRename,
+  buildForkedSession,
+  capSessions,
+  clearRenameEcho,
   compareSessions,
   defaultCollapsedState,
   describeWorkspace,
   filterSessionsByQuery,
   formatSessionTime,
+  formatShowMoreLabel,
   groupSessions,
+  listWorkspaceOptions,
+  normalizeSessionTitle,
   normalizeWorkspace,
   readArchivedIds,
   readCollapseState,
   resolveCollapseState,
+  sessionActionItems,
   setArchivedId,
+  setRenameEcho,
   sortSessions,
   subagentSectionKey,
   toIdSet,
@@ -558,11 +578,14 @@ check('🔴 无依赖可折叠：必须用 aria-expanded/aria-controls 且分组
 });
 
 check('🔴 不引入新运行时依赖：本次改动的文件只许用已存在的依赖', () => {
-  const allowed = new Set(['react', 'lucide-react', 'clsx', 'tailwind-merge']);
+  // react-dom 不是新增依赖：package.json 里本来就有，src/main.tsx 一直在用；
+  // T6 的操作菜单只是把 createPortal 用上（卡片有 backdrop-filter，固定定位会被裁）。
+  const allowed = new Set(['react', 'react-dom', 'lucide-react', 'clsx', 'tailwind-merge']);
   const files = [
     'src/lib/session-groups.ts',
     'src/components/sessions/CollapsibleSection.tsx',
     'src/components/sessions/SessionCard.tsx',
+    'src/components/sessions/SessionActionMenu.tsx',
     'src/components/sessions/SessionGroupSection.tsx',
     'src/components/sessions/ArchivedSection.tsx',
     'src/components/screens/SessionsScreen.tsx',
@@ -584,6 +607,255 @@ check('纯函数层不许有运行时导入（测试才能免 hook 直跑）', (
   const src = readFileSync(path.join(ROOT, 'src/lib/session-groups.ts'), 'utf8');
   const runtimeImports = [...src.matchAll(/^\s*import\s+(?!type\b)[^;]*;/gm)].map((m) => m[0].trim());
   eq(runtimeImports, [], 'session-groups.ts 必须零运行时依赖（只允许 import type）');
+});
+
+// ── 11. 每组渲染上限（T6）────────────────────────────────────────────────────
+//
+// 真主机实测 8 工作区 / 129 会话（desktop 组 41 条、aiwork 组 35 条）。分组做完了，
+// 组内**全量渲染**照样滚不到底。这里盯三件事：默认 12 条、超出给「显示更多」、
+// **running 与搜索命中绝不能被折叠掉**。
+
+/** n 条同组会话，updatedAt 递减（= 已经是"时间倒序"的输入）。 */
+function many(n) {
+  const rows = [];
+  for (let i = 0; i < n; i++) rows.push(row(`s${i}`, { workspace: '/w', updatedAt: 1000 - i }));
+  return rows;
+}
+
+check('T6 上限：41 条同组只渲染 12 条，剩 29 条给「显示更多（还剩 29 条）」', () => {
+  const rows = many(41);
+  const capped = capSessions(rows);
+  eq(DEFAULT_GROUP_LIMIT, 12, '默认上限必须正好是 12');
+  eq(capped.visible.length, 12);
+  eq(capped.hidden, 29);
+  eq(capped.total, 41);
+  eq(capped.hasMore, true);
+  eq(formatShowMoreLabel(capped.hidden), '显示更多（还剩 29 条）');
+  eq(ids(capped.visible), ids(rows.slice(0, 12)), '没有优先级插队时顺序不变');
+});
+
+check('T6 上限：不超过上限就全量渲染，且不出现「显示更多」', () => {
+  const capped = capSessions(many(12));
+  eq(capped.visible.length, 12);
+  eq(capped.hidden, 0);
+  eq(capped.hasMore, false);
+  eq(formatShowMoreLabel(0), '');
+  eq(capSessions([]).visible, []);
+  eq(capSessions(null).total, 0, 'null 输入不能炸');
+});
+
+check('T6 上限：运行中的会话即使排在最末尾，也必须留在上限内', () => {
+  const rows = many(30);
+  rows[29] = row('s29', { workspace: '/w', updatedAt: 1, running: true });
+  const capped = capSessions(rows);
+  ok(ids(capped.visible).includes('s29'), '正在电脑上跑的那条不能被折叠掉');
+  eq(capped.visible[0], rows[29], '运行中的被提到上限内第一位');
+  eq(capped.visible.length, 12);
+  eq(capped.hidden, 18);
+});
+
+check('T6 上限：搜索命中的会话必须留在上限内（不能把用户正在找的折叠掉）', () => {
+  const rows = many(30);
+  const capped = capSessions(rows, { priorityIds: ['s27', 's25'] });
+  const vis = ids(capped.visible);
+  ok(vis.includes('s27') && vis.includes('s25'), '命中项必须在 12 条以内');
+  // 同一优先级内**保持输入顺序**（稳定排序），不按 priorityIds 的传入顺序重排
+  eq(vis.slice(0, 2), ['s25', 's27'], '命中项被提到上限最前，其余顺序不变');
+  eq(vis.slice(2), ['s0', 's1', 's2', 's3', 's4', 's5', 's6', 's7', 's8', 's9']);
+  eq(capSessions(rows, { priorityIds: new Set(['s20']) }).visible[0].sessionId, 's20', 'Set 也支持');
+});
+
+check('T6 上限：running 优先于搜索命中', () => {
+  const rows = many(5);
+  rows[3] = row('s3', { workspace: '/w', updatedAt: 1, running: true });
+  const capped = capSessions(rows, { limit: 2, priorityIds: ['s4'] });
+  eq(ids(capped.visible), ['s3', 's4']);
+});
+
+check('T6 上限：非法 limit 视为不限；expanded 后全量且 hasMore=false', () => {
+  eq(capSessions(many(30), { limit: 0 }).visible.length, 30);
+  eq(capSessions(many(30), { limit: -3 }).visible.length, 30);
+  eq(capSessions(many(30), { limit: NaN }).visible.length, 30);
+  eq(capSessions(many(30), { limit: Infinity }).visible.length, 30);
+
+  const expanded = capSessions(many(41), { expanded: true });
+  eq(expanded.visible.length, 41, '点过「显示更多」就得全给');
+  eq(expanded.hidden, 0);
+  eq(expanded.hasMore, false);
+  eq(SHOW_LESS_LABEL, '收起');
+});
+
+check('T6 上限：不改输入数组（render 期间绝不许改 props）', () => {
+  const rows = many(20);
+  const copy = ids(rows);
+  capSessions(rows, { priorityIds: ['s19'] });
+  eq(ids(rows), copy);
+});
+
+check('T6 上限：显示更多文案对脏数据安全', () => {
+  eq(formatShowMoreLabel(0), '');
+  eq(formatShowMoreLabel(-5), '');
+  eq(formatShowMoreLabel(NaN), '');
+  eq(formatShowMoreLabel(1.9), '显示更多（还剩 1 条）');
+  eq(formatShowMoreLabel(undefined), '');
+});
+
+// ── 12. 重命名 / fork 就地更新（T6）──────────────────────────────────────────
+//
+// 真网关实测（回环铸码 + 真配对，用完吊销）：
+//   session/rename  args = { request: { sessionId, title } }
+//   session/fork    args = { request: { sessionId } }
+// 形参传错会被边界校验直接拒（"args fields do not match the descriptor"），
+// 所以这里锁定的是"成功之后本列表怎么就地更新"。
+
+check('T6 重命名：命中项就地换标题（trim），未命中项引用不动，输入数组不被改', () => {
+  const rows = [row('a', { title: '旧标题' }), row('b', { title: 'B' })];
+  const next = applySessionRename(rows, 'a', '  新标题  ');
+  ok(next !== rows, '必须返回新数组');
+  eq(next[0].title, '新标题', '两端空白必须被 trim');
+  eq(next[0].sessionId, 'a');
+  eq(next[1], rows[1], '未命中的行保持同一引用（避免整列表重渲染）');
+  eq(rows[0].title, '旧标题', '绝不就地修改输入');
+});
+
+check('T6 重命名：空标题 / 空 id / 不存在 id 一律安全降级', () => {
+  const rows = [row('a', { title: '旧' })];
+  eq(applySessionRename(rows, 'a', '   ')[0].title, '旧', '空标题不生效');
+  eq(applySessionRename(rows, '', 'x')[0].title, '旧', '空 id 不生效');
+  eq(applySessionRename(rows, 'nope', 'x')[0], rows[0]);
+  eq(applySessionRename(null, 'a', 'x'), []);
+  const stamped = applySessionRename(rows, 'a', '新', 12345);
+  eq(stamped[0].updatedAt, 12345, '给了时间戳就一并更新（让它回到时间序顶部）');
+  eq(applySessionRename(rows, 'a', '新', NaN)[0].updatedAt, 1000, 'NaN 不能当时间戳');
+});
+
+check('T6 标题归一化：trim；null/undefined/全空白 → 空串', () => {
+  eq(normalizeSessionTitle('  x  '), 'x');
+  eq(normalizeSessionTitle(null), '');
+  eq(normalizeSessionTitle(undefined), '');
+  eq(normalizeSessionTitle('   '), '');
+});
+
+check('T6 重命名 echo：调用方没回写时叠新标题，回写后自动失效（不抢写 state）', () => {
+  const rows = [row('a', { title: '旧' }), row('b', { title: 'B' })];
+  const echo = setRenameEcho({}, 'a', '旧', '新');
+  const shown = applyRenameEcho(rows, echo);
+  eq(shown[0].title, '新', '组件要"成功后就地更新"');
+  eq(shown[1], rows[1], '没 echo 的行引用不动');
+  eq(rows[0].title, '旧', '绝不改输入');
+
+  // 调用方回写后：row.title 已经是 '新'（≠ from '旧'）→ echo 不再覆盖
+  eq(applyRenameEcho([row('a', { title: '新' })], echo)[0].title, '新');
+  eq(applyRenameEcho(rows, null)[0], rows[0], '没有 echo 时原引用');
+  eq(applyRenameEcho(null, echo), []);
+  eq(applyRenameEcho(rows, {})[0], rows[0]);
+});
+
+check('T6 重命名 echo：连续改名保留最早的 from，否则 echo 会失效', () => {
+  let echo = setRenameEcho({}, 'a', '旧', '中');
+  echo = setRenameEcho(echo, 'a', '中', '新');
+  eq(echo.a, { from: '旧', to: '新' });
+  eq(applyRenameEcho([row('a', { title: '旧' })], echo)[0].title, '新');
+  eq(clearRenameEcho(echo, 'a'), {}, '取消后不留残渣');
+  eq(setRenameEcho(echo, 'a', '旧', '   '), {}, '空标题 = 撤销 echo');
+  eq(clearRenameEcho(null, 'a'), {});
+});
+
+check('T6 fork：本地新行是普通会话（isSubagent=false），继承工作区并标分支', () => {
+  const parent = row('p', { title: '部署排查', workspace: '/w/app' });
+  const forked = buildForkedSession(parent, 'session-new', 777);
+  eq(forked.sessionId, 'session-new');
+  eq(forked.title, '部署排查 · 分支');
+  eq(forked.isSubagent, false, 'fork 出来的是普通会话；误标子代理会让它被 session/page 拒');
+  eq(forked.parentSessionId, 'p');
+  eq(forked.workspace, '/w/app');
+  eq(forked.running, false);
+  eq(forked.updatedAt, 777);
+  eq(buildForkedSession(row('x', { title: '   ' }), 'id2', 1).title, '未命名会话 · 分支');
+});
+
+// ── 13. 会话操作菜单（T6）────────────────────────────────────────────────────
+
+check('T6 操作菜单：非运行中没有「取消运行」，运行中才有且标为危险色', () => {
+  const idle = sessionActionItems(row('a'));
+  eq(idle.map((i) => i.id), ['rename', 'copyId', 'fork', 'archive']);
+  ok(!idle.some((i) => i.id === 'cancel'), '没在跑的会话不该出现「取消运行」');
+  const running = sessionActionItems(row('a', { running: true }));
+  eq(running.map((i) => i.id), ['rename', 'copyId', 'fork', 'cancel', 'archive']);
+  eq(running.find((i) => i.id === 'cancel').danger, true);
+});
+
+check('T6 操作菜单：归档态给「取消归档」；能力缺失时置灰并说明原因', () => {
+  const archived = sessionActionItems(row('a'), { archived: true, canUnarchive: true, canArchive: true });
+  eq(archived.map((i) => i.id), ['rename', 'copyId', 'fork', 'unarchive']);
+  ok(!archived.some((i) => i.id === 'archive'), '已归档的行不该再给「归档」');
+
+  const bare = sessionActionItems(row('a'));
+  ok(bare.filter((i) => i.id !== 'copyId').every((i) => i.disabled === true), '没接线就置灰，别假装能点');
+  ok(bare.find((i) => i.id === 'fork').reason.includes('session.fork'), '要说明为什么置灰');
+  ok(bare.find((i) => i.id === 'rename').disabled);
+  ok(bare.find((i) => i.id === 'copyId').disabled !== true, '复制 id 是本地能力，永远可用');
+
+  const wired = sessionActionItems(row('a'), { canRename: true, canFork: true, canArchive: true });
+  ok(wired.every((i) => !i.disabled), '接线后全部可用');
+  eq(sessionActionItems(row('')), [], '空 sessionId 不给菜单');
+  eq(sessionActionItems(null), []);
+});
+
+check('T6 操作菜单：归档文案必须如实写「仅本机」', () => {
+  ok(SESSION_ACTION_LABELS.archive.includes('仅本机'));
+  ok(sessionActionItems(row('a')).find((i) => i.id === 'archive').label.includes('仅本机'));
+  ok(SESSION_ACTION_LABELS.fork.includes('session.fork') === false, '文案给用户看，别露协议名');
+});
+
+// ── 14. 新建会话的工作区候选（T6）────────────────────────────────────────────
+
+check('T6 新建会话：工作区候选只取真实路径，按最近活动倒序，跳过未知工作区与搜索组', () => {
+  const rows = [
+    row('a', { workspace: '/home/me/old', updatedAt: 10 }),
+    row('b', { workspace: '/home/me/new', updatedAt: 900 }),
+    row('c', { workspace: 'C:\\work\\proj', updatedAt: 500 }),
+    row('d'), // 未知工作区：没有真实 cwd，不能进候选
+  ];
+  const g = groupSessions(rows, [], { searchQuery: 'x', searchResults: [row('r', { workspace: '/r' })] });
+  const options = listWorkspaceOptions(g.groups);
+  eq(options.map((o) => o.workspace), ['/home/me/new', 'C:/work/proj', '/home/me/old'], '按最近活动倒序');
+  ok(!options.some((o) => o.workspace === UNKNOWN_WORKSPACE_KEY), '未知工作区不能当 cwd 传下去');
+  ok(!options.some((o) => o.workspace === '/r'), '搜索组不是工作区');
+  eq(options[0].sessionCount, 1);
+  eq(options[1].label, 'proj', '候选要带友好名');
+  eq(listWorkspaceOptions(null), []);
+  eq(listWorkspaceOptions([]), []);
+});
+
+// ── 15. 组件层契约（T6，不跑构建，只做源码级检查）────────────────────────────
+
+check('T6 组件契约：上限 / 操作菜单 / 工作区选择真的接进去了', () => {
+  const screen = readFileSync(path.join(ROOT, 'src/components/screens/SessionsScreen.tsx'), 'utf8');
+  const group = readFileSync(path.join(ROOT, 'src/components/sessions/SessionGroupSection.tsx'), 'utf8');
+  const card = readFileSync(path.join(ROOT, 'src/components/sessions/SessionCard.tsx'), 'utf8');
+  const menu = readFileSync(path.join(ROOT, 'src/components/sessions/SessionActionMenu.tsx'), 'utf8');
+
+  ok(screen.includes('priorityIds'), '搜索命中必须作为上限优先级传下去');
+  ok(screen.includes('listWorkspaceOptions'), '新建会话必须从已知工作区里选，而不是让用户手打');
+  ok(
+    screen.includes('onRenameSession') && screen.includes('onForkSession') && screen.includes('onCancelSession'),
+    'T6 三个可选 props 必须在契约里（App.tsx 自行决定接哪些）',
+  );
+  ok(!screen.includes('setSessions('), '组件不得直接改 App 的 state（单一写入方）');
+
+  ok(group.includes('capSessions') && group.includes('formatShowMoreLabel'), '组内必须接渲染上限');
+  ok(group.includes('DEFAULT_GROUP_LIMIT'), '缺省上限必须用共享常量，不能在组件里写死 12');
+  ok(group.includes('收起'), '展开后要能收回去');
+
+  ok(card.includes('SessionActionMenu'), '卡片必须挂操作菜单');
+  ok(/onTouchStart|LONG_PRESS_MS/.test(card), '必须支持长按出菜单（手机上没有右键）');
+  ok(card.includes('sessionActionItems'), '菜单条目必须走纯函数判定');
+  ok(card.includes('aria-label'), '菜单按钮必须有可访问名');
+
+  ok(menu.includes('createPortal'), '菜单必须 portal 到 body：卡片有 backdrop-filter，否则会被裁掉');
+  ok(menu.includes('role="menu"') && menu.includes('role="menuitem"'), '菜单要有可访问语义');
+  ok(menu.includes('rename') || menu.includes('重命名'), '菜单要有重命名入口');
 });
 
 // ── 报告 ────────────────────────────────────────────────────────────────────

@@ -6,7 +6,13 @@ import type { LinkState, PendingPrompt, SessionRow, ChatLine } from '../types';
 import type { StorageLike } from './device';
 import { Envelopes } from './envelopes';
 import { DEMO_MODE } from './demo';
-import { createAnsweredLedger, type AnsweredLedger } from './store';
+import {
+  createAnsweredLedger,
+  createOutboxQueue,
+  type AnsweredLedger,
+  type OutboxItem,
+  type OutboxQueue,
+} from './store';
 
 export interface HostRequestItem {
   rpcId: string;
@@ -293,6 +299,14 @@ export interface ConnectionDeps {
   watchdogMs?: number;
   /** 鉴权探测超时覆盖（默认 5s）。 */
   probeTimeoutMs?: number;
+  /** 【新增】离线待发队列的存储覆盖；缺省沿用 `storage`。 */
+  outboxStorage?: StorageLike | null;
+  /** 【新增】离线待发队列容量覆盖。 */
+  outboxCapacity?: number;
+  /** 【新增】离线待发单项尝试上限覆盖。 */
+  outboxMaxAttempts?: number;
+  /** 【新增】注入时钟（测试确定性）。 */
+  now?: () => number;
 }
 
 /** 鉴权失败回调的载荷。 */
@@ -308,6 +322,72 @@ export interface RespondFailureInfo {
   message: string;
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// 【新增】弱网/离线：连接阶段 + 落盘待发队列（outbox）
+//
+// 注意：这里**不**改 `types/index.ts` 的 `LinkState` 联合类型（`LinkStateType`）。
+// 那个类型被多处组件消费，加一个成员会连锁破坏它们的穷尽分支。
+// 于是新增一个**独立的只读视图** `LinkPhase`，由 `getLinkPhase()` / `onPhaseChange()`
+// 暴露；已有 `onStateChange` 回调原样保留。
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * 粗粒度的连接阶段（给 UI 用）：
+ *   - `'online'`      已握手且 `session.list` 验证通过 → 可以直发；
+ *   - `'connecting'`  正在握手/验证（有 socket 在飞）；
+ *   - `'offline'`     没有可用连接（含退避等待中、已 stop）；
+ *   - `'auth-failed'` 令牌失效，**必须重新配对**，重试无意义。
+ */
+export type LinkPhase = 'online' | 'connecting' | 'offline' | 'auth-failed';
+
+/** 待发队列快照（订阅 `onOutboxChange` 收到的东西）。 */
+export interface OutboxSnapshot {
+  /** 待发（含正在发送、不含失败）条数。 */
+  pending: number;
+  /** 已达尝试上限、等用户处理的条数。 */
+  failed: number;
+  total: number;
+  /** 队首待发项（UI 可显示"正在等它送达"）。 */
+  head: OutboxItem | null;
+  /** 单项尝试上限（与队列配置一致）。 */
+  maxAttempts: number;
+}
+
+/** `sendOrQueue()` 的结论。 */
+export type SendResultReason =
+  | 'sent'
+  | 'queued-offline'
+  | 'queued-network-error'
+  | 'auth-failed'
+  | 'invalid';
+
+export interface SendResult {
+  /** true = 主机已接收。 */
+  delivered: boolean;
+  /** true = 已落盘进待发队列，重连后自动发。 */
+  queued: boolean;
+  reason: SendResultReason;
+  /** 入队项的 id（`queued` 时有值）。 */
+  itemId?: string;
+  /** 拒绝/失败原因（`invalid` / `auth-failed` / `queued-network-error` 时有值）。 */
+  error?: string;
+}
+
+/** `flushOutbox()` 的结果（诊断用）。 */
+export interface FlushOutboxResult {
+  attempted: number;
+  delivered: number;
+  /** 本轮内达到尝试上限、被标为 failed 的条数。 */
+  failed: number;
+  /** true = 因 auth 失败 / stop() / 传输仍未恢复而提前结束。 */
+  stopped: boolean;
+}
+
+export interface SendOptions {
+  /** 显式指定入队 id（幂等去重用；不传则自动生成）。 */
+  id?: string;
+}
+
 export class DshConnection {
   private baseUrl: string;
   private token: string;
@@ -317,11 +397,31 @@ export class DshConnection {
   private requestListeners: Set<(req: HostRequestItem) => void> = new Set();
   private authFailureListeners: Set<(info: AuthFailureInfo) => void> = new Set();
   private respondFailureListeners: Set<(info: RespondFailureInfo) => void> = new Set();
+  /** 【新增】连接阶段订阅者（`getLinkPhase` 的推送面）。 */
+  private phaseListeners: Set<(phase: LinkPhase) => void> = new Set();
+  /** 【新增】待发队列订阅者。 */
+  private outboxListeners: Set<(snapshot: OutboxSnapshot) => void> = new Set();
+  /** 【新增】当前连接阶段（初值 offline）。 */
+  private phase: LinkPhase = 'offline';
   private isStopped = false;
   private attempt = 0;
+  /**
+   * 【新增】握手去重标志：socket 已创建但还没 onopen/onclose。
+   * 没有它时 `start()` / 退避定时器 / `retryNow()` 同时触发会堆出多条握手
+   * （弱网下旧连接迟迟不关，页面会积累一排半死不活的 socket）。
+   */
+  private connecting = false;
+  /** 【新增】当前 socket 已经 onopen（活着）。 */
+  private socketAlive = false;
   private eventClientId: string | null = null;
   /** 已应答（**已落盘**）的 eventId：重启后依然有效，不再弹已处理的审批。 */
   private answered: AnsweredLedger;
+  /** 【新增】落盘的离线待发队列（断线时用户指令不丢）。 */
+  private outbox: OutboxQueue;
+  /** 【新增】待发项 id 的自增序号（同一毫秒内不撞 id）。 */
+  private outboxSeq = 0;
+  /** 【新增】同一时刻只允许一轮 flush（防止重连瞬间并发轰炸主机）。 */
+  private flushInFlight: Promise<FlushOutboxResult> | null = null;
   /** 本会话内已投递但尚未确认应答的 eventId：防止同一事件重复弹窗（内存态，故意的）。 */
   private inflightEventIds: Set<string> = new Set();
   private mockSessions: SessionRow[] = [...MOCK_SESSIONS];
@@ -341,6 +441,14 @@ export class DshConnection {
     this.instanceName = instanceName;
     this.deps = deps;
     this.answered = createAnsweredLedger(deps.storage === undefined ? undefined : deps.storage);
+    // 待发队列与去重账本共用同一份注入存储（键不同），但允许单独覆盖。
+    const outboxStorage =
+      deps.outboxStorage !== undefined
+        ? deps.outboxStorage
+        : deps.storage === undefined
+          ? undefined
+          : deps.storage;
+    this.outbox = createOutboxQueue(outboxStorage, deps.outboxCapacity, deps.outboxMaxAttempts);
   }
 
   public onStateChange(listener: (state: LinkState) => void): () => void {
@@ -382,6 +490,8 @@ export class DshConnection {
   public clearAuthFailure(): void {
     this.authFailed = false;
     this.authFailureStatus = null;
+    // 回到"未连接"：等 start()（或 retryNow()）真正建链后才会变 connecting
+    this.setPhase('offline');
   }
 
   /** 【新增】最近一次退避时长（毫秒），便于上层/日志诊断。 */
@@ -394,6 +504,271 @@ export class DshConnection {
     return this.answered;
   }
 
+  // ───────────────────────────────────────────────────────────────────────────
+  // 【新增】连接阶段（可订阅的只读视图；不动 LinkState 联合类型）
+  // ───────────────────────────────────────────────────────────────────────────
+
+  /** 【新增】当前连接阶段：`'online'|'connecting'|'offline'|'auth-failed'`。 */
+  public getLinkPhase(): LinkPhase {
+    return this.phase;
+  }
+
+  /**
+   * 【新增】订阅连接阶段变化（只在**变化时**推送，不会重复推同一值）。
+   * 返回取消订阅函数。已有 `onStateChange` 保持不变，两者可同时用。
+   */
+  public onPhaseChange(listener: (phase: LinkPhase) => void): () => void {
+    this.phaseListeners.add(listener);
+    return () => this.phaseListeners.delete(listener);
+  }
+
+  // ───────────────────────────────────────────────────────────────────────────
+  // 【新增】离线待发队列（落盘）
+  // ───────────────────────────────────────────────────────────────────────────
+
+  /** 【新增】待发队列快照（可直接渲染"待发 N 条"）。 */
+  public outboxSnapshot(): OutboxSnapshot {
+    const items = this.outbox.list();
+    const failed = items.filter((item) => item.status === 'failed').length;
+    const pending = items.length - failed;
+    return {
+      pending,
+      failed,
+      total: items.length,
+      head: items.find((item) => item.status !== 'failed') ?? null,
+      maxAttempts: this.outbox.maxAttempts,
+    };
+  }
+
+  /** 【新增】订阅待发队列变化（入队/出队/失败态变化时推送快照）。 */
+  public onOutboxChange(listener: (snapshot: OutboxSnapshot) => void): () => void {
+    this.outboxListeners.add(listener);
+    return () => this.outboxListeners.delete(listener);
+  }
+
+  /** 【新增】当前待发项（FIFO 顺序，含 failed 项；UI 列待发队列用）。 */
+  public outboxItems(): OutboxItem[] {
+    return this.outbox.list();
+  }
+
+  /** 【新增】待发项条数。 */
+  public outboxSize(): number {
+    return this.outbox.size();
+  }
+
+  /** 【新增】删除一条待发项（用户放弃）。 */
+  public removeOutboxItem(id: string): void {
+    this.outbox.remove(id);
+    this.notifyOutbox();
+  }
+
+  /** 【新增】用户手动重试一条失败项：清零 attempts 并置回 pending。 */
+  public retryOutboxItem(id: string): void {
+    this.outbox.retry(id);
+    this.notifyOutbox();
+  }
+
+  /** 【新增】清掉所有失败项（用户主动放弃）。 */
+  public clearOutboxFailed(): void {
+    this.outbox.clearFailed();
+    this.notifyOutbox();
+  }
+
+  /**
+   * 【新增】立即重连：清掉退避定时器与累计退避，马上发起一次握手。
+   *
+   * @returns true = 已接受（已立即尝试，或本来就在连）；**false = 被拒绝**。
+   *
+   * 拒绝的唯一情形是 `authFailed`（令牌失效）：重试一万次也连不上，
+   * 而且会让用户误以为"重试能绕过重新配对"。此时保持 `auth-failed` 不变，
+   * 并再次通过 `onAuthFailure` 提醒上层去重新配对。
+   */
+  public retryNow(): boolean {
+    if (this.authFailed) {
+      this.setPhase('auth-failed');
+      this.notifyState({
+        type: 'degraded',
+        reason: '令牌已失效，重试被拒绝（需要重新配对）',
+        attempt: this.attempt,
+      });
+      this.notifyAuthFailure({
+        status: this.authFailureStatus ?? 401,
+        message: '令牌已失效，retryNow() 已拒绝：请先重新配对',
+      });
+      return false;
+    }
+
+    // 清退避：定时器取消 + 计数归零（下次失败从 1s 重新开始，而不是接着 30s）
+    this.clearReconnectTimer();
+    this.attempt = 0;
+    this.lastBackoffMs = 0;
+    this.isStopped = false;
+
+    // 已经在飞：不重复建 socket（并发握手不堆积）
+    if (this.connecting || this.socketAlive) return true;
+
+    this.start();
+    return true;
+  }
+
+  /**
+   * 【新增】断线也能发。
+   *
+   * - `phase === 'online'`：直接发；网络异常（非 401/403）→ **入队**，不丢字。
+   * - `phase` 为 offline/connecting：立即入队（**不阻塞**，等 `ready` 自动 flush）。
+   * - `authFailed`：**拒绝**并不入队（这条链路上重试没意义，先重新配对）。
+   *
+   * 只新增 API，不改 `call()` / `respond()` 的既有签名。
+   */
+  public async sendOrQueue(
+    method: string,
+    args: Record<string, unknown> = {},
+    options: SendOptions = {},
+  ): Promise<SendResult> {
+    const name = typeof method === 'string' ? method.trim() : '';
+    if (!name) {
+      return { delivered: false, queued: false, reason: 'invalid', error: 'method 不能为空' };
+    }
+
+    if (this.authFailed) {
+      return {
+        delivered: false,
+        queued: false,
+        reason: 'auth-failed',
+        error: '令牌已失效，需要重新配对后才能发送',
+      };
+    }
+
+    if (this.phase === 'online') {
+      try {
+        await this.call(name, args);
+        return { delivered: true, queued: false, reason: 'sent' };
+      } catch (err: unknown) {
+        const status = errorStatus(err);
+        if (status !== null && isAuthStatus(status)) {
+          this.enterAuthFailure(
+            status,
+            `令牌已失效（HTTP ${status}），已停止自动重连，需要重新配对`,
+          );
+          return {
+            delivered: false,
+            queued: false,
+            reason: 'auth-failed',
+            error: `令牌已失效（HTTP ${status}）`,
+          };
+        }
+        const message = (err as Error)?.message || '网络异常';
+        const item = this.enqueueOutbox(name, args, options);
+        return {
+          delivered: false,
+          queued: true,
+          reason: 'queued-network-error',
+          itemId: item?.id,
+          error: message,
+        };
+      }
+    }
+
+    const item = this.enqueueOutbox(name, args, options);
+    if (!item) {
+      return { delivered: false, queued: false, reason: 'invalid', error: '待发项非法（id/method 缺失）' };
+    }
+    return { delivered: false, queued: true, reason: 'queued-offline', itemId: item.id };
+  }
+
+  /**
+   * 【新增】按 FIFO flush 待发队列（重连成功时自动调用，也可手动调用）。
+   *
+   * 并发去重：同一时刻只有一轮 flush（`flushInFlight`），
+   * 重连抖动不会把队列重复发一遍。
+   *
+   * 结束条件（避免"页面卡死"式无限刷）：
+   *   - 队列空 → 正常结束；
+   *   - 传输层仍不可用（网络异常）→ 停在本轮，留到下次 `ready`；
+   *   - 401/403 → 立即停并进入 auth 失败（该项不计尝试次数，保留在队列里）；
+   *   - 单项达尝试上限 → 标 `failed` 后**继续**后面的项（毒丸不堵队）。
+   */
+  public flushOutbox(): Promise<FlushOutboxResult> {
+    if (this.flushInFlight) return this.flushInFlight;
+    const run = this.runOutboxFlush();
+    this.flushInFlight = run.finally(() => {
+      this.flushInFlight = null;
+    });
+    return this.flushInFlight;
+  }
+
+  private async runOutboxFlush(): Promise<FlushOutboxResult> {
+    const result: FlushOutboxResult = { attempted: 0, delivered: 0, failed: 0, stopped: false };
+    if (this.authFailed) {
+      result.stopped = true;
+      return result;
+    }
+
+    for (;;) {
+      if (this.authFailed || this.isStopped) {
+        result.stopped = true;
+        break;
+      }
+      const item = this.outbox.nextPending();
+      if (!item) break;
+
+      this.outbox.markSending(item.id);
+      this.notifyOutbox();
+      result.attempted += 1;
+
+      try {
+        await this.call(item.method, item.args);
+        this.outbox.remove(item.id);
+        result.delivered += 1;
+        this.notifyOutbox();
+      } catch (err: unknown) {
+        const status = errorStatus(err);
+        if (status !== null && isAuthStatus(status)) {
+          // 丢掉这条指令比"发一半"更糟 —— 放回 pending 且不计尝试次数
+          this.outbox.release(item.id);
+          this.notifyOutbox();
+          this.enterAuthFailure(
+            status,
+            `令牌已失效（HTTP ${status}），已停止自动重连，需要重新配对`,
+          );
+          result.stopped = true;
+          break;
+        }
+        const message = (err as Error)?.message || '发送失败';
+        const outcome = this.outbox.recordFailure(item.id, message);
+        this.notifyOutbox();
+        if (outcome.exhausted) {
+          result.failed += 1;
+          continue; // 毒丸已隔离，继续后面的项
+        }
+        result.stopped = true; // 传输层还没好：本轮到此为止
+        break;
+      }
+    }
+
+    return result;
+  }
+
+  private enqueueOutbox(
+    method: string,
+    args: Record<string, unknown>,
+    options: SendOptions = {},
+  ): OutboxItem | null {
+    const explicit = typeof options.id === 'string' ? options.id.trim() : '';
+    const raw = {
+      id: explicit || this.makeOutboxId(),
+      method,
+      args,
+      createdAt: this.nowMs(),
+      attempts: 0,
+      status: 'pending' as const,
+    };
+    const result = this.outbox.enqueue(raw);
+    if (!result) return null;
+    this.notifyOutbox();
+    return result.item;
+  }
+
   private notifyState(state: LinkState) {
     this.stateListeners.forEach((fn) => fn(state));
   }
@@ -404,6 +779,29 @@ export class DshConnection {
 
   private notifyRespondFailure(info: RespondFailureInfo) {
     this.respondFailureListeners.forEach((fn) => fn(info));
+  }
+
+  /** 【新增】更新连接阶段（只在变化时推送）。 */
+  private setPhase(phase: LinkPhase) {
+    if (this.phase === phase) return;
+    this.phase = phase;
+    this.phaseListeners.forEach((fn) => fn(phase));
+  }
+
+  /** 【新增】推送待发队列快照（没有订阅者时不算快照）。 */
+  private notifyOutbox() {
+    if (this.outboxListeners.size === 0) return;
+    const snapshot = this.outboxSnapshot();
+    this.outboxListeners.forEach((fn) => fn(snapshot));
+  }
+
+  private nowMs(): number {
+    return this.deps.now ? this.deps.now() : Date.now();
+  }
+
+  private makeOutboxId(): string {
+    this.outboxSeq += 1;
+    return `ob-${this.nowMs()}-${this.outboxSeq}`;
   }
 
   /**
@@ -448,6 +846,7 @@ export class DshConnection {
   public start() {
     // 令牌已失效：不得自动重连（要等用户重新配对 → clearAuthFailure()）。
     if (this.authFailed) {
+      this.setPhase('auth-failed');
       this.notifyState({ type: 'degraded', reason: '令牌已失效，等待重新配对', attempt: this.attempt });
       this.notifyAuthFailure({
         status: this.authFailureStatus ?? 401,
@@ -457,6 +856,9 @@ export class DshConnection {
     }
 
     this.isStopped = false;
+    // 已经在飞/已经连上：不重复握手（并发握手不堆积），也不要把 online 倒回 connecting
+    if (this.connecting || this.socketAlive) return;
+    this.setPhase('connecting');
     this.attempt += 1;
     this.notifyState({ type: 'connecting', attempt: this.attempt });
 
@@ -465,10 +867,14 @@ export class DshConnection {
       setTimeout(() => {
         if (!this.isStopped) {
           this.eventClientId = 'mock-client-' + Math.random().toString(36).slice(2, 8);
+          this.socketAlive = true;
+          this.setPhase('online');
           this.notifyState({
             type: 'ready',
             hostName: this.instanceName || 'MacBook Pro (Demo 实例)',
           });
+          // 演习模式也要把离线期间攒下的指令送出去
+          void this.flushOutbox();
         }
       }, 500);
       return;
@@ -479,6 +885,8 @@ export class DshConnection {
 
   public stop() {
     this.isStopped = true;
+    this.connecting = false;
+    this.socketAlive = false;
     this.clearReconnectTimer();
     this.clearWatchdog();
     if (this.socket) {
@@ -493,6 +901,7 @@ export class DshConnection {
       }
     }
     this.notifyState({ type: 'disconnected' });
+    this.setPhase('offline');
   }
 
   private clearReconnectTimer() {
@@ -533,6 +942,10 @@ export class DshConnection {
   }
 
   private handleClose(ev?: { code?: number; reason?: string }) {
+    // 无论什么原因，这条 socket 都已经不在飞了 —— 清掉握手/存活标志，
+    // 否则后续重连会被 connectReal 的"已有握手在飞"护栏永久挡住。
+    this.connecting = false;
+    this.socketAlive = false;
     this.clearWatchdog();
     if (this.isStopped || this.authFailed) return;
 
@@ -544,6 +957,7 @@ export class DshConnection {
       return;
     }
 
+    this.setPhase('offline');
     this.notifyState({
       type: 'degraded',
       reason: '连接已关闭，准备重连…',
@@ -622,6 +1036,7 @@ export class DshConnection {
   private scheduleReconnect() {
     if (this.isStopped || this.authFailed) return;
     this.clearReconnectTimer();
+    this.setPhase('offline');
     const delay = nextBackoff(this.attempt, {
       ...(this.deps.backoff ?? {}),
     });
@@ -630,6 +1045,7 @@ export class DshConnection {
       this.reconnectTimer = null;
       if (this.isStopped || this.authFailed) return;
       this.attempt += 1;
+      this.setPhase('connecting');
       this.notifyState({ type: 'connecting', attempt: this.attempt });
       this.connectReal();
     }, delay);
@@ -639,6 +1055,8 @@ export class DshConnection {
     if (this.authFailed) return;
     this.authFailed = true;
     this.authFailureStatus = status;
+    this.connecting = false;
+    this.socketAlive = false;
     this.clearReconnectTimer();
     this.clearWatchdog();
     // 失效态下不该再有任何数据流：把还开着的 socket 也收掉
@@ -655,11 +1073,15 @@ export class DshConnection {
       }
     }
     this.notifyState({ type: 'degraded', reason: message, attempt: this.attempt });
+    this.setPhase('auth-failed');
     this.notifyAuthFailure({ status, message });
   }
 
   private connectReal() {
     if (this.authFailed) return;
+    // 同一时刻只允许一次握手/探测在飞：`start()` 被连点、退避定时器与
+    // `retryNow()` 同时触发时，绝不能再堆出第二条握手（弱网下页面会积一排半死 socket）。
+    if (this.connecting || this.socketAlive) return;
     try {
       const wsBase = this.baseUrl.replace(/^http/, 'ws') + WS_MUX;
       // 🔴 令牌必须走 **query 参数**，不能指望请求头（2026-10-14 修复）
@@ -680,10 +1102,14 @@ export class DshConnection {
       // 正确的长期做法是**把连接放到 Electron 主进程**（Node 侧 WebSocket 可以带头），
       // 渲染进程经 IPC 订阅事件 —— 见 docs/design.md §2.4.1。
       const ws = this.createSocket(`${wsBase}?token=${encodeURIComponent(this.token)}`);
+      this.connecting = true; // 标记"这次握手在飞"，挡住重复 start()/重连
       this.socket = ws;
 
       ws.onopen = () => {
+        this.connecting = false;
+        this.socketAlive = true;
         if (this.isStopped || this.authFailed) {
+          this.socketAlive = false;
           ws.onclose = null;
           ws.close();
           return;
@@ -704,10 +1130,13 @@ export class DshConnection {
             if (this.isStopped) return;
             // 连接成功 → 重置退避/尝试计数
             this.attempt = 0;
+            this.setPhase('online');
             this.notifyState({
               type: 'ready',
               hostName: this.instanceName || this.baseUrl,
             });
+            // 重连成功 → 把离线期间攒下的指令按序送出去（fire-and-forget，不阻塞事件流）
+            void this.flushOutbox();
           })
           .catch((err: unknown) => {
             if (this.isStopped) return;
@@ -718,6 +1147,7 @@ export class DshConnection {
               return;
             }
             const message = (err as Error)?.message || '未知错误';
+            this.setPhase('offline');
             this.notifyState({
               type: 'degraded',
               reason: '主机未响应 session.list: ' + message,
@@ -760,6 +1190,9 @@ export class DshConnection {
       };
     } catch (e: unknown) {
       const err = e as Error;
+      this.connecting = false;
+      this.socketAlive = false;
+      this.setPhase('offline');
       this.notifyState({
         type: 'degraded',
         reason: '无法创建网络连接: ' + (err?.message || '网络不可达'),

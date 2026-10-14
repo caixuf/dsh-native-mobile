@@ -1,5 +1,27 @@
 # 整 app 端到端验证报告（T5 独立验证）
 
+> ## 🔄 复验更新（本报告首轮之后的修复轮）
+>
+> 首轮验证对象是 `024afe1`。此后报告里列出的问题**已全部修掉**，
+> 并在新 commit 上重跑 `--scenario=all`：**6 个场景全绿**
+> （chain 10/10、collapse 6/6、archive 4/4、queue 6/6、bad-token 4/4、approval 5/5）。
+>
+> | 报告里的结论 | 现状 |
+> |---|---|
+> | F1 fetch 接收者丢失 | ✅ 已修；并加了「接收者必须是 globalThis」的严格桩回归（还原 bug 会逐字复现浏览器报错） |
+> | F2 聊天内容映射三连（P0） | ✅ 已修：user 走 `data.content`、assistant 跳过 reasoning 取全部 text 段、`system/message` 不再渲染 |
+> | F3 归档入口不可达 | ✅ 已修；顺带修掉**双写入方**（组件在受控模式仍写 localStorage） |
+> | F4 子代理会话静默失败 | ✅ 已把主机原因显示在横幅并指路父会话（主机侧仍不支持用 `session.page` 读子代理记录） |
+> | F5 切会话串台 | ✅ 已修：切开时先清空 + fetch 回来校验 sessionId 未变 |
+> | （Lead 追加）发送后回复不渲染 | ✅ 已修：turn watch 只在**见过 running=true 之后**的 false 才停，并 1s 边转边刷 |
+>
+> **一处契约变更（是变好，脚本已同步）**：T8 之后「发送时网络失败」不再报错+留草稿，
+> 而是**落盘进离线待发队列**（连上自动补发），草稿因此可以清空。
+> 脚本现在断言的不变量是「**字不能丢**（草稿里或 outbox 里）+ **必须告知用户**」。
+>
+> 另修掉两条**脚本自身**的判据问题（会造成假红）：归档场景的 `stillVisible` 把
+> **归档区里的卡片**也算成工作区卡片；场景不清归档状态导致多次运行累积。
+
 > 验证者：teammate `verifier`（独立验证；**没有改** `src/**`、`electron/**`、`packages/**` 一行代码）
 > 验证对象：commit **`024afe1`**（`fix(conn): 修掉让整条网页 RPC 全废的 fetch 接收者丢失（真机实测）`）**以及由它构建的 APK**
 > APK：`dist-apk/dsh-mobile-v0.4.0.apk`（versionCode 7，设备侧 `assets/index-CsNvWyDz.js`）

@@ -277,3 +277,446 @@ export function createAnsweredLedger(
     },
   };
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 离线待发队列（outbox）—— 断线时**不丢用户指令**
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * ## 为什么必须落盘（2026-10-15）
+ *
+ * 弱网/离线时旧行为是「发送 → fetch 抛错 → 界面提示'指令未送达' → 用户自己重打」。
+ * 在地铁/电梯里这等于**丢字**：用户以为发出去了，实际上什么都没发生。
+ *
+ * 这里把「待发的 RPC」整条（method + args）落盘到 localStorage：
+ *   - 断线（非 auth 失败）时入队而不是报错；
+ *   - 重连成功后按 **FIFO** 顺序自动 flush；
+ *   - 每条有 attempts 上限（`OUTBOX_MAX_ATTEMPTS`），超过标 `failed` 等用户处理
+ *     （而不是无限重试刷主机）。
+ *
+ * 与 `lib/message-queue.ts` 的分工：那个是**任务运行中**的内存排队（UI 语义），
+ * 这个是**网络不可用**时的落盘待发（传输语义）。两者互不依赖。
+ *
+ * ⚠️ 崩溃恢复：`sending` 状态只在一次 flush 的瞬间存在，读回时一律降级为
+ * `pending` —— 否则进程被杀会留下一条永远"正在发送"、谁也发不出去的僵尸项。
+ */
+export const OUTBOX_VERSION = 1;
+
+/** 落盘键。带版本号：格式升级可并存读取，旧数据不会炸新代码。 */
+export const OUTBOX_KEY = `dsh_outbox_v${OUTBOX_VERSION}`;
+
+/** 容量上限。超出按 FIFO 淘汰最旧的 **pending**（failed 项优先保留给用户处理）。 */
+export const OUTBOX_CAPACITY = 50;
+
+/** 单条最大尝试次数：达到即标 `failed`，等用户显式重试。 */
+export const OUTBOX_MAX_ATTEMPTS = 5;
+
+export type OutboxStatus = 'pending' | 'sending' | 'failed';
+
+export interface OutboxItem {
+  id: string;
+  /** RPC 方法名（如 `session.prompt`）。 */
+  method: string;
+  /** RPC 参数，必须是可 JSON 序列化的对象。 */
+  args: Record<string, unknown>;
+  createdAt: number;
+  /** 已尝试次数（只增不清，除非用户手动 retry）。 */
+  attempts: number;
+  status: OutboxStatus;
+  /** 最近一次失败原因（仅 status==='failed' 时有意义）。 */
+  error?: string;
+}
+
+interface OutboxFile {
+  v: number;
+  items: OutboxItem[];
+}
+
+export interface OutboxEnqueueResult {
+  item: OutboxItem;
+  /** false = 同 id 已存在（幂等命中，队列不变）。 */
+  added: boolean;
+  evicted: OutboxItem[];
+}
+
+export interface OutboxFailureResult {
+  item: OutboxItem | null;
+  /** true = 已达 attempts 上限，该项已标 `failed`。 */
+  exhausted: boolean;
+}
+
+/** 落盘待发队列的操作面（`createOutboxQueue` 的返回值）。 */
+export interface OutboxQueue {
+  list(): OutboxItem[];
+  size(): number;
+  pendingCount(): number;
+  failedCount(): number;
+  /** 队首待发项（FIFO），没有则 null。 */
+  nextPending(): OutboxItem | null;
+  /** 入队；非法项返回 null。同 id 幂等。 */
+  enqueue(raw: unknown): OutboxEnqueueResult | null;
+  /** 标记为「正在发送」（崩溃后读回会降级为 pending）。 */
+  markSending(id: string): OutboxItem | null;
+  /** 发送中止（如中途发现令牌失效）：回到 pending，**不**计尝试次数。 */
+  release(id: string): void;
+  remove(id: string): void;
+  /** 记一次失败：attempts+1；达上限则标 failed。 */
+  recordFailure(id: string, error?: string): OutboxFailureResult;
+  /** 直接标失败（不依赖上限）。 */
+  markFailed(id: string, error?: string): void;
+  /** 用户手动重试：置回 pending 并清零 attempts/error。 */
+  retry(id: string): void;
+  clear(): void;
+  clearFailed(): void;
+  /** 尝试次数上限（与创建时一致）。 */
+  maxAttempts: number;
+}
+
+const UNBOUNDED_OUTBOX = Number.MAX_SAFE_INTEGER;
+
+/** 把任意输入收敛成合法待发项；非法（空 id / 空 method）返回 null。 */
+export function normalizeOutboxItem(raw: unknown): OutboxItem | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const source = raw as Record<string, unknown>;
+
+  const id = typeof source.id === 'string' ? source.id.trim() : '';
+  const method = typeof source.method === 'string' ? source.method.trim() : '';
+  if (!id || !method) return null;
+
+  const rawArgs = source.args;
+  const args =
+    rawArgs && typeof rawArgs === 'object' && !Array.isArray(rawArgs)
+      ? (rawArgs as Record<string, unknown>)
+      : {};
+
+  const createdAt =
+    typeof source.createdAt === 'number' && Number.isFinite(source.createdAt) ? source.createdAt : 0;
+
+  const attempts =
+    typeof source.attempts === 'number' && Number.isFinite(source.attempts) && source.attempts > 0
+      ? Math.floor(source.attempts)
+      : 0;
+
+  const status: OutboxStatus =
+    source.status === 'failed' ? 'failed' : source.status === 'sending' ? 'sending' : 'pending';
+
+  const item: OutboxItem = { id, method, args, createdAt, attempts, status };
+  if (typeof source.error === 'string' && source.error) item.error = source.error;
+  return item;
+}
+
+/** 同 id 只保留第一次出现的项（保证幂等/防重复点击）。 */
+export function dedupeOutbox(items: OutboxItem[]): OutboxItem[] {
+  const seen = new Set<string>();
+  const out: OutboxItem[] = [];
+  for (const item of items) {
+    if (seen.has(item.id)) continue;
+    seen.add(item.id);
+    out.push(item);
+  }
+  return out;
+}
+
+/**
+ * 超上限时淘汰最旧的 **pending**；`sending`/`failed` 优先保留
+ * （正在飞的和等用户处理的都不能被静默丢掉）。全是这两类时才按最旧淘汰。
+ */
+export function applyOutboxLimit(
+  items: OutboxItem[],
+  limit: number = OUTBOX_CAPACITY,
+): { items: OutboxItem[]; evicted: OutboxItem[] } {
+  const max = Number.isFinite(limit) && limit >= 0 ? Math.floor(limit) : OUTBOX_CAPACITY;
+  if (items.length <= max) return { items: items.slice(), evicted: [] };
+
+  let overflow = items.length - max;
+  const kept: OutboxItem[] = [];
+  const evicted: OutboxItem[] = [];
+
+  for (const item of items) {
+    if (overflow > 0 && item.status === 'pending') {
+      evicted.push(item);
+      overflow -= 1;
+      continue;
+    }
+    kept.push(item);
+  }
+
+  if (overflow > 0) {
+    const keptStrict: OutboxItem[] = [];
+    for (const item of kept) {
+      if (overflow > 0) {
+        evicted.push(item);
+        overflow -= 1;
+        continue;
+      }
+      keptStrict.push(item);
+    }
+    return { items: keptStrict, evicted };
+  }
+
+  return { items: kept, evicted };
+}
+
+/** 清洗 + 去重 + 截断；用于把 localStorage / 外部来的数据收敛成合法队列。 */
+export function normalizeOutbox(input: unknown, limit: number = OUTBOX_CAPACITY): OutboxItem[] {
+  const list = Array.isArray(input) ? input : [];
+  const cleaned: OutboxItem[] = [];
+  for (const raw of list) {
+    const item = normalizeOutboxItem(raw);
+    if (item) cleaned.push(item);
+  }
+  return applyOutboxLimit(dedupeOutbox(cleaned), limit).items;
+}
+
+/** 入队（纯函数）。非法项返回 null；同 id 幂等。 */
+export function enqueueOutbox(
+  queue: OutboxItem[],
+  raw: unknown,
+  options: { limit?: number } = {},
+): { queue: OutboxItem[]; item: OutboxItem; added: boolean; evicted: OutboxItem[] } | null {
+  const base = normalizeOutbox(queue, UNBOUNDED_OUTBOX);
+  const item = normalizeOutboxItem(raw);
+  if (!item) return null;
+
+  const existing = base.find((entry) => entry.id === item.id);
+  if (existing) return { queue: base, item: existing, added: false, evicted: [] };
+
+  const limited = applyOutboxLimit([...base, item], options.limit ?? OUTBOX_CAPACITY);
+  return { queue: limited.items, item, added: true, evicted: limited.evicted };
+}
+
+/** 按 id 出队（纯函数）。 */
+export function removeOutbox(queue: OutboxItem[], id: string): OutboxItem[] {
+  return normalizeOutbox(queue, UNBOUNDED_OUTBOX).filter((item) => item.id !== id);
+}
+
+/** 把一项标成 `sending`（纯函数）。 */
+export function markOutboxSending(queue: OutboxItem[], id: string): OutboxItem[] {
+  return normalizeOutbox(queue, UNBOUNDED_OUTBOX).map((item) =>
+    item.id === id ? { ...item, status: 'sending' as OutboxStatus } : item,
+  );
+}
+
+/** 把 `sending` 放回 `pending`，不计尝试次数（纯函数）。 */
+export function releaseOutbox(queue: OutboxItem[], id: string): OutboxItem[] {
+  return normalizeOutbox(queue, UNBOUNDED_OUTBOX).map((item) =>
+    item.id === id && item.status === 'sending' ? { ...item, status: 'pending' as OutboxStatus } : item,
+  );
+}
+
+/**
+ * 记一次发送失败（纯函数）：`attempts + 1`；达到上限则 `status='failed'`
+ * （留给用户显式重试），否则回到 `pending` 等下一轮 flush。
+ */
+export function recordOutboxFailure(
+  queue: OutboxItem[],
+  id: string,
+  error: string = '发送失败',
+  maxAttempts: number = OUTBOX_MAX_ATTEMPTS,
+): { queue: OutboxItem[]; item: OutboxItem | null; exhausted: boolean } {
+  const cap =
+    Number.isFinite(maxAttempts) && maxAttempts > 0 ? Math.floor(maxAttempts) : OUTBOX_MAX_ATTEMPTS;
+  let found: OutboxItem | null = null;
+  let exhausted = false;
+
+  const next = normalizeOutbox(queue, UNBOUNDED_OUTBOX).map((item) => {
+    if (item.id !== id) return item;
+    const attempts = item.attempts + 1;
+    const isOut = attempts >= cap;
+    const failedItem: OutboxItem = {
+      ...item,
+      attempts,
+      status: isOut ? 'failed' : 'pending',
+      error,
+    };
+    found = failedItem;
+    exhausted = isOut;
+    return failedItem;
+  });
+
+  return { queue: next, item: found, exhausted };
+}
+
+/** 直接标 `failed`（纯函数），不依赖上限。 */
+export function markOutboxFailed(
+  queue: OutboxItem[],
+  id: string,
+  error: string = '发送失败',
+): OutboxItem[] {
+  return normalizeOutbox(queue, UNBOUNDED_OUTBOX).map((item) =>
+    item.id === id ? { ...item, status: 'failed' as OutboxStatus, error } : item,
+  );
+}
+
+/** 用户手动重试（纯函数）：置回 `pending`，清零 attempts 与 error。 */
+export function retryOutbox(queue: OutboxItem[], id: string): OutboxItem[] {
+  return normalizeOutbox(queue, UNBOUNDED_OUTBOX).map((item) => {
+    if (item.id !== id) return item;
+    const next: OutboxItem = { ...item, status: 'pending', attempts: 0 };
+    delete next.error;
+    return next;
+  });
+}
+
+/** 清掉所有失败项（用户主动放弃）（纯函数）。 */
+export function clearFailedOutbox(queue: OutboxItem[]): OutboxItem[] {
+  return normalizeOutbox(queue, UNBOUNDED_OUTBOX).filter((item) => item.status !== 'failed');
+}
+
+/** 队首待发（`pending`）项（纯函数）。 */
+export function nextOutboxItem(queue: OutboxItem[]): OutboxItem | null {
+  const clean = normalizeOutbox(queue, UNBOUNDED_OUTBOX);
+  return clean.find((item) => item.status === 'pending') ?? null;
+}
+
+/** 待发（非 failed）条数（纯函数）。 */
+export function outboxPendingCount(queue: OutboxItem[]): number {
+  return normalizeOutbox(queue, UNBOUNDED_OUTBOX).filter((item) => item.status !== 'failed').length;
+}
+
+/**
+ * 解析落盘文件：支持 `{v,items}` 与裸数组两种形状；
+ * 损坏 JSON 不崩（如实告警后从空队列开始）；
+ * **`sending` 一律降级为 `pending`** —— 崩溃/杀进程后的僵尸项必须能重新发出去。
+ */
+export function parseOutboxFile(raw: string | null): OutboxItem[] {
+  if (!raw) return [];
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    const list = Array.isArray(parsed)
+      ? parsed
+      : Array.isArray((parsed as OutboxFile)?.items)
+        ? (parsed as OutboxFile).items
+        : [];
+    const cleaned: OutboxItem[] = [];
+    for (const entry of list) {
+      const item = normalizeOutboxItem(entry);
+      if (!item) continue;
+      cleaned.push(item.status === 'sending' ? { ...item, status: 'pending' } : item);
+    }
+    return cleaned;
+  } catch {
+    console.warn('[Outbox] 待发队列解析失败，已忽略损坏数据');
+    return [];
+  }
+}
+
+/**
+ * 创建（或读回）一个落盘待发队列。
+ *
+ * @param storage `undefined` = 自动探测 localStorage；`null` = 纯内存（测试/SSR）。
+ * @param capacity 容量上限，超出按 FIFO 淘汰最旧 pending。
+ * @param maxAttempts 单项尝试上限。
+ */
+export function createOutboxQueue(
+  storage: StorageLike | null | undefined = undefined,
+  capacity: number = OUTBOX_CAPACITY,
+  maxAttempts: number = OUTBOX_MAX_ATTEMPTS,
+): OutboxQueue {
+  const store = storage === undefined ? detectLedgerStorage() : storage;
+  const limit =
+    Number.isFinite(capacity) && capacity >= 0 ? Math.floor(capacity) : OUTBOX_CAPACITY;
+  const cap =
+    Number.isFinite(maxAttempts) && maxAttempts > 0 ? Math.floor(maxAttempts) : OUTBOX_MAX_ATTEMPTS;
+
+  let items: OutboxItem[] = [];
+  if (store) {
+    try {
+      items = normalizeOutbox(parseOutboxFile(store.getItem(OUTBOX_KEY)), limit);
+    } catch {
+      // 隐私模式下 getItem 也可能抛：读不到就从空队列开始（不能因此崩掉连接层）
+      items = [];
+    }
+  }
+
+  const persist = (): void => {
+    if (!store) return;
+    const file: OutboxFile = { v: OUTBOX_VERSION, items };
+    try {
+      store.setItem(OUTBOX_KEY, JSON.stringify(file));
+    } catch {
+      // 配额/隐私模式写失败：本次运行仍以内存为准（用户的字不能被存储异常吃掉）
+    }
+  };
+
+  return {
+    list(): OutboxItem[] {
+      return items.map((item) => ({ ...item, args: { ...item.args } }));
+    },
+
+    size(): number {
+      return items.length;
+    },
+
+    pendingCount(): number {
+      return items.filter((item) => item.status !== 'failed').length;
+    },
+
+    failedCount(): number {
+      return items.filter((item) => item.status === 'failed').length;
+    },
+
+    nextPending(): OutboxItem | null {
+      return items.find((item) => item.status === 'pending') ?? null;
+    },
+
+    enqueue(raw: unknown): OutboxEnqueueResult | null {
+      const result = enqueueOutbox(items, raw, { limit });
+      if (!result) return null;
+      items = result.queue;
+      persist();
+      return { item: result.item, added: result.added, evicted: result.evicted };
+    },
+
+    markSending(id: string): OutboxItem | null {
+      items = markOutboxSending(items, id);
+      persist();
+      return items.find((item) => item.id === id) ?? null;
+    },
+
+    release(id: string): void {
+      items = releaseOutbox(items, id);
+      persist();
+    },
+
+    remove(id: string): void {
+      items = removeOutbox(items, id);
+      persist();
+    },
+
+    recordFailure(id: string, error: string = '发送失败'): OutboxFailureResult {
+      const result = recordOutboxFailure(items, id, error, cap);
+      items = result.queue;
+      persist();
+      return { item: result.item, exhausted: result.exhausted };
+    },
+
+    markFailed(id: string, error: string = '发送失败'): void {
+      items = markOutboxFailed(items, id, error);
+      persist();
+    },
+
+    retry(id: string): void {
+      items = retryOutbox(items, id);
+      persist();
+    },
+
+    clear(): void {
+      items = [];
+      if (!store) return;
+      try {
+        if (typeof store.removeItem === 'function') store.removeItem(OUTBOX_KEY);
+        else store.setItem(OUTBOX_KEY, JSON.stringify({ v: OUTBOX_VERSION, items: [] }));
+      } catch {
+        // 同上：清理失败不影响内存态
+      }
+    },
+
+    clearFailed(): void {
+      items = clearFailedOutbox(items);
+      persist();
+    },
+
+    maxAttempts: cap,
+  };
+}

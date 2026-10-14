@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { Menu, Search, X, RefreshCw, Plus, Monitor, Cpu, Sparkles, ChevronsDownUp, ChevronsUpDown } from 'lucide-react';
+import { Menu, Search, X, RefreshCw, Plus, Monitor, Cpu, Sparkles, ChevronsDownUp, ChevronsUpDown, FolderOpen } from 'lucide-react';
 import { SessionRow, LinkState } from '../../types';
 import { StatusPill } from '../common/StatusPill';
 import { DeepSeekLogo } from '../common/DeepSeekLogo';
@@ -8,27 +8,35 @@ import { SessionGroupSection } from '../sessions/SessionGroupSection';
 import { ArchivedSection } from '../sessions/ArchivedSection';
 import {
   type CollapseState,
+  type RenameEchoState,
   type StorageLike,
+  applyRenameEcho,
   filterSessionsByQuery,
   groupSessions,
+  listWorkspaceOptions,
+  normalizeSessionTitle,
   readArchivedIds,
   readCollapseState,
   resolveCollapseState,
   setArchivedId,
+  setRenameEcho,
   subagentSectionKey,
   writeArchivedIds,
   writeCollapseState,
 } from '../../lib/session-groups';
 
 /**
- * 会话列表：**按工作区分组 + 可折叠 + 本机归档**。
+ * 会话列表：**按工作区分组 + 可折叠 + 组内限量 + 本机归档 + 会话管理**。
  *
  * 改造动机（用户原话）：「会话全部列出来，给人翻累死了，而且没有桌面的归档什么的，
  * 就像管理文件夹一样啊」。所以形态对齐 DSH 桌面侧边栏：顶层按工作区（cwd）分组，
  * 组可折叠，组内挂会话；子代理收进组内的「子代理 (N)」子节；归档项沉到底部。
+ * T6 又补了两处真痛点：组内**一次全渲染**（真主机 desktop 组 41 条）→ 每组 12 条 +
+ * 「显示更多」；以及真主机有 rename/fork 却没用上 → 卡片「⋯」/长按操作菜单。
  *
- * 分组 / 排序 / 折叠 / 归档的全部判定都在 `src/lib/session-groups.ts`（纯函数、可测），
- * 本文件只负责：把 props 喂进去 → 渲染 → 把用户选择写回 localStorage。
+ * 分组 / 排序 / 折叠 / 归档 / 限量 / 菜单条目 / 工作区候选的**全部判定**都在
+ * `src/lib/session-groups.ts`（纯函数、可测），本文件只负责：
+ * 把 props 喂进去 → 渲染 → 把用户选择写回 localStorage。
  *
  * props 契约：
  *  - 已有 props 语义不变（linkState/sessions/…/onOpenDrawer）。
@@ -37,12 +45,21 @@ import {
  *  - `onArchive` / `onUnarchive` 是「用户点了归档/恢复」的通知回调（可选）。
  *  - `searchResults` 传入远端 session.search 的原始结果时，会在顶部单独成
  *    「搜索结果」组，并与本地列表去重；不传则只做本地即时过滤。
+ *  - T6 新增（**全部可选**，不传则菜单里对应动作置灰）：
+ *      `onRenameSession(session, title) => void | Promise<unknown>`
+ *      `onForkSession(session)          => void | Promise<unknown>`
+ *      `onCancelSession(session)        => void | Promise<unknown>`
+ *    重命名成功后组件只叠一层**本地 echo**（行标题一变就自动失效），
+ *    真正落库由调用方写回 sessions；失败（reject）会把错误显示在菜单里。
  */
 
 /** 归档区自己的折叠 key（和分组共用一份持久化记录）。 */
 const ARCHIVE_SECTION_KEY = '::archived-section::';
 
 const ALL_EXPANDED = false;
+
+/** 建会话时没有已知工作区可选的兜底路径（保持老行为）。 */
+const FALLBACK_CWD = '~/Developer/workspaces/nexus-ecommerce';
 
 interface Props {
   linkState: LinkState;
@@ -60,6 +77,12 @@ interface Props {
   onUnarchive?: (s: SessionRow) => void;
   /** 远端搜索结果（session.search 原始 items），单独成组。 */
   searchResults?: SessionRow[];
+  /** T6：重命名（session.rename，args `{request:{sessionId,title}}`）。 */
+  onRenameSession?: (session: SessionRow, title: string) => void | Promise<unknown>;
+  /** T6：在电脑上分叉（session.fork，args `{request:{sessionId}}`）。 */
+  onForkSession?: (session: SessionRow) => void | Promise<unknown>;
+  /** T6：取消当前轮（session.cancel，args `{request:{sessionId}}`）。 */
+  onCancelSession?: (session: SessionRow) => void | Promise<unknown>;
 }
 
 export const SessionsScreen: React.FC<Props> = ({
@@ -76,11 +99,20 @@ export const SessionsScreen: React.FC<Props> = ({
   onArchive,
   onUnarchive,
   searchResults,
+  onRenameSession,
+  onForkSession,
+  onCancelSession,
 }) => {
   const [searchOpen, setSearchOpen] = useState(false);
   const [query, setQuery] = useState('');
   const [createDialogOpen, setCreateDialogOpen] = useState(false);
-  const [customCwd, setCustomCwd] = useState('~/Developer/workspaces/nexus-ecommerce');
+  const [customCwd, setCustomCwd] = useState('');
+  const [renameEcho, setRenameEchoState] = useState<RenameEchoState>({});
+
+  // 先绑成 const：TS 只在 const 上保留「已判空」的收窄，闭包里直接读 props 会被还原。
+  const renameSession = onRenameSession;
+  const forkSession = onForkSession;
+  const cancelSession = onCancelSession;
 
   // localStorage 在隐私模式 / SSR 下可能直接抛异常 —— 这里一次性兜住。
   const storage = useMemo<StorageLike | null>(() => {
@@ -122,10 +154,17 @@ export const SessionsScreen: React.FC<Props> = ({
     searchTimer.current = window.setTimeout(() => onSearch(value), 250);
   };
 
-  // ── 分组（memo 化：会话多时绝不在每次 render 重算）──
-  const localMain = useMemo(() => filterSessionsByQuery(sessions, query), [sessions, query]);
-  const localSubagents = useMemo(() => filterSessionsByQuery(subagentSessions, query), [subagentSessions, query]);
+  // ── 本地过滤（叠加重命名 echo：调用方还没回写时也能"就地"看到新标题）──
+  const localMain = useMemo(
+    () => applyRenameEcho(filterSessionsByQuery(sessions, query), renameEcho),
+    [sessions, query, renameEcho],
+  );
+  const localSubagents = useMemo(
+    () => applyRenameEcho(filterSessionsByQuery(subagentSessions, query), renameEcho),
+    [subagentSessions, query, renameEcho],
+  );
 
+  // ── 分组（memo 化：会话多时绝不在每次 render 重算）──
   const grouping = useMemo(
     () =>
       groupSessions(localMain, localSubagents, {
@@ -140,6 +179,25 @@ export const SessionsScreen: React.FC<Props> = ({
     () => resolveCollapseState(grouping.groups, storedCollapse),
     [grouping.groups, storedCollapse],
   );
+
+  /**
+   * 必须留在组内上限里的 id：搜索命中（本地过滤后剩下的就是命中）+ 远端结果。
+   * running 项由 `capSessions` 自己兜，不必列进来。
+   */
+  const priorityIds = useMemo(() => {
+    const set = new Set<string>();
+    if (query.trim()) {
+      for (const row of localMain) set.add(row.sessionId);
+      for (const row of localSubagents) set.add(row.sessionId);
+    }
+    if (Array.isArray(searchResults)) {
+      for (const row of searchResults) if (row && row.sessionId) set.add(row.sessionId);
+    }
+    return set;
+  }, [query, localMain, localSubagents, searchResults]);
+
+  /** 新建会话可选的工作区（来自已知分组，不让用户手打路径）。 */
+  const workspaceChoices = useMemo(() => listWorkspaceOptions(grouping.groups), [grouping.groups]);
 
   const archiveCollapsed = storedCollapse[ARCHIVE_SECTION_KEY] ?? true;
   const isCollapsed = (key: string) => collapsed[key] === true;
@@ -178,6 +236,23 @@ export const SessionsScreen: React.FC<Props> = ({
     writeArchivedIds(next, storage);
     if (archived) onArchive?.(session);
     else onUnarchive?.(session);
+  };
+
+  // ── 重命名：调调用方 → 成功后叠 echo（失败抛回菜单里显示）──
+  const handleRenameSession = async (session: SessionRow, title: string) => {
+    const clean = normalizeSessionTitle(title);
+    if (!clean) throw new Error('标题不能为空');
+    if (!renameSession) throw new Error('未接线 session.rename');
+    await renameSession(session, clean);
+    // from 取"用户当时看到的标题"；连续改名时 setRenameEcho 会保留最早的 from
+    setRenameEchoState((prev) => setRenameEcho(prev, session.sessionId, session.title, clean));
+  };
+
+  const openCreateDialog = () => {
+    // 组内已有的工作区优先填入，用户不用手打；一个都没有才退回老默认值。
+    const fallback = workspaceChoices[0]?.workspace || FALLBACK_CWD;
+    setCustomCwd((prev) => (prev.trim() ? prev : fallback));
+    setCreateDialogOpen(true);
   };
 
   const hasContent = grouping.groups.length > 0 || grouping.archivedCount > 0;
@@ -282,7 +357,7 @@ export const SessionsScreen: React.FC<Props> = ({
             </div>
 
             <button
-              onClick={() => setCreateDialogOpen(true)}
+              onClick={openCreateDialog}
               type="button"
               className="flex items-center gap-1 px-3 py-1.5 rounded-xl bg-[#3b82f6]/20 hover:bg-[#3b82f6]/30 border border-[#3b82f6]/40 text-[#60a5fa] hover:text-white text-[12px] font-semibold transition-all cursor-pointer studio-tap"
             >
@@ -347,7 +422,7 @@ export const SessionsScreen: React.FC<Props> = ({
                 : '随时发起指令，通过端到端加密双向流遥控你的远程开发电脑。'}
             </p>
             <button
-              onClick={() => setCreateDialogOpen(true)}
+              onClick={openCreateDialog}
               type="button"
               className="mt-5 px-5 py-2.5 bg-gradient-to-r from-[#3b82f6] to-[#2563eb] text-white rounded-xl text-[13px] font-semibold transition-transform cursor-pointer studio-tap shadow-[0_0_20px_rgba(59,130,246,0.35)]"
             >
@@ -381,6 +456,10 @@ export const SessionsScreen: React.FC<Props> = ({
               onOpen={onOpen}
               onArchive={onArchive}
               onUnarchive={onUnarchive}
+              priorityIds={priorityIds}
+              onRename={renameSession ? handleRenameSession : undefined}
+              onFork={forkSession}
+              onCancel={cancelSession}
             />
           ))}
         </div>
@@ -398,7 +477,7 @@ export const SessionsScreen: React.FC<Props> = ({
       {/* Floating Action Button (Raycast Glowing Pill) */}
       <div className="fixed bottom-6 right-6 z-20">
         <button
-          onClick={() => setCreateDialogOpen(true)}
+          onClick={openCreateDialog}
           type="button"
           className="flex items-center gap-2 px-5 py-3.5 rounded-full bg-gradient-to-r from-[#3b82f6] to-[#2563eb] text-white text-[14px] font-semibold shadow-[0_0_25px_rgba(59,130,246,0.5)] hover:shadow-[0_0_35px_rgba(59,130,246,0.7)] transition-all hover:scale-105 cursor-pointer studio-tap"
         >
@@ -418,18 +497,58 @@ export const SessionsScreen: React.FC<Props> = ({
               <h3 className="text-[16px] font-bold text-white">新建遥控会话</h3>
             </div>
             <p className="text-[13px] text-[#94a3b8] leading-relaxed">
-              可指定在远程工作电脑上关联的工作区目录 (CWD)。
+              选择这台电脑上的工作区（cwd），或直接用主机默认工作区。
             </p>
 
+            {workspaceChoices.length > 0 && (
+              <div className="mt-4">
+                <label className="block text-[12px] font-medium text-[#94a3b8] mb-1.5">
+                  已知工作区（点一下填入，共 {workspaceChoices.length} 个）
+                </label>
+                <div
+                  role="radiogroup"
+                  aria-label="已知工作区"
+                  className="flex flex-col gap-1.5 max-h-44 overflow-y-auto pr-0.5"
+                >
+                  {workspaceChoices.map((option) => {
+                    const active = customCwd.trim() === option.workspace;
+                    return (
+                      <button
+                        key={option.workspace}
+                        type="button"
+                        role="radio"
+                        aria-checked={active}
+                        title={option.workspace}
+                        data-workspace={option.workspace}
+                        onClick={() => setCustomCwd(option.workspace)}
+                        className={`flex items-center gap-2 px-2.5 py-2 rounded-xl border text-left transition-colors cursor-pointer studio-tap ${
+                          active
+                            ? 'bg-[#3b82f6]/20 border-[#3b82f6]/50 text-white'
+                            : 'bg-white/[0.03] border-white/[0.08] text-[#cbd5e1] hover:bg-white/[0.08]'
+                        }`}
+                      >
+                        <FolderOpen size={13} className="shrink-0 text-[#3b82f6]" />
+                        <span className="min-w-0 flex-1 truncate text-[12.5px] font-medium">{option.label}</span>
+                        <span className="shrink-0 text-[10.5px] font-mono text-[#64748b]">
+                          {option.sessionCount}
+                        </span>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+
             <div className="mt-4">
-              <label className="block text-[12px] font-medium text-[#94a3b8] mb-1.5">
+              <label className="block text-[12px] font-medium text-[#94a3b8] mb-1.5" htmlFor="dsh-create-cwd">
                 电脑工作区路径 (cwd)
               </label>
               <input
+                id="dsh-create-cwd"
                 type="text"
                 value={customCwd}
                 onChange={(e) => setCustomCwd(e.target.value)}
-                placeholder="例如：~/Developer/projects/my-app"
+                placeholder="例如：~/Developer/projects/my-app（留空 = 主机默认工作区）"
                 className="w-full px-3.5 py-2.5 text-[13px] font-mono bg-[#141824] border border-white/10 rounded-xl focus:outline-hidden focus:border-[#3b82f6] focus:ring-1 focus:ring-[#3b82f6]/40 text-white placeholder:text-[#64748b]"
               />
             </div>
@@ -444,7 +563,8 @@ export const SessionsScreen: React.FC<Props> = ({
               </button>
               <button
                 onClick={() => {
-                  onCreate(customCwd.trim());
+                  const cwd = customCwd.trim();
+                  onCreate(cwd || undefined);
                   setCreateDialogOpen(false);
                 }}
                 type="button"

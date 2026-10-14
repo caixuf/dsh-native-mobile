@@ -10,6 +10,8 @@ import type { NativeRelayStatus } from './services/native-bridge';
 import { fetchChatPage } from './lib/session-page';
 import { collectMessageText, isDialogEvent, isToolEvent } from './lib/session-page';
 import {
+  applySessionRename,
+  buildForkedSession,
   readArchivedIds,
   setArchivedId,
   writeArchivedIds,
@@ -123,8 +125,18 @@ export const App: React.FC = () => {
   /** 网页端的鉴权失效（401/403 分流后的状态，见 connection.ts）。 */
   const [authFailure, setAuthFailure] = useState<{ status: number; message: string } | null>(null);
 
+  /** 连接相位（T8 新增，与既有 LinkState 并存）：offline 时发送会落进落盘待发队列。 */
+  const [linkPhase, setLinkPhase] = useState<'online' | 'connecting' | 'offline' | 'auth-failed'>(
+    'connecting',
+  );
+  /** 落盘待发队列的规模（离线也能发，重连后自动 flush）。 */
+  const [outbox, setOutbox] = useState<{ pending: number; failed: number }>({ pending: 0, failed: 0 });
+
   /** 运行中排队的指令（发送失败会退回队首并计数）。 */
   const [queued, setQueued] = useState<QueuedPrompt[]>([]);
+
+  /** 一次性提示（离线入队等），比 error 轻，几秒后自动消失。 */
+  const [notice, setNotice] = useState<string | null>(null);
 
   /** 聊天页的读取错误（子代理读不到、网络失败等）——必须让用户看见，不能只 console.warn。 */
   const [chatError, setChatError] = useState<string | null>(null);
@@ -213,6 +225,12 @@ export const App: React.FC = () => {
       console.warn('应答未送达', info);
       setError(`审批应答未送达：${info.message}`);
     });
+
+    // 连接相位 + 落盘待发队列规模（离线时发送不再直接失败）
+    conn.onPhaseChange((phase) => setLinkPhase(phase));
+    conn.onOutboxChange((snapshot) =>
+      setOutbox({ pending: snapshot.pending, failed: snapshot.failed }),
+    );
 
     conn.start();
   };
@@ -523,6 +541,47 @@ export const App: React.FC = () => {
     });
   };
 
+  /**
+   * 会话重命名（T6）。真网关实测：args 必须包 `{request:{sessionId,title}}`，
+   * 少了 request 包裹会被边界校验拒（`missing "request"`）。
+   */
+  const handleRenameSession = async (session: SessionRow, title: string): Promise<void> => {
+    const conn = connRef.current;
+    const next = title.trim();
+    if (!conn || !next) return;
+    const res = (await conn.call('session.rename', {
+      request: { sessionId: session.sessionId, title: next },
+    })) as { title?: string } | undefined;
+    const applied = res?.title || next;
+    const stamp = Date.now();
+    setSessions((prev) => applySessionRename(prev, session.sessionId, applied, stamp));
+    setSubagentSessions((prev) => applySessionRename(prev, session.sessionId, applied, stamp));
+    setCurrentSession((prev) =>
+      prev && prev.sessionId === session.sessionId ? { ...prev, title: applied } : prev,
+    );
+  };
+
+  /** 会话 fork（T6）：主机返回新 sessionId，插到列表顶部再刷新。 */
+  const handleForkSession = async (session: SessionRow): Promise<void> => {
+    const conn = connRef.current;
+    if (!conn) return;
+    const res = (await conn.call('session.fork', {
+      request: { sessionId: session.sessionId },
+    })) as { sessionId?: string } | undefined;
+    const forked = res?.sessionId;
+    if (!forked) throw new Error('主机没有返回新的会话 id');
+    setSessions((prev) => [buildForkedSession(session, forked, Date.now()), ...prev]);
+    void loadSessions();
+  };
+
+  /** 取消该会话正在跑的一轮（T6）；完成后刷新 running 标记。 */
+  const handleCancelSession = async (session: SessionRow): Promise<void> => {
+    const conn = connRef.current;
+    if (!conn) return;
+    await conn.call('session.cancel', { request: { sessionId: session.sessionId } });
+    void loadSessions();
+  };
+
   const handleCreateSession = async (cwd?: string) => {
     const conn = connRef.current;
     if (!conn) return;
@@ -621,7 +680,8 @@ export const App: React.FC = () => {
       }
       void loadChatPage(session);
 
-      if (ticks % 3 === 0) {
+      // 每两拍查一次主机的 running 标记（2s 一次；太慢会让"执行中"多挂十几秒）
+      if (ticks % 2 === 0) {
         void (async () => {
           try {
             const res = (await conn.call('session.list', { _request: {} })) as {
@@ -635,8 +695,8 @@ export const App: React.FC = () => {
               return;
             }
             falseStreak += 1;
-            // 真实转换（跑过再停），或一直没跑起来但已连续多次报 false（约 15s）
-            if ((seenRunning && row.running === false) || falseStreak >= 5) {
+            // 真实转换（跑过再停），或一直没跑起来但已连续多次报 false（约 6s）
+            if ((seenRunning && row.running === false) || falseStreak >= 3) {
               setRunning(false);
               void loadChatPage(session);
               stopTurnWatch();
@@ -681,7 +741,9 @@ export const App: React.FC = () => {
     }, 700);
 
     try {
-      await connRef.current.call('session.prompt', {
+      // 走 sendOrQueue：在线=直接发；离线/网络故障=**落盘排队**，重连后自动 flush。
+      // 旧实现在断线时直接抛错 → 用户丢字（现在至少不会丢，且能看到待发条数）。
+      const res = await connRef.current.sendOrQueue('session.prompt', {
         request: {
           requestId: 'req-' + Date.now(),
           sessionId: sid,
@@ -689,6 +751,18 @@ export const App: React.FC = () => {
           content: [{ type: 'text', text }],
         },
       });
+
+      if (!res.delivered) {
+        setPreparing(false);
+        setSending(false);
+        if (res.queued) {
+          setNotice(`当前离线，已排入待发（共 ${connRef.current.outboxSize()} 条），连上后自动发送`);
+          return true; // 已落盘：可以清空输入框
+        }
+        const why = res.reason === 'auth-failed' ? '设备令牌已失效，请重新配对' : res.error || '原因未知';
+        setError(`指令未送达：${why}`);
+        return false; // 保留草稿
+      }
 
       setPreparing(false);
       setRunning(true);
@@ -879,6 +953,19 @@ export const App: React.FC = () => {
     if (chatError) {
       return { text: chatError, onPress: () => setChatError(null) };
     }
+    // 离线：发送会落盘排队，重连后自动补发。点一下可立刻重试连接。
+    if (linkPhase === 'offline') {
+      return {
+        text:
+          outbox.pending > 0
+            ? `当前离线：${outbox.pending} 条指令已排队，连上后自动发送。`
+            : '当前离线：现在发送的指令会先排队，连上后自动发送。',
+        onPress: () => {
+          const ok = connRef.current?.retryNow() ?? false;
+          if (!ok) setLinkPhase('connecting');
+        },
+      };
+    }
     if (hosts.length === 0) return null;
     const platform = NativeBridge.platform();
     if (platform === 'web') {
@@ -965,6 +1052,13 @@ export const App: React.FC = () => {
   useEffect(() => {
     NativeBridge.setRoute({ route, drawerOpen });
   }, [route, drawerOpen]);
+
+  /** 轻提示几秒后自动消失。 */
+  useEffect(() => {
+    if (!notice) return;
+    const timer = window.setTimeout(() => setNotice(null), 5000);
+    return () => window.clearTimeout(timer);
+  }, [notice]);
 
   /** 点通知进来 → 跳到对应会话（壳会推，也可能需要网页主动取一次）。 */
   const deepLinkRef = useRef<(link: { eventId?: string; sessionId?: string }) => boolean>(() => false);
@@ -1058,6 +1152,16 @@ export const App: React.FC = () => {
                 ⚠️ {alertBanner.text}
               </div>
             ))}
+
+          {/* 轻提示（离线已入队等）：不打断操作，几秒自消 */}
+          {notice && (
+            <div
+              role="status"
+              className="bg-sky-500/15 text-sky-200 border-b border-sky-500/30 px-3 py-2 text-[11px] leading-snug backdrop-blur-sm"
+            >
+              {notice}
+            </div>
+          )}
         </div>
         {route === 'hosts' && (
           <HostsScreen
@@ -1093,6 +1197,9 @@ export const App: React.FC = () => {
             archivedIds={archivedIds}
             onArchive={(s) => applyArchive(s, true)}
             onUnarchive={(s) => applyArchive(s, false)}
+            onRenameSession={handleRenameSession}
+            onForkSession={handleForkSession}
+            onCancelSession={handleCancelSession}
             onOpen={handleOpenSession}
             onRefresh={() => loadSessions()}
             onSearch={handleSearchSessions}

@@ -10,6 +10,10 @@
  *    因此测试不需要 `ts-resolve-hook`：
  *      node --experimental-strip-types scripts/test-session-groups.mjs
  *
+ * T6 追加（会话管理增强）：组内**渲染上限 + 显示更多**（按 running/搜索命中优先，
+ * 绝不把用户正在找的那条折叠掉）、**重命名就地更新**、fork 出来的新行、
+ * 会话操作菜单的条目判定、新建会话的**工作区候选**。同样是纯函数、可单测。
+ *
  * 归档是**仅本机**的：真主机的 session 端点没有 archive
  * （session/cancel|control|create|follow|fork|initializeDefaultModel|list|
  *   modelCatalog|openWorkspacePath|page|projections|prompt|rename|search|
@@ -515,5 +519,343 @@ export function filterSessionsByQuery<T extends SessionRow>(
   return rows.filter((row) => {
     const haystack = `${row.title || ''}\n${row.preview || ''}\n${row.workspace || ''}`.toLowerCase();
     return haystack.includes(q);
+  });
+}
+
+// ── 每组渲染上限（T6）──────────────────────────────────────────────────────
+//
+// 真主机实测 8 个工作区 / 129 个会话，dsh-native-mobile 17 条、desktop 41 条、
+// aiwork 35 条 —— 分组做完了，组内**全量渲染**照样滚不到底。这里给每个组
+// 一个上限，并把「用户正在找的」排到上限内。
+
+/** 每组默认最多渲染的会话数。 */
+export const DEFAULT_GROUP_LIMIT = 12;
+/** 展开后的收起按钮文案。 */
+export const SHOW_LESS_LABEL = '收起';
+
+export interface CapSessionsOptions {
+  /** 展示上限；缺省 = DEFAULT_GROUP_LIMIT；非有限值或 <= 0 = 不限。 */
+  limit?: number;
+  /** 用户点过「显示更多」→ 不再截断。 */
+  expanded?: boolean;
+  /**
+   * **必须**留在上限内的 id（搜索命中 / 远端结果 / 正在编辑的那条）。
+   * running 项天然优先，不需要列进来。
+   */
+  priorityIds?: ReadonlySet<string> | readonly string[] | null;
+}
+
+export interface CappedSessions {
+  /** 上限内要渲染的行。 */
+  visible: SessionRow[];
+  /** 被折叠掉的行数。 */
+  hidden: number;
+  /** 传入的总行数。 */
+  total: number;
+  /** 是否还有被折叠的行（= 应该显示「显示更多」）。 */
+  hasMore: boolean;
+}
+
+/**
+ * 截断一个组的会话列表（纯函数，不改输入）。
+ *
+ * 优先级（**必须**落在上限内，不能被折叠掉）：
+ *   1. `running`：用户最关心的就是"电脑上正在跑"；
+ *   2. `priorityIds`：搜索命中 / 远端结果；
+ *   3. 其余按传入顺序（调用方已按 running + 时间倒序排好）。
+ * 同一优先级内**保持输入顺序**（稳定），因此同一份输入永远得到同一份输出。
+ */
+export function capSessions(
+  rows: readonly SessionRow[] | null | undefined,
+  options: CapSessionsOptions = {},
+): CappedSessions {
+  const list = Array.isArray(rows) ? rows : [];
+  const total = list.length;
+  const raw = options.limit === undefined ? DEFAULT_GROUP_LIMIT : options.limit;
+  const unlimited = typeof raw !== 'number' || !Number.isFinite(raw) || raw <= 0;
+
+  if (options.expanded || unlimited || total <= raw) {
+    return { visible: [...list], hidden: 0, total, hasMore: false };
+  }
+
+  const priority = toIdSet(options.priorityIds);
+  const head: SessionRow[] = [];
+  const tail: SessionRow[] = [];
+  for (const row of list) {
+    if (row && (row.running === true || (row.sessionId && priority.has(row.sessionId)))) head.push(row);
+    else tail.push(row);
+  }
+
+  const ordered = [...head, ...tail];
+  const visible = ordered.slice(0, raw);
+  return { visible, hidden: total - visible.length, total, hasMore: visible.length < total };
+}
+
+/** 「显示更多（还剩 N 条）」；N 非正数/非法时返回空串（UI 据此不渲染按钮）。 */
+export function formatShowMoreLabel(hidden: number): string {
+  const n = typeof hidden === 'number' && Number.isFinite(hidden) && hidden > 0 ? Math.floor(hidden) : 0;
+  return n > 0 ? `显示更多（还剩 ${n} 条）` : '';
+}
+
+// ── 重命名 / fork：就地更新（T6）────────────────────────────────────────────
+//
+// 真网关实测（2026-10-15，回环管理接口铸码 + 真配对，用完吊销）：
+//   session/rename  args = { request: { sessionId, title } } → { title, seq }
+//   session/fork    args = { request: { sessionId, atSeq? } } → { sessionId }
+// 传错形参名会被边界校验直接拒（"args fields do not match the descriptor"）。
+
+/** 主机归一化后的标题（trim）；空串代表不可用。 */
+export function normalizeSessionTitle(title: string | null | undefined): string {
+  return typeof title === 'string' ? title.trim() : '';
+}
+
+/**
+ * 把一次重命名**就地**写进列表（返回新数组，绝不改输入）。
+ *  - 命中：该项返回新对象（title 更新；给了 updatedAt 就一并更新，让它在时间序里回到顶部）；
+ *  - 未命中：原引用原样保留，只做浅拷贝；
+ *  - 空标题 / 空 id：原样浅拷贝（调用方应先 normalize，这里再兜一层）。
+ */
+export function applySessionRename(
+  rows: readonly SessionRow[] | null | undefined,
+  sessionId: string,
+  title: string,
+  updatedAt?: number,
+): SessionRow[] {
+  const list: readonly SessionRow[] = Array.isArray(rows) ? rows : [];
+  const next = normalizeSessionTitle(title);
+  if (!sessionId || !next) return [...list];
+
+  const stamp = typeof updatedAt === 'number' && Number.isFinite(updatedAt) ? updatedAt : undefined;
+  return list.map((row) => {
+    if (!row || row.sessionId !== sessionId) return row;
+    const patched = { ...(row as SessionRow), title: next };
+    if (stamp !== undefined) patched.updatedAt = stamp;
+    return patched;
+  });
+}
+
+/**
+ * 主机返回的 fork 结果 → 本地新行。
+ *
+ * 标题标「分支」，一眼区分；`isSubagent` **恒为 false** —— 契约里
+ * `session/fork` 出来的是普通会话（它带 parentSessionId，但按裸 sessionId 能正常打开），
+ * 误标成子代理会让它被 `session/page` 拒掉。
+ */
+export function buildForkedSession(
+  parent: SessionRow,
+  sessionId: string,
+  now: number = Date.now(),
+): SessionRow {
+  const baseTitle = normalizeSessionTitle(parent && parent.title) || '未命名会话';
+  return {
+    sessionId,
+    title: `${baseTitle} · 分支`,
+    preview: `从「${baseTitle}」分叉`,
+    updatedAt: typeof now === 'number' && Number.isFinite(now) ? now : Date.now(),
+    running: false,
+    isSubagent: false,
+    parentSessionId: (parent && parent.sessionId) || null,
+    workspace: (parent && parent.workspace) || null,
+  };
+}
+
+// ── 重命名 echo（乐观显示）──────────────────────────────────────────────────
+//
+// 「成功后就地更新」有两个写入方：调用方（App 的 sessions state）与组件本身。
+// 组件不抢写 state，只叠一层**只读 echo**：仅当行标题还停在重命名前的旧值时生效；
+// 调用方一旦回写（title 变成新值），echo 自动失效 —— 不会出现"删掉的又回来"。
+
+export interface RenameEcho {
+  /** 重命名前的标题（echo 生效的前置条件）。 */
+  from: string;
+  /** 重命名后的标题。 */
+  to: string;
+}
+
+export type RenameEchoState = Record<string, RenameEcho>;
+
+/**
+ * 记下/更新一条 echo。同一会话连续重命名时**保留最早的 from**
+ * （否则第二次的 from 会变成已被 echo 覆盖的值，echo 直接失效）。
+ */
+export function setRenameEcho(
+  state: RenameEchoState | null | undefined,
+  sessionId: string,
+  from: string,
+  to: string,
+): RenameEchoState {
+  const base: RenameEchoState = state && typeof state === 'object' ? state : {};
+  if (!sessionId) return { ...base };
+  const cleanTo = normalizeSessionTitle(to);
+  if (!cleanTo) return clearRenameEcho(base, sessionId);
+  const existing = base[sessionId];
+  return { ...base, [sessionId]: { from: existing ? existing.from : from, to: cleanTo } };
+}
+
+/** 去掉一条 echo（主机拒绝 / 用户撤销时用）。 */
+export function clearRenameEcho(
+  state: RenameEchoState | null | undefined,
+  sessionId: string,
+): RenameEchoState {
+  const base: RenameEchoState = state && typeof state === 'object' ? state : {};
+  if (!sessionId || !(sessionId in base)) return { ...base };
+  const next: RenameEchoState = { ...base };
+  delete next[sessionId];
+  return next;
+}
+
+/** 把 echo 叠到列表上：只在 `row.title` 仍等于 `from` 时才替换，其余原引用不动。 */
+export function applyRenameEcho(
+  rows: readonly SessionRow[] | null | undefined,
+  echo: RenameEchoState | null | undefined,
+): SessionRow[] {
+  const list: readonly SessionRow[] = Array.isArray(rows) ? rows : [];
+  if (!echo || typeof echo !== 'object' || Object.keys(echo).length === 0) return [...list];
+  return list.map((row) => {
+    if (!row) return row;
+    const e = echo[row.sessionId];
+    if (!e || row.title !== e.from || row.title === e.to) return row;
+    return { ...(row as SessionRow), title: e.to };
+  });
+}
+
+// ── 会话操作菜单（T6）──────────────────────────────────────────────────────
+
+export type SessionActionId = 'rename' | 'copyId' | 'fork' | 'cancel' | 'archive' | 'unarchive';
+
+export interface SessionActionItem {
+  id: SessionActionId;
+  label: string;
+  /** 破坏性动作（取消运行 / 归档）→ UI 上警示色。 */
+  danger?: boolean;
+  /** 该动作当前不可用（缺 handler / 会话状态不允许）。 */
+  disabled?: boolean;
+  /** 禁用原因（挂到 title / aria-description）。 */
+  reason?: string;
+}
+
+/** 菜单文案（单点维护，UI 与测试共用）。 */
+export const SESSION_ACTION_LABELS: Record<SessionActionId, string> = {
+  rename: '重命名',
+  copyId: '复制会话 id',
+  fork: '在电脑上分叉（fork）',
+  cancel: '取消运行',
+  archive: '本地归档（仅本机）',
+  unarchive: '取消归档（仅本机）',
+};
+
+export interface SessionActionCapabilities {
+  canRename?: boolean;
+  canFork?: boolean;
+  canCancel?: boolean;
+  canCopyId?: boolean;
+  canArchive?: boolean;
+  canUnarchive?: boolean;
+  /** 该行当前是否处于本机归档态（决定显示归档还是取消归档）。 */
+  archived?: boolean;
+}
+
+/**
+ * 一条会话能做什么。
+ *  - 「取消运行」**只在 running 时出现**（主机会对没跑的会话报错，摆出来是误导）；
+ *  - 能力缺失（调用方没接线，或显式传 false）→ 条目仍在但 `disabled`，并给出原因：
+ *    这样用户知道有这功能，而不是"菜单里根本没有"。**默认是置灰**——
+ *    「没接线」比「假装能点、点了报错」诚实；
+ *  - `copyId` 是纯本地能力，默认可用（除非显式 false）。
+ */
+export function sessionActionItems(
+  session: SessionRow,
+  caps: SessionActionCapabilities = {},
+): SessionActionItem[] {
+  if (!session || typeof session.sessionId !== 'string' || !session.sessionId) return [];
+
+  const items: SessionActionItem[] = [
+    {
+      id: 'rename',
+      label: SESSION_ACTION_LABELS.rename,
+      disabled: caps.canRename !== true,
+      reason: caps.canRename === true ? undefined : '未接线 session.rename',
+    },
+    {
+      id: 'copyId',
+      label: SESSION_ACTION_LABELS.copyId,
+      disabled: caps.canCopyId === false,
+      reason: caps.canCopyId === false ? '当前无法访问剪贴板' : undefined,
+    },
+    {
+      id: 'fork',
+      label: SESSION_ACTION_LABELS.fork,
+      disabled: caps.canFork !== true,
+      reason: caps.canFork === true ? undefined : '未接线 session.fork',
+    },
+  ];
+
+  if (session.running) {
+    items.push({
+      id: 'cancel',
+      label: SESSION_ACTION_LABELS.cancel,
+      danger: true,
+      disabled: caps.canCancel !== true,
+      reason: caps.canCancel === true ? undefined : '未接线 session.cancel',
+    });
+  }
+
+  if (caps.archived) {
+    items.push({
+      id: 'unarchive',
+      label: SESSION_ACTION_LABELS.unarchive,
+      disabled: caps.canUnarchive !== true,
+      reason: caps.canUnarchive === true ? undefined : '未接线取消归档回调',
+    });
+  } else {
+    items.push({
+      id: 'archive',
+      label: SESSION_ACTION_LABELS.archive,
+      danger: true,
+      disabled: caps.canArchive !== true,
+      reason: caps.canArchive === true ? undefined : '未接线归档回调',
+    });
+  }
+
+  return items;
+}
+
+// ── 新建会话：工作区候选（T6）──────────────────────────────────────────────
+
+export interface WorkspaceOption {
+  /** 归一化后的真实路径，可直接作为 `session.create` 的 cwd。 */
+  workspace: string;
+  label: string;
+  hint: string;
+  /** 该工作区下的会话数（含子代理）。 */
+  sessionCount: number;
+  latestAt: number;
+}
+
+/**
+ * 从分组结果里抽出「已知工作区」候选，供新建会话下拉选择
+ * （任务要求：不要让用户手打路径）。
+ *  - 跳过搜索组（它不是工作区）；
+ *  - 跳过未知工作区（没有真实 cwd，填进去只会被主机拒）；
+ *  - 按最近活动倒序（与列表顺序一致），同时间按路径兜底，保证确定。
+ */
+export function listWorkspaceOptions(
+  groups: readonly SessionGroup[] | null | undefined,
+): WorkspaceOption[] {
+  const list = Array.isArray(groups) ? groups : [];
+  const options: WorkspaceOption[] = [];
+  for (const group of list) {
+    if (!group || group.kind !== 'workspace' || !group.workspace) continue;
+    options.push({
+      workspace: group.workspace,
+      label: group.label,
+      hint: group.hint,
+      sessionCount: group.total,
+      latestAt: group.latestAt,
+    });
+  }
+  return options.sort((a, b) => {
+    if (a.latestAt !== b.latestAt) return b.latestAt - a.latestAt;
+    return a.workspace < b.workspace ? -1 : a.workspace > b.workspace ? 1 : 0;
   });
 }

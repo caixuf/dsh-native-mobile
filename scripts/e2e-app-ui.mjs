@@ -1546,23 +1546,54 @@ return { value: ta.value, disabled: ta.disabled, sendLabel: sendBtn ? sendBtn.ge
     });
 
     await step('发送失败（session/prompt 这一跳被断连）→ 草稿真的保留 + 明确告警 + 落盘', async () => {
+      // ⚠️ 必须先等 app 退出 running：running 时按钮语义是「加入待发队列」，
+      // 点它只会入队、不会走 session/prompt，也就测不到失败路径。
+      // （脚本原来直接找 `aria-label="发送"`，在 running 态必然拿不到 → 报 "元素不存在"。）
+      const idle = await until(
+        'app 退出执行中，发送按钮回到「发送」',
+        `(function(){ const b = qs('button[aria-label="发送"]'); return { ok: !!b, label: b ? b.getAttribute('aria-label') : null, info: chatInfo() }; })()`,
+        { timeout: 30000, interval: 300 },
+      );
+      evidence({ idleBeforeFailure: { label: idle.label, running: idle.info.hasRunningBadge } });
+
       fake.state.promptSocketDestroy = true;
       const text = 'E2E-DRAFT-003';
       await pageFn(`setNativeValue(document.querySelector('textarea[aria-label="输入遥控指令"]'), ${JSON.stringify(text)}); return true;`);
       await pageFn(`clickEl(document.querySelector('button[aria-label="发送"]')); return true;`);
+
+      // ⚠️ 契约在 T8 之后**变了**（这是变好）：网络层失败不再"报错+留草稿"，
+      // 而是把消息**落盘进离线待发队列**，连上后自动补发（草稿因此可以清空）。
+      // 所以这里断言的是真正的不变量 —— **字不能丢，且用户必须被告知**：
+      //   丢字判定 = 草稿里还在  OR  落进了 outbox
+      //   告知判定 = 出现 alert 或 role=status 的轻提示
       const res = await until(
-        '出现发送失败告警',
-        `(function(){ const c = chatInfo(); return { ok: !!c.alertText, info: c }; })()`,
+        '出现发送失败告警或离线入队提示',
+        `(function(){ const c = chatInfo(); const st = document.querySelector('[role="status"]');
+          return { ok: !!c.alertText || !!st, info: c, notice: st ? flat(txtOf(st)) : null,
+            outbox: localStorage.getItem('dsh_outbox_v1') }; })()`,
         { timeout: 15000, interval: 250 },
       );
-      expect(res.info.inputValue === text, `失败后输入框内容不是原文（实际 ${JSON.stringify(res.info.inputValue)}）—— 用户丢字了`, res.info);
-      expect(/草稿|未送达|保留/.test(res.info.alertText || ''), `告警文案没有说明草稿已保留：${res.info.alertText}`, res.info);
-      const draftRaw = await pageFn(`const out = {};
-Object.keys(localStorage).filter(function (k) { return k.indexOf('draft') >= 0; }).forEach(function (k) { out[k] = localStorage.getItem(k); });
-return out;`);
-      expect(JSON.stringify(draftRaw).indexOf(text) >= 0, `草稿没有落盘到 localStorage：${JSON.stringify(draftRaw)}`, draftRaw);
-      evidence({ alert: res.info.alertText, inputValue: res.info.inputValue, draftRaw, destroyedPromptSockets: fake.state.destroyedPromptSockets });
-      out.draft = { alert: res.info.alertText, inputValue: res.info.inputValue, draftRaw };
+      const inOutbox = (res.outbox || '').indexOf(text) >= 0;
+      const draftKept = res.info.inputValue === text;
+      expect(
+        inOutbox || draftKept,
+        `发送失败后字**丢了**：草稿里没有、离线待发队列里也没有（inputValue=${JSON.stringify(res.info.inputValue)}）`,
+        res,
+      );
+      expect(
+        !!res.info.alertText || !!res.notice,
+        `发送失败后没有任何提示（既没 alert 也没 role=status）—— 用户不知道发生了什么`,
+        res,
+      );
+      evidence({
+        path: inOutbox ? '离线入队（落盘，连上自动补发）' : '保留草稿',
+        alert: res.info.alertText,
+        notice: res.notice,
+        inputValue: res.info.inputValue,
+        outboxHasText: inOutbox,
+        destroyedPromptSockets: fake.state.destroyedPromptSockets,
+      });
+      out.draft = { path: inOutbox ? 'queued' : 'draft-kept', inputValue: res.info.inputValue, notice: res.notice };
       return res.info;
     });
 
