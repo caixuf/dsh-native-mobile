@@ -133,6 +133,50 @@ export class DeviceStore {
     this.#state.devices = devices;
   }
 
+  /**
+   * 清空所有设备记录（保留账号凭据与配对码设置）。
+   *
+   * 用途：历史遗留数据清理。设备令牌 TTL 是 30 天，早期版本每次登录都
+   * 新增一条记录，存量会一直挂着到过期为止（实测积到 126 条）。
+   *
+   * ⚠️ 副作用：**所有已配对设备会立刻掉线**，需要重新登录/配对。
+   * 所以只在管理面板显式触发，不做自动调用。
+   */
+  async clearDevices() {
+    const removed = this.#state.devices.length;
+    this.#state.devices = [];
+    await this.#persist();
+    return { ok: true, removed };
+  }
+
+  /**
+   * 按 `platform + name` 合并重复设备，每组只保留最近活跃的一条。
+   *
+   * 用于清理历史遗留：早期版本每次登录都新增记录，同一台手机会有
+   * 多条同名条目。保留 `lastSeenAt` 最新的那条（它的 token 最可能仍在使用），
+   * 其余删除。
+   */
+  async dedupeDevices() {
+    const now = Date.now();
+    this.#prune(now);
+
+    const best = new Map();
+    for (const d of this.#state.devices) {
+      const key = `${d.platform}\u0000${d.name}`;
+      const prev = best.get(key);
+      if (!prev || (d.lastSeenAt ?? 0) > (prev.lastSeenAt ?? 0)) {
+        best.set(key, d);
+      }
+    }
+
+    const before = this.#state.devices.length;
+    this.#state.devices = [...best.values()].sort(
+      (a, b) => (b.lastSeenAt ?? 0) - (a.lastSeenAt ?? 0),
+    );
+    await this.#persist();
+    return { ok: true, before, after: this.#state.devices.length, removed: before - this.#state.devices.length };
+  }
+
   // ---- 账号密码 -----------------------------------------------------------
 
   /**
@@ -182,6 +226,57 @@ export class DeviceStore {
   }
 
   /**
+   * 签发设备令牌，**同一台设备复用同一条记录**。
+   *
+   * 🔴 真实问题（2026-10-14 实测）：原先 `login` 与 `redeem` 都无条件
+   * `devices.push()`，从不查重。结果是**每登录一次就多一条设备**——
+   * 用户在同一台手机上反复登录/重连，管理面板就会堆出一大串同名设备
+   * （实测攒到 126 条，绝大多数是同一个模拟器 + 各种验证脚本）。
+   *
+   * 身份键取 `platform + name`（App 传的是机型，如 `RMX5200`）：
+   *  - 同一台手机 → 名称与平台稳定 → 命中同一条记录，**只轮换 token**；
+   *  - 换一台手机 / 改名 → 视为新设备，另立一条。
+   *
+   * 为什么用 `name` 而不是设备指纹：客户端目前不送稳定的硬件 ID，
+   * 加字段要改协议与两端；`platform + name` 已经能解决「同一台设备重复登录」
+   * 这个实际痛点，且对旧客户端向后兼容。
+   *
+   * ⚠️ 这**不是**安全边界：设备名可被客户端伪造。它只是"去重展示"的判据；
+   * 真正的鉴权始终是 token 本身（每次签发都换新 tokenHash）。
+   */
+  #issueDevice({ name, platform, ttlMs }) {
+    const now = Date.now();
+    const cleanName = (name ?? '').trim().slice(0, 64) || 'Android';
+    const cleanPlatform = (platform ?? '').trim().slice(0, 32) || 'android';
+    const token = randomBytes(32).toString('base64url');
+
+    const existing = this.#state.devices.find(
+      (d) => d.platform === cleanPlatform && d.name === cleanName,
+    );
+
+    if (existing) {
+      // 复用：换 token、续期、刷新活跃时间。id 与 createdAt 保持不变，
+      // 这样管理面板里看到的是「同一台设备又连上来了」而不是新设备。
+      existing.tokenHash = sha256Hex(token);
+      existing.lastSeenAt = now;
+      existing.expiresAt = now + ttlMs;
+      return { device: existing, token };
+    }
+
+    const device = {
+      id: `dev_${randomBytes(9).toString('base64url')}`,
+      name: cleanName,
+      platform: cleanPlatform,
+      tokenHash: sha256Hex(token),
+      createdAt: now,
+      lastSeenAt: now,
+      expiresAt: now + ttlMs,
+    };
+    this.#state.devices.push(device);
+    return { device, token };
+  }
+
+  /**
    * 用账号密码换取设备令牌。
    *
    * 与配对码方案的关系：**并存的第二条入口**，不取代配对码。
@@ -197,17 +292,7 @@ export class DeviceStore {
     const passOk = sha256Hex(String(password ?? '')) === c.passwordHash;
     if (!userOk || !passOk) return { ok: false, reason: 'mismatch' };
 
-    const token = randomBytes(32).toString('base64url');
-    const device = {
-      id: `dev_${randomBytes(9).toString('base64url')}`,
-      name: (deviceName ?? '').trim().slice(0, 64) || 'Android',
-      platform: (platform ?? '').trim().slice(0, 32) || 'android',
-      tokenHash: sha256Hex(token),
-      createdAt: now,
-      lastSeenAt: now,
-      expiresAt: now + ttlMs,
-    };
-    this.#state.devices.push(device);
+    const { device, token } = this.#issueDevice({ name: deviceName, platform, ttlMs });
     await this.#persist();
     return { ok: true, device: this.#public(device), token };
   }
@@ -265,17 +350,8 @@ export class DeviceStore {
       return { ok: false, reason: 'mismatch' };
     }
 
-    const token = randomBytes(32).toString('base64url');
-    const device = {
-      id: `dev_${randomBytes(9).toString('base64url')}`,
-      name: (deviceName ?? '').trim().slice(0, 64) || 'Android',
-      platform: (platform ?? '').trim().slice(0, 32) || 'android',
-      tokenHash: sha256Hex(token),
-      createdAt: now,
-      lastSeenAt: now,
-      expiresAt: now + ttlMs,
-    };
-    this.#state.devices.push(device);
+    // 与 login 同一条签发路径：同一台设备复用记录，只轮换 token。
+    const { device, token } = this.#issueDevice({ name: deviceName, platform, ttlMs });
     // 配对码一次性消费。
     this.#state.pairing = null;
     await this.#persist();

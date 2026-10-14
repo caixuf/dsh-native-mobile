@@ -438,6 +438,23 @@ export function createManageApi({ store, log, config, instance, gatewayVersion, 
       return true;
     }
 
+    // 按 platform+name 合并重复设备（清理历史遗留）
+    if (req.method === 'POST' && pathname === '/mobile-gateway/manage/api/dedupe') {
+      const result = await store.dedupeDevices();
+      log.info('devices deduped', result);
+      sendJson(res, 200, await statePayload(req, new URL(req.url, 'http://localhost').searchParams.get('base')));
+      return true;
+    }
+
+    // 清空所有设备（保留账号凭据）。
+    // ⚠️ 所有已配对设备会立刻掉线，需重新登录/配对。
+    if (req.method === 'POST' && pathname === '/mobile-gateway/manage/api/clear-devices') {
+      const result = await store.clearDevices();
+      log.info('all devices cleared', result);
+      sendJson(res, 200, await statePayload(req, new URL(req.url, 'http://localhost').searchParams.get('base')));
+      return true;
+    }
+
     // 生成 / 重置密码。明文只在**这一次响应**里返回
     if (req.method === 'POST' && pathname === '/mobile-gateway/manage/api/credentials') {
       const body = await readJsonBody(req);

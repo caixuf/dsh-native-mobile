@@ -53,12 +53,45 @@ foreach ($dst in $targets) {
 $primary = $targets[0]
 
 Info '安装运行时依赖（ws / qrcode）'
-$runtime = 'C:\Users\me\AppData\Local\Programs\DeepSeek Harness\resources\runtime'
-$node = Join-Path $runtime 'primary-runtime\dependencies\node\bin\node.exe'
-if (-not (Test-Path $node)) { $node = (Get-Command node -ErrorAction SilentlyContinue).Source }
-if (-not $node) { throw '找不到 node 可执行文件' }
-$pnpm = Join-Path $runtime 'pnpm\bin\pnpm.cjs'
-if (-not (Test-Path $pnpm)) { throw '找不到 DSH 自带的 pnpm.cjs' }
+
+# 🔴 自动发现 DSH 的 runtime，不要硬编码路径。
+#
+# 实测教训：这里原先写死 `C:\Users\me\...`（写脚本时的占位路径），
+# 换到真实用户目录后 `Test-Path` 直接失败并抛错 ——
+# **插件文件已复制成功，却因为一个可自动发现的路径而中断在依赖安装之前**，
+# 结果是 `ws` 缺失、网关起不来，而调用方只看到一个"找不到 pnpm"的报错。
+#
+# 现在按顺序尝试：环境变量 → 常见安装位置 → PATH 上的 node。
+$runtimeCandidates = @(
+  $env:DSH_RUNTIME,
+  (Join-Path $env:LOCALAPPDATA 'Programs\DeepSeek Harness\resources\runtime'),
+  (Join-Path $env:PROGRAMFILES 'DeepSeek Harness\resources\runtime')
+) | Where-Object { $_ -and (Test-Path $_) }
+
+$node = $null
+foreach ($rt in $runtimeCandidates) {
+  $candidate = Join-Path $rt 'primary-runtime\dependencies\node\bin\node.exe'
+  if (Test-Path $candidate) { $node = $candidate; $runtime = $rt; break }
+}
+if (-not $node) { $node = (Get-Command node -ErrorAction SilentlyContinue).Source }
+if (-not $node) {
+  throw '找不到 node 可执行文件。请设置 $env:DSH_RUNTIME 指向 DSH 的 resources\runtime 目录。'
+}
+
+$pnpm = $null
+foreach ($rt in $runtimeCandidates) {
+  foreach ($rel in @('pnpm\bin\pnpm.cjs', 'primary-runtime\dependencies\pnpm\bin\pnpm.cjs')) {
+    $candidate = Join-Path $rt $rel
+    if (Test-Path $candidate) { $pnpm = $candidate; break }
+  }
+  if ($pnpm) { break }
+}
+if (-not $pnpm) {
+  throw '找不到 DSH 自带的 pnpm.cjs。请设置 $env:DSH_RUNTIME 指向 DSH 的 resources\runtime 目录。'
+}
+
+Info ('node = ' + $node)
+Info ('pnpm = ' + $pnpm)
 
 & $node $pnpm install --dir $primary --ignore-workspace --node-linker=hoisted --prod --ignore-scripts 2>&1 |
   Select-Object -Last 6

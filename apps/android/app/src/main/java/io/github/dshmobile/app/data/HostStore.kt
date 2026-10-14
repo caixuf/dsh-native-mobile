@@ -103,10 +103,88 @@ class HostStore(context: Context) {
         }
     }
 
+    /**
+     * 合并已有的重复记录（每组同机器只留 `lastUsedAt` 最新的一条）。
+     *
+     * 用于清理历史遗留：修复 upsert 之前，同一台电脑会被存成多条。
+     * App 启动时调用一次即可，无重复时不做任何写入。
+     *
+     * @return 合并掉的条数（0 表示没有变化）
+     */
+    fun dedupe(): Int {
+        val current = all()
+        if (current.size <= 1) return 0
+
+        val best = LinkedHashMap<String, HostRecord>()
+        for (record in current.sortedByDescending { it.lastUsedAt }) {
+            val key = if (record.instanceName.isNotBlank()) {
+                "n:" + record.instanceName.trim().lowercase()
+            } else {
+                "u:" + normalizeUrl(record.baseUrl)
+            }
+            // sortedByDescending 保证第一次遇到的就是最新的，直接 putIfAbsent
+            if (!best.containsKey(key)) best[key] = record
+        }
+
+        val next = best.values.toList()
+        val removed = current.size - next.size
+        if (removed > 0) {
+            Log.i(TAG, "已合并 $removed 条重复主机记录：${current.size} → ${next.size}")
+            persist(next)
+        }
+        return removed
+    }
+
+    /**
+     * 写入一台已配对的电脑。
+     *
+     * 🔴 **同一台电脑只保留一条记录**（2026-10-14 实测修复）。
+     *
+     * 原实现只按 `id` 去重，而 `id` 是本机随机生成的 UUID ——
+     * 服务端每次登录/配对都签发**新的 deviceId**，于是同一台电脑
+     * 在列表里会堆成好几条：换一个地址（公网 ↔ 局域网）登录一次就多一条，
+     * 实测同一台机器积出两条同名 `desktop`，分不清哪个是哪个。
+     *
+     * 归并键取 `instanceName`（即服务端返回的 `instance.name`，DSH profile 名，
+     * 例如 `desktop`）—— 它是**电脑身份**，与用哪个地址连进来无关。
+     * 命中的旧记录被替换：地址与 token 更新成最近一次用的，
+     * `id` 沿用旧值以免打断正在引用的 UI 状态。
+     *
+     * 兜底：`instanceName` 为空时（老数据或服务端未返回），退回按 `baseUrl` 归并，
+     * 保证「同一地址重复登录」也只会有一条。
+     */
     fun upsert(record: HostRecord) {
-        val next = all().filterNot { it.id == record.id } + record
+        val existing = all().firstOrNull { it.sameMachineAs(record) }
+
+        val merged = if (existing != null) {
+            // 保留原 id，其余字段取最新（地址、token、deviceId、label 都是新的）
+            record.copy(id = existing.id, pairedAt = existing.pairedAt)
+        } else {
+            record
+        }
+
+        val next = all()
+            .filterNot { it.sameMachineAs(record) }
+            .filterNot { it.id == merged.id } + merged
+
         persist(next.sortedByDescending { it.lastUsedAt })
     }
+
+    /**
+     * 是否指向同一台电脑。
+     *
+     * 优先比 `instanceName`（电脑身份）；它缺失时退回比规范化后的地址。
+     * ⚠️ 这是 UI 层的"去重展示"判据，**不是安全边界** —— 鉴权始终靠 token。
+     */
+    private fun HostRecord.sameMachineAs(other: HostRecord): Boolean {
+        val a = instanceName.trim().lowercase()
+        val b = other.instanceName.trim().lowercase()
+        if (a.isNotEmpty() && b.isNotEmpty()) return a == b
+        // 退路：电脑名缺失时，同地址视为同一台
+        return normalizeUrl(baseUrl) == normalizeUrl(other.baseUrl)
+    }
+
+    private fun normalizeUrl(url: String): String = url.trim().trimEnd('/').lowercase()
 
     fun touch(id: String) {
         all().firstOrNull { it.id == id }?.let { upsert(it.copy(lastUsedAt = System.currentTimeMillis())) }
