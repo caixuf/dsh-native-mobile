@@ -77,7 +77,7 @@ sdk.dir=C\:\\Users\\<你>\\Downloads\\android-toolchain\\android-sdk
 ```powershell
 # 推荐：一条命令（前端构建 → 拷 dist/ 进 WebView 壳 → Gradle 打包 → 收产物）
 pnpm build:apk           # 无 pnpm 时等价于 npm run build:apk
-# 产物：dist-apk\dsh-mobile-v0.3.0.apk
+# 产物：dist-apk\dsh-mobile-v0.4.0.apk
 
 # 等价的纯 Gradle 路径（在 android\ 下用本地 Gradle；仓库里没有 gradlew.bat）
 cd android
@@ -97,9 +97,9 @@ cd android
 | JDK | 17 | Gradle/AGP 要求（`build-apk.mjs` 里写死了 `JAVA_HOME`） |
 | compileSdk / targetSdk | 35 | 需要 `platforms;android-35` |
 | minSdk | 26 | 见 `android/app/build.gradle.kts` |
-| versionName / versionCode | 0.3.0 / 6 | `build-apk.mjs` 的产物名跟着 versionName |
+| versionName / versionCode | 0.4.0 / 7 | `build-apk.mjs` 的产物名跟着 versionName |
 | Android 壳 | WebView | 源码只有 `android/app/src/main/java/io/github/dshmobile/app/MainActivity.kt`，加载 `file:///android_asset/web/index.html` |
-| 一键构建 | `pnpm build:apk` | `tsc -b && vite build && node scripts/build-apk.mjs` → `dist-apk/dsh-mobile-v0.3.0.apk` |
+| 一键构建 | `pnpm build:apk` | `tsc -b && vite build && node scripts/build-apk.mjs` → `dist-apk/dsh-mobile-v0.4.0.apk` |
 
 > 旧的 Kotlin/Compose 客户端（`apps/android/...`）已在 commit `c3c0bf9` 删除，
 > 上表只描述现在仍在用的 `android/` WebView 壳（资产由 `scripts/build-apk.mjs`

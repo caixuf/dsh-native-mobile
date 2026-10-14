@@ -618,7 +618,8 @@ LinkState.Disconnected -> stopServiceIfNeeded()   // ❌ 逻辑反转
 | 能力 | 状态 |
 |---|---|
 | 协议接入（登录/配对/`/api` 桥/事件流） | ✅ 实测跑通 |
-| 后台审批通知（前台服务 + 锁屏应答） | ⚠️ 管道通（事件流 `eventSockets=1`），**未触发过真实审批** |
+| **后台审批通知（前台服务 + 通知栏应答）** | ✅ **2026-10-14 模拟器端到端实测**：假主机下发审批 → 原生前台服务弹通知（「允许一次/拒绝」两按钮）→ 点击 → `$events/result` 回执 → 假主机校验 `outcome.value="allowed-once"` 词表内。证据：`DshRelay` 日志 + `docs/device-test.md` §端到端 |
+| 令牌失效不无限重试（401/403 分流） | ✅ 实测：连续的 401 只尝试 **1 次**即停止，并弹「需要重新配对」通知 |
 | 主线程性能（JSON 解析移出、正则预编译、轮询上 Default） | ✅ 实测 |
 | 工作区树（cwd 聚合 + WSL 友好名 + 系统目录后置） | ✅ 实测 |
 | 深色/浅色主题 | ✅ 实测 |
@@ -627,23 +628,52 @@ LinkState.Disconnected -> stopServiceIfNeeded()   // ❌ 逻辑反转
 
 ### 明确未验证
 
-- **锁屏审批端到端**：没触发过真实审批。这是**最该优先验证**的一项
-- 真机长期后台存活（厂商省电策略下）
-- 公网隧道下的长连接稳定性
+- **真机长期后台存活**：模拟器上已验证服务能扛住切后台与重连；但厂商 ROM 的省电策略
+  （小米/华为/OPPO 的后台冻结）**未在真机上验证**。这是当前最可能"看起来做了、实际收不到"的一项。
+- **公网隧道下的长连接稳定性**（Caddy + FRP 场景）
+- **Electron 桌面通知的运行时路径**：本次实现只有 API 级契约测试（26 条，覆盖平台降级），
+  本会话无交互式桌面，**没有真的弹过一次系统通知**。
+- **API 34 `dataSync` 前台服务的每日时长上限**：超时后系统会停服务，属平台约束；未做长时间实测。
+
+### 后台审批中继的形态（2026-10-14 新增，已实测）
+
+纯 WebView 方案**撑不住核心场景**：`onPause()` 一到，WebView 的 JS 与 WebSocket 就被挂起，
+锁屏/切后台即断连。所以守护落在原生侧：
+
+```
+[电脑] DSH 宿主 ── 进程内网关 ── WS /mobile-gateway/remote.mux
+                                      │  Authorization: Bearer（原生可带头，不必进 URL）
+[手机] ApprovalRelayService（前台服务，dataSync 型）
+        OkHttp WS → 订阅 $events → 收到 waterfall
+        → 通知（channel=dsh-approvals，IMPORTANCE_HIGH，两按钮）
+        → 用户点「允许一次」→ RelayActionReceiver → POST $events/result
+                                    ↑ 不经过 WebView、不经过 Activity
+[网页] 只负责：连接成功时经 JS 桥把凭据交给原生；通知栏答过之后收起 App 内弹窗
+```
+
+关键设计点：
+
+1. **令牌走 `Authorization` 头**。原生做得到；浏览器规范不允许给 WebSocket 设自定义头，
+   所以网页端只能用 `?token=`（会进反代日志）。原生中继的接入顺带把安全面收窄了一档。
+2. **已应答账本落盘**（`RelayStore`）：否则进程重启后，用户点过的审批会**再弹一次**。
+3. **通知未授权如实上报**（Android 13+ `POST_NOTIFICATIONS`）：服务在守护、审批到了手机、
+   用户什么都看不到 —— 这是最危险的静默失败，App 顶部会明确警示。
+4. **401/403 不重试**：与网络抖动必须分开，否则配合"断线不退避"就是无限重试死循环。
+5. **可观测**：`adb logcat -s DshRelay` 能看到整条链的状态迁移（连接/就绪/弹通知/投递/停止）。
 
 ### 正在进行的 Electron 重构：三处已核实的坑
+
+> **2026-10-14 更新：下表四处均已修复**，保留原文以记录"当时为什么这么做"。
+> 修复后新增了 26 条桌面通知平台降级契约测试（`scripts/test-desktop-notify.mjs`）。
 
 以下是 **2026-10-14 逐条核实**的现状，不是历史包袱而是**进行中的代码**：
 
 | 位置 | 现状 | 后果 |
 |---|---|---|
-| `electron/main.cjs` L43-45 | `window-all-closed → app.quit()` | **托盘常驻不成立** —— 关窗即退出。必须**显式阻止默认 quit**，这是最容易漏的一步 |
-| `src/services/store.ts` L10/L24 | token 硬编码 + **写 localStorage（明文）** | 凭据明文落盘。桌面端应改用 `safeStorage`（但注意它的语义弱于 Android Keystore，见下） |
-| `src/services/connection.ts` L217 | `new WebSocket(wsUrl)` —— **无头、无 query** | 网关拿不到 token → **401**，事件流根本连不上 |
-| `src/services/connection.ts` L189/L331/L361 | `token.includes('demo')` 走模拟分支 | 演示路径与真实路径混在一起，容易误判「已接通」 |
-
-> **建议**：重构以**真实网关为唯一数据源**，先删掉 demo 分支与 localStorage 凭据路径。
-> 这几处都不是"待优化"，是**当前状态跑不通**。
+| `electron/main.cjs` L43-45 | ~~`window-all-closed → app.quit()`~~ → **已改为常驻 + 托盘** | ~~托盘常驻不成立~~ 已修复 |
+| `src/services/store.ts` L10/L24 | ~~token 硬编码 + 写 localStorage~~ → **假主机只在显式 `VITE_DEMO_MODE=true` 时注入** | ~~凭据明文落盘~~ 已修复 |
+| `src/services/connection.ts` L217 | ~~`new WebSocket(wsUrl)` 无头无 query~~ → **`?token=`（网页端唯一可行）** | ~~401 连不上~~ 已修复 |
+| `src/services/connection.ts` L189/L331/L361 | ~~`token.includes('demo')`~~ → **`DEMO_MODE` 显式构建开关（`src/services/demo.ts`）** | ~~误判「已接通」~~ 已修复 |
 
 **平台差异（Android 结论在 Electron 不成立）**：
 
@@ -688,5 +718,27 @@ LinkState.Disconnected -> stopServiceIfNeeded()   // ❌ 逻辑反转
 | `scripts/list-endpoints.mjs` | 枚举主机真实端点 |
 | `scripts/probe-arg-names.mjs` | 探形参名（故意传错让它报） |
 | `scripts/inspect-event-shapes.mjs` | 导出真实事件形状 |
-| `test/e2e.mjs` | 网关端到端（83 项） |
+| `test/e2e.mjs` | 网关端到端（85 项） |
 | `test/store-roundtrip.mjs` | 设备存储持久化（11 项） |
+| `scripts/fake-host.mjs` | **假主机**：端到端验证审批链路用（下发审批 + 逐字校验回执形状） |
+| `scripts/verify-mux-events.mjs` | 事件流端到端（对真实主机） |
+
+本机一键验证（根目录）：
+
+| 命令 | 覆盖 |
+|---|---|
+| `node --run test` | client 107 条（markdown 44 / 增量流式 10 / 审批契约 27 / 桌面通知降级 26） |
+| `node --run test:gateway` | 网关 96 条（e2e 85 + store 往返 11） |
+| `node --run test:android` | Android 原生 57 条（审批契约 / MiniJson / 帧解码 / 分类与账本） |
+| `node --run verify` | 以上全部 + `tsc -b` + `vite build` |
+
+**审批链路端到端复现**（模拟器）：
+
+```bash
+node packages/dsh-mobile-gateway/scripts/fake-host.mjs &     # 假主机监听 19400
+adb reverse tcp:19400 tcp:19400
+adb shell am force-stop io.github.dshmobile.app
+adb shell am start -n io.github.dshmobile.app/.MainActivity \
+  --es dsh_relay_base_url http://127.0.0.1:19400 --es dsh_relay_token e2e-token-1
+adb logcat -s DshRelay        # 看整条链：连接 → 就绪 → 弹通知 → 投递
+```

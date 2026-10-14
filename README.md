@@ -27,6 +27,14 @@
    - **随身语音遥控 (VoiceRecordingOverlay)**：支持语音输入指令遥控电脑
    - **人机协同审批与提问**：工具安全审批（`allowed-once` / `rejected`）与选项式问答
 
+5. **后台审批中继（核心能力，Android 原生前台服务）**
+   - **锁屏/切后台也能收到审批**：原生前台服务持有 WebSocket，不受 WebView 被挂起影响
+   - **通知栏直接作答**：通知自带「允许一次 / 拒绝」按钮（提问则是选项按钮），
+     点一下即回执电脑，**不需要先解锁、打开 App、等 WebView 启动**
+   - **令牌走 `Authorization` 头**，不进 URL（网页端受浏览器规范限制只能用查询参数）
+   - **已应答账本落盘**：重启后不会重复弹已处理过的审批
+   - **令牌失效不无限重试**：401/403 立即停止并提示重新配对
+
 ## 技术栈
 
 - React 19 + TypeScript
@@ -42,4 +50,42 @@ npm run dev
 
 # 生产环境构建
 npm run build
+
+# 桌面壳（Electron）：关窗不退出，常驻托盘接收审批
+npm run electron
+
+# Android APK（WebView 壳 + 原生审批中继）
+npm run build:apk      # 产物：dist-apk/dsh-mobile-v<版本>.apk
 ```
+
+## 测试与验证
+
+```bash
+node --run test          # 客户端 107 条（markdown / 增量流式 / 审批契约 / 桌面通知降级）
+node --run test:gateway  # 网关 96 条（e2e 85 + 存储往返 11）
+node --run test:android  # Android 原生 57 条（审批契约 / JSON / 帧解码 / 分类与账本）
+node --run verify        # 以上全部 + tsc + vite build
+```
+
+`node --run` 不依赖 npm/pnpm 在 PATH 上。CI 或手动验收直接跑 `verify` 即可。
+
+### 审批链路端到端复现（模拟器）
+
+真实主机不会因为你想测就发一条审批出来，所以仓库里带了一个**假主机**：
+
+```bash
+node packages/dsh-mobile-gateway/scripts/fake-host.mjs &   # 监听 19400
+adb reverse tcp:19400 tcp:19400
+adb shell am force-stop io.github.dshmobile.app
+adb shell am start -n io.github.dshmobile.app/.MainActivity \
+  --es dsh_relay_base_url http://127.0.0.1:19400 --es dsh_relay_token e2e-token-1
+adb logcat -s DshRelay
+```
+
+假主机下发一条审批 → 手机弹通知 → 点「允许一次」→ 假主机**逐字校验**回执形状
+（`method=$events/result`、`args={clientId,eventId,outcome}`、`value` 必须是词表内的裸字符串）
+并打印结论。词表外的值会被真实主机**静默当成拒绝**，这是本项目最贵的一类 bug，
+所以校验写得比"收到请求"严格得多。
+
+> Android 13+ 需要 `POST_NOTIFICATIONS` 权限。没授权时通知**不报错、直接不显示** ——
+> App 顶部会明确提示，`adb logcat -s DshRelay` 也会打印 `通知是否可用=false`。

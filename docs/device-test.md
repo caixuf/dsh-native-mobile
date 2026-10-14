@@ -976,3 +976,128 @@ node packages\dsh-mobile-gateway\scripts\verify-subagent-classifier.mjs https://
 | 子代理会话不再出现在主列表 | 未验证 —— 需重装 APK |
 | 真机（非模拟器） | 仍未做 |
 | release 包正式签名 | 仍未做 |
+
+---
+
+# 端到端验证：审批链路（2026-10-14 · Android WebView 壳 + 原生中继）
+
+> 验证环境：Android 14 模拟器（AVD `dsh_test`，1080x2400，x86_64）
+> 被测产物：`dsh-mobile-v0.4.0.apk`（versionCode 7）
+> 结论：**「电脑端等授权 → 手机收到并当场处理」这条核心链路，首次端到端跑通。**
+>
+> 在此之前它是设计文档里**唯一标红的未验证项** —— 管道通了，但从未触发过一次真实审批。
+
+## 为什么必须用假主机
+
+真实 DSH 宿主不会因为你想测就发一条审批出来。所以引入
+`packages/dsh-mobile-gateway/scripts/fake-host.mjs`：它实现主机信号面的最小子集
+（`/mobile-gateway/remote.mux` 的 WS 事件流 + `$events/result` 应答端），
+于是链路可以被真正跑一遍，而且**回执形状能被逐字校验**。
+
+## 链路与证据
+
+```
+假主机 ──WS(Authorization: Bearer)──▶ ApprovalRelayService（前台服务）
+       ◀── ready(clientId) / waterfall(审批) ──
+手机通知栏 ──「允许一次」──▶ RelayActionReceiver ──▶ POST $events/result
+       ──▶ 假主机校验 outcome 形状 ──▶ 打印结论
+```
+
+### 1. 连接：令牌走请求头，不进 URL
+
+```
+[fake-host] 事件流已连接（令牌来源：Authorization 头）
+[fake-host] 已下发 ready（clientId=fake-client-1）
+[fake-host] 收到 open 帧（endpoint=$events），2000ms 后下发一条审批
+```
+
+设备侧（`adb logcat -s DshRelay`）：
+
+```
+I DshRelay: 启动中继服务（配置的主机：http://127.0.0.1:19400）
+I DshRelay: 连接中：ws://127.0.0.1:19400/mobile-gateway/remote.mux（令牌走 Authorization 头，不进 URL）
+I DshRelay: WS 已建立，发送 open 帧（endpoint=$events）
+I DshRelay: 事件流就绪，clientId=fake-client-1（应答必须带上它）
+```
+
+### 2. 通知：两个动作按钮，HIGH 重要性
+
+```
+I DshRelay: 已弹审批通知 eventId=ev-e2e-1 isApproval=true 按钮数=2
+```
+
+```
+NotificationRecord(pkg=io.github.dshmobile.app id=22816 importance=4
+  Notification(channel=dsh-approvals category=call actions=2))
+  [0] "允许一次" -> PendingIntent{... broadcastIntent ...}
+  [1] "拒绝"     -> PendingIntent{... broadcastIntent ...}
+  android.title=String (工具调用需要批准)
+```
+
+截图：`.scratch/relay-final.png`（通知标题「工具调用需要批准」、正文为假主机下发的理由、
+「允许一次 / 拒绝」两个按钮，下方是常驻的「DSH 遥控 · 有审批待处理」）。
+
+### 3. 点击 → 回执 → 假主机校验通过
+
+```
+I DshRelay: 应答投递 eventId=ev-e2e-1 allow=true choice=- → ok=true status=200
+I DshRelay: 应答已送达，通知已撤回（该事件不会再重复弹）
+```
+
+```
+[fake-host] 收到应答： {"kind":"result","value":"allowed-once"}
+
+✓ 端到端通过：审批到达手机 → 通知 → 用户点选 → 回执主机
+  outcome.value = "allowed-once"（词表内，未被归一化）
+  eventId = ev-e2e-1，clientId = fake-client-1
+```
+
+假主机的校验**不是"收到请求就算过"**，它逐条断言：
+`method` 必须是斜杠形式 `$events/result`、`payload.args` 必须恰好是
+`{clientId,eventId,outcome}`、`outcome.kind === "result"`、
+且 `outcome.value` 必须是**词表内的裸字符串**。词表外的值会被真实主机
+**静默归一化成 `unavailable`（= 拒绝）** —— 这正是本项目最贵的一类 bug。
+
+### 4. 令牌失效不无限重试（401 分流）
+
+把假主机的令牌换成另一个值再跑：
+
+```
+[fake-host] WS 鉴权失败（来源：Authorization 头）→ 401      ← 60 秒内仅 1 次
+```
+
+```
+I DshRelay: 断开：httpCode=401 reason=Expected HTTP 101 response but was '401 Unauthorized'
+I DshRelay: 令牌失效（HTTP 401）→ **停止重连**并要求重新配对（不重试：重试一万次也不会成功）
+I DshRelay: 通知是否可用=true（false 表示审批到了手机也不会显示）
+I DshRelay: 已发出「需要重新配对」通知 id=17492
+```
+
+```
+NotificationRecord(pkg=io.github.dshmobile.app id=17492 ...)
+  android.title=String (需要重新配对)
+```
+
+**对照**：如果这里按"断线就退避重试"处理，配上常驻服务就是**无限重试死循环** ——
+用户永远等不到东西，也不知道为什么。
+
+## 复现命令
+
+```bash
+node packages/dsh-mobile-gateway/scripts/fake-host.mjs &     # 监听 19400
+adb reverse tcp:19400 tcp:19400
+adb shell am force-stop io.github.dshmobile.app              # 必须 force-stop：
+                                                             # 否则 am start 复用旧实例，extra 送不到
+adb shell am start -n io.github.dshmobile.app/.MainActivity \
+  --es dsh_relay_base_url http://127.0.0.1:19400 --es dsh_relay_token e2e-token-1
+adb logcat -s DshRelay
+```
+
+> `--es` 预置凭据**仅在 debug 构建生效**（release 忽略），否则任何应用都能改写中继目标。
+
+## 本次仍然未验证的
+
+- **真机长期后台存活**：模拟器上已验证切后台与重连；厂商 ROM 的省电冻结未测。
+- **锁屏界面上的按钮**：本次在通知栏验证；锁屏样式下的按钮呈现依赖 ROM。
+- **API 34 `dataSync` 前台服务的每日时长上限**（平台约束，超时会停服务）。
+- **Electron 桌面通知的运行时路径**：只有 API 级契约测试（26 条），无交互桌面可跑。
