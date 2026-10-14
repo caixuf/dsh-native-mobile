@@ -406,8 +406,24 @@ export class DshConnection {
     this.respondFailureListeners.forEach((fn) => fn(info));
   }
 
+  /**
+   * fetch 的实现来源。
+   *
+   * 🔴 **必须 bind(globalThis)**，否则浏览器里会炸：
+   * `Failed to execute 'fetch' on 'Window': Illegal invocation`。
+   *
+   * 原因：`fetch` 是 `window` 上的方法，调用时 `this` 必须是 `window`。
+   * 写成 `return this.deps.fetch ?? fetch;` 之后，调用点变成 `this.fetchImpl(...)`，
+   * `this` 就成了 DshConnection —— 浏览器直接拒绝执行。
+   *
+   * 这个 bug 用"注入假 fetch"的单测**永远抓不到**（假函数不检查接收者），
+   * 只有在真机的 WebView 里才会暴露：整条网页 RPC 全废、会话列表恒空、
+   * 而原生中继照常工作（所以"审批通知"看起来还是好的）。
+   * 回归测试：scripts/test-connection-fetch-binding.mjs（模拟浏览器的接收者检查）。
+   */
   private get fetchImpl(): typeof fetch {
-    return this.deps.fetch ?? fetch;
+    if (this.deps.fetch) return this.deps.fetch;
+    return ((...args: Parameters<typeof fetch>) => globalThis.fetch(...args)) as typeof fetch;
   }
 
   private setTimer(fn: () => void, ms: number): unknown {
