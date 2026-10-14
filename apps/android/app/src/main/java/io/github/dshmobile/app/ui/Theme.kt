@@ -473,6 +473,7 @@ fun PulseDot(
     modifier: Modifier = Modifier,
     color: Color = DshTheme.online,
     size: Dp = 8.dp,
+    pulseScale: Float = 1.9f,
     pulsing: Boolean = true,
 ) {
     if (!pulsing) {
@@ -487,7 +488,7 @@ fun PulseDot(
     val infiniteTransition = rememberInfiniteTransition(label = "pulse")
     val scale by infiniteTransition.animateFloat(
         initialValue = 1f,
-        targetValue = 1.9f,
+        targetValue = pulseScale,
         animationSpec = infiniteRepeatable(
             animation = tween(1500, easing = FastOutSlowInEasing),
             repeatMode = RepeatMode.Restart,

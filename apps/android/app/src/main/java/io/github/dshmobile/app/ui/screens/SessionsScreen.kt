@@ -7,6 +7,8 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.background
 import io.github.dshmobile.app.ui.AmbientWallpaper
+import io.github.dshmobile.app.ui.GlassCard
+import io.github.dshmobile.app.ui.PulseDot
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -427,81 +429,107 @@ private fun RemoteHostDashboardCard(
     val hostName = (linkState as? LinkState.Ready)?.hostName?.takeIf { it.isNotBlank() } ?: "我的电脑"
     val isOnline = linkState.isHealthy()
 
-    Column(
-        Modifier
-            .fillMaxWidth()
-            .background(MaterialTheme.colorScheme.surface, MaterialTheme.shapes.medium)
-            .border(1.dp, MaterialTheme.colorScheme.outlineVariant, MaterialTheme.shapes.medium)
-            .padding(horizontal = DshTheme.m.lg, vertical = DshTheme.m.md),
+    GlassCard(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(16.dp),
+        backgroundColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.85f),
+        borderColor = if (isOnline) MaterialTheme.colorScheme.primary.copy(alpha = 0.35f)
+                     else MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f),
     ) {
-        Row(
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.SpaceBetween,
-            modifier = Modifier.fillMaxWidth(),
+        Column(
+            Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 14.dp, vertical = 12.dp),
         ) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Box(
-                    Modifier
-                        .size(34.dp)
-                        .background(
-                            if (isOnline) MaterialTheme.colorScheme.primaryContainer
-                            else MaterialTheme.colorScheme.surfaceContainerHighest,
-                            RoundedCornerShape(8.dp),
-                        ),
-                    contentAlignment = Alignment.Center,
-                ) {
-                    DshIcon(
-                        DshIcons.Desktop,
-                        contentDescription = null,
-                        tint = if (isOnline) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
-                        size = 18.dp,
-                    )
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween,
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Box(
+                        Modifier
+                            .size(36.dp)
+                            .background(
+                                if (isOnline) MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.8f)
+                                else MaterialTheme.colorScheme.surfaceContainerHighest,
+                                RoundedCornerShape(10.dp),
+                            ),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        DshIcon(
+                            DshIcons.Desktop,
+                            contentDescription = null,
+                            tint = if (isOnline) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                            size = 19.dp,
+                        )
+                    }
+                    Spacer(Modifier.width(10.dp))
+                    Column {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text(
+                                text = hostName,
+                                style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.SemiBold,
+                                color = MaterialTheme.colorScheme.onSurface,
+                            )
+                            Spacer(Modifier.width(6.dp))
+                            PulseDot(
+                                color = if (isOnline) DshTheme.online else MaterialTheme.colorScheme.outline,
+                                size = 6.dp,
+                                pulseScale = if (isOnline) 2.0f else 1.0f,
+                            )
+                        }
+                        Text(
+                            text = if (isOnline) "远程守护进程在线 · 实时协同中枢" else "未连接到电脑守护进程",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = if (isOnline) DshTheme.online else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
+                        )
+                    }
                 }
-                Spacer(Modifier.width(DshTheme.m.md))
-                Column {
+
+                Surface(
+                    shape = RoundedCornerShape(20.dp),
+                    color = if (isOnline) DshTheme.online.copy(alpha = 0.12f) else MaterialTheme.colorScheme.surfaceContainerHighest,
+                    border = androidx.compose.foundation.BorderStroke(1.dp, if (isOnline) DshTheme.online.copy(alpha = 0.3f) else MaterialTheme.colorScheme.outlineVariant),
+                ) {
                     Text(
-                        text = hostName,
-                        style = MaterialTheme.typography.titleSmall,
-                        fontWeight = FontWeight.SemiBold,
-                        color = MaterialTheme.colorScheme.onSurface,
-                    )
-                    Text(
-                        text = if (isOnline) "远程守护进程在线 · 手机实时遥控" else "未连接到电脑守护进程",
+                        text = if (isOnline) "活跃" else "离线",
                         style = MaterialTheme.typography.labelSmall,
+                        fontWeight = FontWeight.Medium,
                         color = if (isOnline) DshTheme.online else MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
                     )
                 }
             }
 
-            Box(
-                Modifier
-                    .size(8.dp)
-                    .background(if (isOnline) DshTheme.online else MaterialTheme.colorScheme.outline, CircleShape),
-            )
-        }
+            Spacer(Modifier.height(12.dp))
 
-        Spacer(Modifier.height(DshTheme.m.md))
-
-        Row(
-            Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(DshTheme.m.sm),
-        ) {
-            DashboardPill(
-                icon = DshIcons.Folder,
-                label = "$workspaceCount 个工作区",
-                modifier = Modifier.weight(1f),
-            )
-            DashboardPill(
-                icon = DshIcons.ChatBubble,
-                label = "$sessionCount 个会话",
-                modifier = Modifier.weight(1f),
-            )
-            DashboardPill(
-                icon = DshIcons.Cpu,
-                label = if (runningCount > 0) "$runningCount 任务运行中" else "就绪待命",
-                highlight = runningCount > 0,
-                modifier = Modifier.weight(1.1f),
-            )
+            // 3 Bento Metric Capsules
+            Row(
+                Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                DashboardPill(
+                    icon = DshIcons.Folder,
+                    count = "$workspaceCount",
+                    label = "工作区",
+                    modifier = Modifier.weight(1f),
+                )
+                DashboardPill(
+                    icon = DshIcons.ChatBubble,
+                    count = "$sessionCount",
+                    label = "会话",
+                    modifier = Modifier.weight(1f),
+                )
+                DashboardPill(
+                    icon = DshIcons.Cpu,
+                    count = if (runningCount > 0) "$runningCount" else "0",
+                    label = if (runningCount > 0) "任务运行中" else "待命中",
+                    highlight = runningCount > 0,
+                    modifier = Modifier.weight(1.15f),
+                )
+            }
         }
     }
 }
@@ -509,36 +537,49 @@ private fun RemoteHostDashboardCard(
 @Composable
 private fun DashboardPill(
     icon: androidx.compose.ui.graphics.vector.ImageVector,
+    count: String,
     label: String,
     highlight: Boolean = false,
     modifier: Modifier = Modifier,
 ) {
-    Row(
-        modifier = modifier
-            .background(
-                if (highlight) MaterialTheme.colorScheme.primaryContainer
-                else MaterialTheme.colorScheme.surfaceContainerHigh,
-                RoundedCornerShape(6.dp),
-            )
-            .padding(horizontal = 6.dp, vertical = 4.dp),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.Center,
+    Surface(
+        modifier = modifier,
+        shape = RoundedCornerShape(10.dp),
+        color = if (highlight) MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.6f)
+                else MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.65f),
+        border = androidx.compose.foundation.BorderStroke(
+            1.dp,
+            if (highlight) MaterialTheme.colorScheme.primary.copy(alpha = 0.4f)
+            else MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.45f),
+        ),
     ) {
-        DshIcon(
-            imageVector = icon,
-            contentDescription = null,
-            tint = if (highlight) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
-            size = 12.dp,
-        )
-        Spacer(Modifier.width(4.dp))
-        Text(
-            text = label,
-            style = MaterialTheme.typography.labelSmall,
-            color = if (highlight) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurfaceVariant,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-            fontSize = 11.sp,
-        )
+        Row(
+            Modifier.padding(horizontal = 8.dp, vertical = 7.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            DshIcon(
+                imageVector = icon,
+                contentDescription = null,
+                tint = if (highlight) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.size(14.dp),
+            )
+            Spacer(Modifier.width(6.dp))
+            Column {
+                Text(
+                    text = count,
+                    style = MaterialTheme.typography.labelMedium,
+                    fontWeight = FontWeight.Bold,
+                    color = if (highlight) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
+                    maxLines = 1,
+                )
+                Text(
+                    text = label,
+                    style = MaterialTheme.typography.labelSmall.copy(fontSize = 9.5.sp),
+                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.75f),
+                    maxLines = 1,
+                )
+            }
+        }
     }
 }
 
@@ -843,51 +884,71 @@ private fun SubagentHeader(count: Int) {
  */
 @Composable
 private fun SessionCard(row: SessionRow, onClick: () -> Unit) {
-    Column(
-        Modifier
+    Surface(
+        modifier = Modifier
             .fillMaxWidth()
-            .background(MaterialTheme.colorScheme.surface, MaterialTheme.shapes.medium)
-            .clickable(onClick = onClick)
-            .padding(horizontal = DshTheme.m.lg, vertical = DshTheme.m.md),
+            .clickable(onClick = onClick),
+        shape = RoundedCornerShape(14.dp),
+        color = MaterialTheme.colorScheme.surface,
+        border = androidx.compose.foundation.BorderStroke(
+            1.dp,
+            if (row.running) MaterialTheme.colorScheme.primary.copy(alpha = 0.5f)
+            else MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.55f),
+        ),
     ) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Text(
-                text = row.title.ifBlank { "（无标题会话）" },
-                style = MaterialTheme.typography.bodyMedium,
-                fontWeight = FontWeight.Medium,
-                color = MaterialTheme.colorScheme.onSurface,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.weight(1f),
-            )
-            Spacer(Modifier.width(DshTheme.m.sm))
-            Text(
-                text = relativeTime(row.updatedAt),
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                maxLines = 1,
-            )
-        }
-
-        // 第二行：预览文本（判断"是不是要找的会话"最有效的信息）
-        // 之前只有标题，导致列表里全是无法区分的纯标题行 —— 这是"不像成品"的主因之一。
-        val preview = row.preview.trim()
-        if (preview.isNotBlank()) {
-            Spacer(Modifier.height(DshTheme.m.xs))
-            Text(
-                text = preview,
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                maxLines = 2,
-                overflow = TextOverflow.Ellipsis,
-            )
-        }
-
-        if (row.running) {
-            Spacer(Modifier.height(DshTheme.m.sm))
+        Column(
+            Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 14.dp, vertical = 11.dp),
+        ) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                MetaTag("运行中", tint = MaterialTheme.colorScheme.primary,
-                    background = MaterialTheme.colorScheme.primaryContainer)
+                if (row.running) {
+                    PulseDot(
+                        color = MaterialTheme.colorScheme.primary,
+                        size = 6.dp,
+                        pulseScale = 2.0f,
+                    )
+                    Spacer(Modifier.width(6.dp))
+                }
+                Text(
+                    text = row.title.ifBlank { "（无标题会话）" },
+                    style = MaterialTheme.typography.bodyMedium,
+                    fontWeight = FontWeight.SemiBold,
+                    color = MaterialTheme.colorScheme.onSurface,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f),
+                )
+                Spacer(Modifier.width(8.dp))
+                Text(
+                    text = relativeTime(row.updatedAt),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
+                    maxLines = 1,
+                )
+            }
+
+            val preview = row.preview.trim()
+            if (preview.isNotBlank()) {
+                Spacer(Modifier.height(5.dp))
+                Text(
+                    text = preview,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.85f),
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+
+            if (row.running) {
+                Spacer(Modifier.height(8.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    MetaTag(
+                        text = "● 任务运行中",
+                        tint = MaterialTheme.colorScheme.primary,
+                        background = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.7f),
+                    )
+                }
             }
         }
     }

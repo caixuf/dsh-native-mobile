@@ -283,9 +283,9 @@ fun AppDrawer(
             HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f))
             Spacer(Modifier.height(14.dp))
 
-            // ── 4. 底部黑曜石胶囊新建按键（对齐 MiniMax 底部突出按钮） ──
+            // ── 4. 底部高亮胶囊新建按键 ──
             Surface(
-                color = Color(0xFF171717),
+                color = MaterialTheme.colorScheme.primary,
                 shape = RoundedCornerShape(14.dp),
                 modifier = Modifier
                     .fillMaxWidth()
@@ -301,14 +301,14 @@ fun AppDrawer(
                         DshIcons.Add,
                         contentDescription = null,
                         size = 18.dp,
-                        tint = Color.White,
+                        tint = MaterialTheme.colorScheme.onPrimary,
                     )
                     Spacer(Modifier.width(8.dp))
                     Text(
                         text = "新建会话",
                         style = MaterialTheme.typography.titleSmall,
                         fontWeight = FontWeight.SemiBold,
-                        color = Color.White,
+                        color = MaterialTheme.colorScheme.onPrimary,
                     )
                 }
             }
