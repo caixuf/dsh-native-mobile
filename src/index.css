@@ -1,4 +1,12 @@
-@import "tailwindcss";
+/* 🔴 扫描范围必须显式声明，不能靠 Tailwind 的自动探测。
+   实测（2026-10-16）：往 android/app/src/main/assets/web/ 放一个含 `bg-fuchsia-700`
+   的探针文件，重新构建后该工具类就出现在产物 CSS 里 —— 因为那个目录里存的是**上一轮
+   构建产物**，且它被 git 跟踪、不在 .gitignore 里，于是自动探测会把旧 bundle 当源码扫。
+   后果：产物依赖构建历史、CSS 越滚越大（a83f4e6 提交的 76862 字节里就混着旧版
+   composer 的死类名），且构建不可复现。source(none) + 显式 @source 把它收敛成确定性的。 */
+@import "tailwindcss" source(none);
+@source "../src";
+@source "../index.html";
 
 @layer base {
   :root {
@@ -65,6 +73,24 @@
   }
   ::-webkit-scrollbar-thumb:hover {
     background: rgba(255, 255, 255, 0.24);
+  }
+}
+
+@layer utilities {
+  /* 横向滚动容器：隐藏滚动条。
+     🔴 这个类在 `ModelPicker` / `SessionStatsBar` 里**用了但从未定义**（死类），
+     所以「隐藏滚动条」从来没生效 —— 实测（2026-10-16，统计条）容器下方会露出一条
+     5px 的灰色 overlay 滚动条，在 32px 高的胶囊里看着像一条脏线。
+     Firefox 走 `scrollbar-width`，Chromium/WebView 走 `::-webkit-scrollbar`
+     （选后者是为了压过 base 层里那条全局 `::-webkit-scrollbar` 规则）。 */
+  .no-scrollbar {
+    scrollbar-width: none;
+    -ms-overflow-style: none;
+  }
+  .no-scrollbar::-webkit-scrollbar {
+    display: none;
+    width: 0;
+    height: 0;
   }
 }
 
