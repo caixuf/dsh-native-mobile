@@ -21,6 +21,7 @@ import {
   isDialogEvent,
   isToolEvent,
   pageRequest,
+  pickRicherLines,
   recordsToLines,
   sessionAddress,
 } from '../src/lib/session-page.ts';
@@ -342,6 +343,18 @@ check('宿主注入的上下文不伪装成用户气泡（真机 Android 17 抓�
   // 助手的长回答**不能**被误判（那会把用户自己的回答藏起来）
   const longAsst = eventToLine({ type: 'assistant/message', seq: 6, data: { message: { content: [{ type: 'text', text: 'y'.repeat(2000) }] } } });
   eq(longAsst?.kind, 'assistant/message', '助手长回答不受影响');
+});
+
+check('快照与已渲染历史择多保留（超大会话空白的真因）', () => {
+  const prev = [{ k: 1 }, { k: 2 }, { k: 3 }];
+  // 🔴 空快照绝不清空界面：follow 的快照在超大会话里是窗口化的，可能 records 为空
+  eq(pickRicherLines(prev, []), prev, '空快照必须保留已渲染的历史');
+  eq(pickRicherLines([], prev), prev, '没有历史时用快照');
+  eq(pickRicherLines(prev, [{ k: 1 }]), prev, '已有更长历史时不被削短');
+  eq(pickRicherLines([{ k: 1 }], prev), prev, '快照更长时用快照');
+  eq(pickRicherLines([], []), [], '都空就空');
+  // 身份不变（避免无谓重渲染）
+  eq(pickRicherLines(prev, []) === prev, true);
 });
 
 // ── 汇总 ────────────────────────────────────────────────────────────────────

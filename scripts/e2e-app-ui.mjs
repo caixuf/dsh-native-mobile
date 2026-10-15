@@ -2031,53 +2031,167 @@ if (!b) throw new Error('没有发送按钮'); clickEl(b); return true;`);
   return out;
 }
 
+// ── 场景：底部状态栏（轮/步/tok-s、token 与缓存命中、上下文占用）────────────
+async function scenarioStats() {
+  const out = {};
+
+  await step('准备：真网关主机 + 打开一个真的跑过很多轮的真实会话', async () => {
+    await attach({ fresh: true });
+    await ensurePairedRealHost();
+    const list = await hostRpc('session/list', { _request: {} });
+    // hostRpc 返回的是**已解包**的 value（本脚本其他场景都这么用）；
+    // 兼容没解包的形状，免得又一次 count=0。
+    const rows = (list && Array.isArray(list.items) ? list.items : (list && list.value && list.value.items) || []);
+    const items = rows.filter((s) => s.origin !== 'subagent' && !s.blank).sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
+    expect(items.length > 0, '这台主机没有可用的真实会话', { count: items.length });
+    const target = items[0];
+    out.session = { sessionId: target.sessionId, title: target.projections?.values?.title };
+
+    await reload();
+    await waitReadyWithSessions({ expectCards: true, timeout: 60000 });
+    await expandAllGroups();
+    await sleep(500);
+    // 卡片可能在「显示更多」之外，先点开全部再找
+    const clicked = await pageFn(`const want = ${JSON.stringify(`打开会话 ${out.session.title}`)};
+const card = qs('[data-session-id="' + ${JSON.stringify(out.session.sessionId)} + '"]');
+if (!card) return 'no-card';
+const b = card.querySelector('button[aria-label^="打开会话 "]');
+if (!b) return 'no-open-btn';
+clickEl(b); return 'clicked';`);
+    expect(clicked === 'clicked', `没能打开目标会话的卡片：${clicked}`, out.session);
+    evidence({ target: out.session });
+    return out.session;
+  });
+
+  await step('状态栏读数必须与宿主 session/projections 的真值一致', async () => {
+    // 判定基准取**宿主**（真主机实测：session/projections 的 args 是扁平的 {request:{sessionId}}，
+    // 注意 {request:{address:{...}}} 会被边界校验拒；session/list 里没有这些字段）
+    const proj = await hostRpc('session/projections', { request: { sessionId: out.session.sessionId } });
+    const v = (proj && proj.values ? proj.values : (proj && proj.value && proj.value.values)) || {};
+    const s = v.sessionStats || {};
+    const u = v.tokenUsage || {};
+    const c = v.contextPressure || {};
+    const billed = (u.uncachedInputTokens || 0) + (u.cacheReadTokens || 0) + (u.cacheWriteTokens || 0);
+    const truth = {
+      turns: s.turns,
+      steps: s.steps,
+      tps: s.decodeMs ? Math.round(s.decodeTokens / (s.decodeMs / 1000)) : null,
+      hit: billed ? Math.round(((u.cacheReadTokens || 0) / billed) * 1000) / 10 : null,
+      ctx: c.contextWindow ? Math.round(((c.pressureTokens || 0) / c.contextWindow) * 1000) / 10 : null,
+      raw: { sessionStats: s, tokenUsage: u, contextPressure: c },
+    };
+
+    const bar = await until(
+      '状态栏出现',
+      `(function(){ const el = document.querySelector('[data-testid="session-stats"]'); return { ok: !!el, text: el ? (el.innerText||'').replace(/\\s+/g,' ').trim() : null }; })()`,
+      { timeout: 20000, interval: 600 },
+    );
+    evidence({ truth, bar: bar.text });
+
+    expect(bar.text && bar.text.length > 0, '状态栏没渲染出任何读数', bar);
+    if (truth.turns) {
+      expect(
+        bar.text.includes(`${truth.turns} 轮 ${truth.steps} 步`),
+        `轮/步对不上：宿主 ${truth.turns} 轮 ${truth.steps} 步，界面「${bar.text}」`,
+        { truth, bar: bar.text },
+      );
+    }
+    if (truth.tps) {
+      expect(
+        bar.text.includes(`${truth.tps} tok/s`),
+        `tok/s 对不上：宿主 ${truth.tps} tok/s，界面「${bar.text}」`,
+        { truth, bar: bar.text },
+      );
+    }
+    if (truth.hit) {
+      expect(
+        bar.text.includes(`缓存命中 ${truth.hit}%`),
+        `缓存命中率对不上：宿主 ${truth.hit}%，界面「${bar.text}」`,
+        { truth, bar: bar.text },
+      );
+    }
+    if (truth.ctx) {
+      expect(
+        bar.text.includes(`${truth.ctx}%`),
+        `上下文占用对不上：宿主 ${truth.ctx}%，界面「${bar.text}」`,
+        { truth, bar: bar.text },
+      );
+    }
+    out.bar = bar.text;
+    return bar.text;
+  });
+
+  await step('点开明细：模型耗时 / 工具耗时 / 首字延迟 / 缓存桶 / 上下文构成', async () => {
+    await pageFn(`const b = qs('[data-testid="session-stats"] button'); if (!b) throw new Error('状态栏没有可点的按钮'); clickEl(b); return true;`);
+    const detail = await until(
+      '明细展开',
+      `(function(){ const el = document.querySelector('[data-testid="session-stats-detail"]'); return { ok: !!el, text: el ? (el.innerText||'').replace(/\\s+/g,' ').trim() : null }; })()`,
+      { timeout: 8000, interval: 400 },
+    );
+    evidence(detail);
+    for (const row of ['模型耗时', '工具耗时', '首字延迟', '缓存命中', '上下文']) {
+      expect((detail.text || '').includes(row), `明细里没有「${row}」：${truncate(detail.text || '', 300)}`, detail);
+    }
+    return detail;
+  });
+
+  return out;
+}
+
 // ── 场景：T7 聊天可读性（超长消息折叠）──────────────────────────────────────
 async function scenarioReadability() {
   const out = {};
 
-  const target = await step('找一个含**长助手消息**的真实会话（判定基准取宿主记录）', async () => {
+  const target = await step('自己造一条长消息当折叠样本（不依赖宿主里恰好存在长会话）', async () => {
     await attach({ fresh: true });
     await ensurePairedRealHost();
+    await reload();
+    await waitReadyWithSessions({ expectCards: true, timeout: 60000 });
+
+    await pageFn(`const b = byText('button', '新建会话'); if (!b) throw new Error('找不到「新建会话」'); clickEl(b); return true;`);
+    await until('新建会话对话框', `(function(){ return { ok: bodyText().indexOf('新建遥控会话') >= 0 }; })()`, { timeout: 10000 });
+    await pageFn(`const b = byText('button', '创建会话'); if (!b) throw new Error('找不到「创建会话」'); clickEl(b); return true;`);
+    await until('进入空会话聊天页', `(function(){ const c = chatInfo(); return { ok: c.onChat, info: c }; })()`, { timeout: 25000 });
+
+    // 发一条**必然产生长回复**的指令（要 agent 原样吐出 package.json）
+    const PROMPT = '请把 package.json 的完整内容原样输出到一条 markdown 代码块里，不要省略任何字段。';
+    await pageFn(`const ta = document.querySelector('textarea[aria-label="输入遥控指令"]');
+if (!ta) throw new Error('没有输入框'); setNativeValue(ta, ${JSON.stringify(PROMPT)}); return true;`);
+    await pageFn(`const b = document.querySelector('button[aria-label="发送"]'); if (!b) throw new Error('没有发送按钮'); clickEl(b); return true;`);
+
     const list = await hostRpc('session/list', { _request: {} });
-    const items = (list && list.items ? list.items : [])
-      .filter((s) => s.origin !== 'subagent')
-      .sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0))
-      .slice(0, 12);
-    // 🔴 样本必须是**助手**的长消息，不能是用户消息：
-    // 用户那条超长文本多半是宿主注入的上下文（运行时上下文 / 记忆快照），
-    // 现在渲染成"注记"而不是折叠消息 —— 拿它当样本，这个场景就永远测不到折叠本身。
-    let found = null;
-    for (const s of items) {
-      let recs = [];
-      try {
-        recs = await hostPageRecords(s.sessionId);
-      } catch {
-        continue;
+    const rows = (list && Array.isArray(list.items) ? list.items : (list && list.value && list.value.items) || []);
+    const sorted = rows.sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
+    const mine = sorted.find((s) => s.blank) || sorted[0];
+
+    // 等它真的产出一条 >800 字的助手消息（判定基准取宿主记录）
+    const longReply = await (async () => {
+      const deadline = Date.now() + 90000;
+      while (Date.now() < deadline) {
+        try {
+          const recs = await hostPageRecords(mine.sessionId);
+          const texts = recs
+            .filter((r) => r.event?.type === 'assistant/message')
+            .map((r) =>
+              (Array.isArray(r.event?.data?.message?.content) ? r.event.data.message.content : [])
+                .filter((p) => p && p.type === 'text' && typeof p.text === 'string')
+                .map((p) => p.text)
+                .join('\n'),
+            );
+          const best = texts.sort((a, b) => b.length - a.length)[0] || '';
+          if (best.length > 800) return { chars: best.length, sessionId: mine.sessionId };
+        } catch {
+          /* 继续等 */
+        }
+        await sleep(2500);
       }
-      let longest = '';
-      for (const r of recs) {
-        if (r.event?.type !== 'assistant/message') continue;
-        const c = r.event?.data?.message?.content;
-        if (!Array.isArray(c)) continue;
-        const text = c
-          .filter((p) => p && p.type === 'text' && typeof p.text === 'string')
-          .map((p) => p.text)
-          .join('\n');
-        if (text.length > longest.length) longest = text;
-      }
-      if (longest.length > 600) {
-        found = { sessionId: s.sessionId, title: s.projections?.values?.title, chars: longest.length };
-        break;
-      }
-    }
-    expect(
-      !!found,
-      `最近 ${items.length} 个会话里找不到超过 600 字的**助手**消息，无法验证折叠（需要一条长消息做样本）`,
-      { scanned: items.length, titles: items.map((s) => s.projections?.values?.title).slice(0, 6) },
-    );
-    evidence(found);
-    out.target = found;
-    return found;
+      return null;
+    })();
+
+    expect(longReply, '90 秒内没等到超过 800 字的助手回复，样本造不出来', { sessionId: mine.sessionId });
+    evidence(longReply);
+    out.target = longReply;
+    return longReply;
   });
 
   await step('打开该会话 → 超长消息**默认折叠**（data-collapsed=true，全文不进 DOM）', async () => {
@@ -2314,6 +2428,8 @@ async function runScenario(name, ctx) {
       return scenarioReadability();
     case 'live':
       return scenarioLive();
+    case 'stats':
+      return scenarioStats();
     case 'bad-token':
       return scenarioBadToken();
     case 'approval':
@@ -2332,7 +2448,7 @@ async function main() {
   ADB = adbInfo.bin;
   note(`adb = ${ADB} (${adbInfo.version})`);
 
-  const list = SCENARIO === 'all' ? ['chain', 'collapse', 'archive', 'queue', 'session-ops', 'readability', 'live', 'bad-token', 'approval'] : [SCENARIO];
+  const list = SCENARIO === 'all' ? ['chain', 'collapse', 'archive', 'queue', 'session-ops', 'readability', 'live', 'stats', 'bad-token', 'approval'] : [SCENARIO];
   const results = [];
   let failed = null;
 

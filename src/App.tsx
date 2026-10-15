@@ -11,12 +11,15 @@ import {
   eventToLines,
   eventsToLines,
   fetchChatPage,
+  pickRicherLines,
   recordsToLines,
   sessionAddress,
 } from './lib/session-page';
 import type { RawSessionEvent } from './lib/session-page';
 import { applyActivityEvent, buildActivity, emptyActivity } from './lib/session-activity';
 import type { ActivityState } from './lib/session-activity';
+import { buildReadouts, pickProjections } from './lib/session-stats';
+import type { SessionProjections } from './lib/session-stats';
 import {
   applySessionRename,
   buildForkedSession,
@@ -320,10 +323,11 @@ export const App: React.FC = () => {
       if (typeof sid === 'string' && sid === currentSessionRef.current?.sessionId) {
         const next = runningNow === true;
         setRunning(next);
+        // 轮次结束：统计数字这时才最终（decodeTokens/工具耗时都在收尾时结算）
         if (!next) {
-          // 收尾：流里可能还有没到的尾部事件，补一次全量
           const current = currentSessionRef.current;
           if (current) void loadChatPage(current);
+          void loadProjections(sid);
         }
       }
     }
@@ -415,8 +419,11 @@ export const App: React.FC = () => {
       // 映射规则（只渲染对话事件 / 跳过 reasoning / user 走 data.content）统一在
       // lib/session-page.ts 里，实时流与历史翻页**共用同一套**，避免两条路漂移。
       const lines = recordsToLines(records) as ChatLine[];
-
-      setChatLines(lines);
+      // 同样走"择多保留"：若 follow 快照已经铺了更多内容，别被这次翻页削短。
+      const kept = pickRicherLines(chatLinesRef.current, lines);
+      lineKeysRef.current = new Set(kept.map((l) => l.key));
+      chatLinesRef.current = kept;
+      setChatLines(kept);
       setChatError(null);
     } catch (err) {
       // 🔴 F4：不能再只 console.warn。
@@ -515,9 +522,15 @@ export const App: React.FC = () => {
     setRoute('chat');
     // 先清空：否则上一会话的消息会短暂串台（真机实测 2–3 秒，F5）
     setChatLines([]);
+    // ⚠️ 镜像也必须一起重置 —— "择多保留"只在**同一会话内**成立，
+    // 带着上个会话的行去比较会让新会话一进来就显示旧内容（F5 回归）。
+    chatLinesRef.current = [];
+    lineKeysRef.current = new Set();
     setChatError(null);
     openFollow(session); // 实时流先行：它推的 snapshot 会把历史铺上
     loadChatPage(session); // 兜底：流没起来时至少还有历史
+    setProjections({}); // 换会话先清空，别把上一轮的统计挂在新会话头上
+    void loadProjections(session.sessionId);
   };
 
   useEffect(() => stopTurnWatch, []);
@@ -535,6 +548,8 @@ export const App: React.FC = () => {
    */
   const followRef = useRef<{ streamId: string; close: () => void } | null>(null);
   const lineKeysRef = useRef<Set<string>>(new Set());
+  /** chatLines 的同步镜像：follow 快照与 loadChatPage 会并发写，需要比较"谁更全"。 */
+  const chatLinesRef = useRef<ChatLine[]>([]);
   /**
    * 过程状态（"在干什么 + 干了多久"）。
    * 用 ref 保存真值 + 一个 tick 强制重渲染：事件到达很频繁，
@@ -545,6 +560,30 @@ export const App: React.FC = () => {
   const toolStartRef = useRef<Map<string, number>>(new Map());
   const [activityTick, setActivityTick] = useState(0);
   const activity = activityTick >= 0 ? activityRef.current : emptyActivity();
+
+  /**
+   * 会话统计（轮/步/tok-s、token 与缓存命中、上下文占用）。
+   *
+   * 数据源是真主机实测钉死的 `session/projections`，args 是**扁平**的
+   * `{ request: { sessionId } }` —— 注意 `session/list` 里**没有**这些字段
+   * （只有 title / sessionListMetadata），别再去列表里找。
+   */
+  const [projections, setProjections] = useState<SessionProjections>({});
+  const readouts = buildReadouts(projections);
+
+  /** 取一次统计；任何一个环节失败都保持旧值（宁可少显示，不要显示错的）。 */
+  const loadProjections = async (sessionId: string) => {
+    const conn = connRef.current;
+    if (!conn) return;
+    try {
+      const res = (await conn.call('session.projections', {
+        request: { sessionId },
+      })) as { value?: unknown } | null;
+      setProjections(pickProjections(res?.value ?? res));
+    } catch {
+      /* 拿不到就保持上一次；UI 会因为字段缺失而隐藏对应读数 */
+    }
+  };
 
   const closeFollow = () => {
     followRef.current?.close();
@@ -571,12 +610,17 @@ export const App: React.FC = () => {
           if (type === 'snapshot') {
             const records = (value.records as RawSessionEvent[]) || [];
             const lines = eventsToLines(records) as ChatLine[];
-            lineKeysRef.current = new Set(lines.map((l) => l.key));
-            setChatLines(lines);
+            // 🔴 空快照绝不清空界面；两份都非空时保留更长的一份。
+            // 否则超大会话会出现"点开一片空白，但 session/page 明明 200 过"。
+            if (lines.length > 0) {
+              const kept = pickRicherLines(chatLinesRef.current, lines);
+              lineKeysRef.current = new Set(kept.map((l) => l.key));
+              chatLinesRef.current = kept;
+              setChatLines(kept);
+              activityRef.current = buildActivity(records);
+              setActivityTick((n) => n + 1);
+            }
             setChatError(null);
-            // 快照里也可能含正在跑的轮次 → 过程状态要从快照重建
-            activityRef.current = buildActivity(records);
-            setActivityTick((n) => n + 1);
             return;
           }
           if (type === 'event') {
@@ -1340,6 +1384,7 @@ export const App: React.FC = () => {
             onRetryQueued={handleRetryQueued}
             liveConnected={linkState.type === 'ready'}
             activity={activity}
+            readouts={readouts}
             onBack={() => setRoute('sessions')}
             onSend={handleSendPrompt}
             onCancel={handleCancelPrompt}

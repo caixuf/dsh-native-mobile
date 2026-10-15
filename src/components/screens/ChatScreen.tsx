@@ -22,6 +22,7 @@ import { DisclosureToolCard } from '../chat/DisclosureToolCard';
 import { TaskProgressCard } from '../chat/TaskProgressCard';
 import { VoiceRecordingOverlay } from '../chat/VoiceRecordingOverlay';
 import { QueuedMessagesBar } from '../chat/QueuedMessagesBar';
+import { SessionStatsBar } from '../chat/SessionStatsBar';
 import { CollapsibleMessage } from '../chat/CollapsibleMessage';
 import { clearDraft, loadDraft, loadExpandedKeys, saveDraft, saveExpandedKeys } from '../chat/draft-store';
 import { ConnectionDot } from '../common/ConnectionDot';
@@ -55,6 +56,11 @@ interface Props {
    * 缺省时 ChatScreen 只显示原有的"执行中"，不报错。
    */
   activity?: ActivityState | null;
+  /**
+   * 底部状态栏读数（轮/步/tok-s、token 与缓存命中、上下文占用）。
+   * 缺省或字段缺失时**整块隐藏**，绝不显示 0 冒充真实值。
+   */
+  readouts?: { activity: string | null; usage: string | null; context: string | null; detail: Array<{ label: string; value: string }> } | null;
   onBack: () => void;
   /**
    * 返回 `false` = **上层未接收**（发送失败）→ ChatScreen 必须保留草稿原文。
@@ -83,6 +89,7 @@ export const ChatScreen: React.FC<Props> = ({
   onRetryQueued,
   liveConnected,
   activity,
+  readouts,
   onBack,
   onSend,
   onCancel,
@@ -757,6 +764,16 @@ export const ChatScreen: React.FC<Props> = ({
               </button>
             </div>
           )}
+
+          {/* 底部状态栏：对齐桌面版 StatsPills —— 轮/步/速度、token 与缓存命中、上下文占用。
+              点一下展开明细（模型耗时、工具耗时、首字延迟、各 token 桶、上下文构成）。
+              任何一项拿不到就整项隐藏，绝不显示 0 冒充真实值。 */}
+          <SessionStatsBar
+            activity={(readouts && readouts.activity) || null}
+            usage={(readouts && readouts.usage) || null}
+            context={(readouts && readouts.context) || null}
+            detail={(readouts && readouts.detail) || []}
+          />
 
           {/* 待发队列（运行中补的话都在这里，可展开/删除/重试） */}
           <QueuedMessagesBar

@@ -281,6 +281,22 @@ export function recordsToLines(
   return out;
 }
 
+/**
+ * 快照与已渲染历史**择多保留**。
+ *
+ * 🔴 真机/大会话事故（2026-10-15）：`handleOpenSession` 同时发起 openFollow 与 loadChatPage，
+ * 两条路都会写 `chatLines`。当 follow 的 snapshot **先到且 records 为空/很少**时
+ * （超大会话的快照是窗口化的），它会把 loadChatPage 已经渲染出来的历史**整片清空** ——
+ * 表现是"点开会话一片空白，但 session/page 明明 200 过"。
+ *
+ * 规则：空快照**永远不清空界面**；两份都非空时保留更长的那份（信息更多的那份）。
+ */
+export function pickRicherLines<T>(prev: readonly T[], incoming: readonly T[]): T[] {
+  if (incoming.length === 0) return prev as T[];
+  if (prev.length > incoming.length) return prev as T[];
+  return incoming as T[];
+}
+
 /** 单个事件 → 可能的 0..2 行：`step/start` 会先产出一条**步骤分隔线**（GUI 的"第 N 步"）。 */
 export function eventToLines(
   event: RawSessionEvent | null | undefined,
