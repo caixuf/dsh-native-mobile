@@ -541,6 +541,8 @@ export const App: React.FC = () => {
    * 每次都 setState 一个新对象会让整棵时间线跟着重画，所以只推 tick。
    */
   const activityRef = useRef<ActivityState>(emptyActivity());
+  /** tool/call 的 callId → 发起时刻（用于给每个工具算独立耗时）。 */
+  const toolStartRef = useRef<Map<string, number>>(new Map());
   const [activityTick, setActivityTick] = useState(0);
   const activity = activityTick >= 0 ? activityRef.current : emptyActivity();
 
@@ -556,6 +558,7 @@ export const App: React.FC = () => {
     lineKeysRef.current = new Set();
     // 换会话要把过程状态清空，否则会显示上一轮残留的"第 N 步 / 分析中"
     activityRef.current = emptyActivity();
+    toolStartRef.current = new Map();
     setActivityTick((n) => n + 1);
     followRef.current = conn.openStream(
       'session/follow',
@@ -581,6 +584,24 @@ export const App: React.FC = () => {
             // 过程状态：每条事件都归约一次（分析中/调用工具/第 N 步…）
             activityRef.current = applyActivityEvent(activityRef.current, event);
             setActivityTick((n) => n + 1);
+
+            // 每个工具的独立耗时：tool/call 记下时刻，tool/result 算出毫秒并写到那一行。
+            // （只靠"当前工具"的时间算不出历史工具的耗时，必须按 callId 配对。）
+            const callId = event?.data?.callId;
+            const stamp = typeof event?.time === 'number' ? event.time : Date.now();
+            if (callId && event.type === 'tool/call') {
+              toolStartRef.current.set(callId, stamp);
+            } else if (callId && event.type === 'tool/result') {
+              const started = toolStartRef.current.get(callId);
+              if (started !== undefined) {
+                toolStartRef.current.delete(callId);
+                const ms = Math.max(0, stamp - started);
+                const lineKey = `line-${event.seq}`;
+                setChatLines((prev) =>
+                  prev.map((l) => (l.key === lineKey ? { ...l, toolMs: ms } : l)),
+                );
+              }
+            }
 
             // 一次事件可能产出多行（step/start → 步骤分隔线 + 该步的内容）
             const produced = eventToLines(event) as ChatLine[];

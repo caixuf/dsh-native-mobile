@@ -317,6 +317,33 @@ check('空/畸形输入不炸', () => {
   eq(eventsToLines([{}]).length, 0);
 });
 
+check('宿主注入的上下文不伪装成用户气泡（真机 Android 17 抓到的原文）', () => {
+  const injected = [
+    ['Current runtime context. This snapshot supersedes earlier runtime-context snapshots.\nCurrent DSH file policy: workspace-write.', '运行时上下文'],
+    ['MNEMON RUNTIME MEMORY SNAPSHOT\nRevision: abc123\nGit branch: main', '记忆快照'],
+    ['<system-reminder>\nA skill is a reusable set of task-specific instructions.', '技能清单'],
+    ['[MNEMON] Search Documents for substantial project records.', '记忆指令'],
+  ];
+  for (const [text, label] of injected) {
+    const line = eventToLine({ type: 'user/message', seq: 3, data: { content: [{ type: 'text', text }] } });
+    eq(line?.kind, 'user/injected', `应标成注入：${text.slice(0, 30)}`);
+    eq(line?.injectedLabel, label);
+    ok(line?.text === text, '原文必须保留（不丢弃）');
+  }
+  // 真人发的短消息不受影响
+  const normal = eventToLine({ type: 'user/message', seq: 4, data: { content: [{ type: 'text', text: '帮我跑一下测试' }] } });
+  eq(normal?.kind, 'user/message', '普通用户消息仍是 user/message');
+  eq(normal?.injectedLabel, undefined);
+  // 超长但无特征前缀 → 兜底也标注入（手机上 7000+ 字记忆快照属于这类）
+  const huge = 'x'.repeat(900);
+  const hugeLine = eventToLine({ type: 'user/message', seq: 5, data: { content: [{ type: 'text', text: huge }] } });
+  eq(hugeLine?.kind, 'user/injected');
+  eq(hugeLine?.injectedLabel, '上下文注入');
+  // 助手的长回答**不能**被误判（那会把用户自己的回答藏起来）
+  const longAsst = eventToLine({ type: 'assistant/message', seq: 6, data: { message: { content: [{ type: 'text', text: 'y'.repeat(2000) }] } } });
+  eq(longAsst?.kind, 'assistant/message', '助手长回答不受影响');
+});
+
 // ── 汇总 ────────────────────────────────────────────────────────────────────
 
 console.log('');

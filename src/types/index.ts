@@ -38,6 +38,10 @@ export interface ChatLine {
   toolArgs?: string | null;
   toolResult?: string | null;
   toolCallId?: string | null;
+  /** 该工具调用实际耗时（毫秒）；App 按 callId 把 tool/call 与 tool/result 配对算出。 */
+  toolMs?: number | null;
+  /** 注入上下文的标注（如「记忆快照」）；只有 `kind === 'user/injected'` 才有。 */
+  injectedLabel?: string | null;
   isError?: boolean;
 }
 

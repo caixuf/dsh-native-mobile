@@ -180,6 +180,44 @@ export interface ChatLineLike {
   toolResult?: string;
   toolCallId?: string;
   isError?: boolean;
+  /** 这次工具调用实际花了多久（毫秒）—— `tool/call`→`tool/result` 之间算出来。 */
+  toolMs?: number;
+  /** 注入上下文的标注（如「记忆快照」）；只有 `kind === 'user/injected'` 才有。 */
+  injectedLabel?: string;
+}
+
+/**
+ * 识别「宿主注入的上下文」，别把它当成用户说的话。
+ *
+ * 🔴 真机（Android 17 / ColorOS）抓到的现场：新会话一打开，聊天里先铺出
+ * 4 条 `user/message`，正文是
+ *   - `Current runtime context. This snapshot supersedes ...`（运行时上下文）
+ *   - `MNEMON RUNTIME MEMORY SNAPSHOT\nRevision: ...`（记忆快照，手机上 7000+ 字）
+ *   - `<system-reminder>…available_skills…`（技能清单）
+ *   - `[MNEMON] Search Documents for ...`（记忆指令）
+ * 它们**都不是用户发的**，却以用户气泡的形式铺在最前面 —— 手机上一屏全是
+ * 系统噪音，真正的对话被挤到下面，用户还会以为"我什么时候发过这个"。
+ *
+ * 处置：**不丢弃**（内容可能有诊断价值），而是标成 `user/injected`，
+ * 由 UI 折叠成一条安静的注记，点开才看全文。
+ */
+const INJECTED_PREFIXES: Array<[RegExp, string]> = [
+  [/^Current runtime context\./, '运行时上下文'],
+  [/^MNEMON RUNTIME MEMORY SNAPSHOT/, '记忆快照'],
+  [/^\[MNEMON\]/, '记忆指令'],
+  [/^<system-reminder>/, '技能清单'],
+];
+
+/** 超过这个长度且不像人话 → 也算注入上下文（兜底，不依赖具体前缀）。 */
+const INJECTED_MIN_CHARS = 800;
+
+export function classifyUserText(text: string): { injected: boolean; label: string } {
+  const trimmed = (text || '').trim();
+  for (const [pattern, label] of INJECTED_PREFIXES) {
+    if (pattern.test(trimmed)) return { injected: true, label };
+  }
+  if (trimmed.length >= INJECTED_MIN_CHARS) return { injected: true, label: '上下文注入' };
+  return { injected: false, label: '' };
 }
 
 /** 单个事件 → 一行；不该渲染的返回 null。 */
@@ -198,6 +236,20 @@ export function eventToLine(
     (data?.result ? String(data.result) : '') ||
     '';
   if (!isToolEvent(kind) && !text) return null;
+
+  // 注入上下文不是"用户说的话" → 单独标记，UI 折叠成注记
+  if (kind === 'user/message') {
+    const verdict = classifyUserText(text);
+    if (verdict.injected) {
+      return {
+        key: `line-${event.seq ?? fallbackKey ?? 0}`,
+        role,
+        text,
+        kind: 'user/injected',
+        injectedLabel: verdict.label,
+      };
+    }
+  }
 
   return {
     key: `line-${event.seq ?? fallbackKey ?? 0}`,

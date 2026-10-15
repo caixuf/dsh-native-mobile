@@ -94,6 +94,15 @@ let stepNo = 0;
 function note(msg) {
   log(`${C.d}    · ${msg}${C.x}`);
 }
+function parseJsonSafe(raw, fallback) {
+  try {
+    const parsed = JSON.parse(raw || '');
+    return parsed && typeof parsed === 'object' ? parsed : fallback;
+  } catch {
+    return fallback;
+  }
+}
+
 function truncate(s, n = 700) {
   const str = typeof s === 'string' ? s : JSON.stringify(s);
   return str && str.length > n ? `${str.slice(0, n)}…(+${str.length - n})` : str;
@@ -500,6 +509,23 @@ async function until(desc, expr, { timeout = 20000, interval = 300 } = {}) {
 
 // ── app 启动 / CDP 附着 ─────────────────────────────────────────────────────
 let consoleLogs = [];
+
+/**
+ * 杀掉 App 并重新拉起（真进程重启，pid 必须变）。
+ *
+ * 🔴 为什么先按 HOME 再杀（真机 Android 17 实测踩到，模拟器上完全不复现）：
+ * 刚写完 localStorage 就 force-stop，**最近一次写入会丢** —— LevelDB 还没落盘。
+ * 取证：CDP 立刻读得到新值，重启后却是旧值；同一份数据"先切后台再杀"就能扛住，
+ * 因为 Chromium 在页面转入后台时强制 flush。
+ * 这不是测试将就 —— 真实用户"改完设置立刻从最近任务里划掉"也是同一条路径。
+ */
+async function restartApp() {
+  const oldPid = adb(['shell', 'pidof', APP_ID], { allowFail: true }).out.trim().split(/\s+/)[0];
+  adb(['shell', 'input', 'keyevent', 'KEYCODE_HOME']);
+  await sleep(2000);
+  const newPid = await attach({ fresh: true });
+  return { oldPid, newPid };
+}
 
 async function attach({ fresh = false } = {}) {
   if (cdp) {
@@ -1222,13 +1248,14 @@ return setNativeValue(el, ${JSON.stringify(cwd)});`);
       note(`宿主真值：content 分块=[${truth.partTypes.join(',')}] 正文=${JSON.stringify(truncate(truth.replyText, 60))}`);
       if (truth.reasoningText) note(`同一记录的 reasoning=${JSON.stringify(truncate(truth.reasoningText, 80))}`);
       // 🔴 别用固定 sleep 当判据：宿主记录已写入 ≠ 界面已渲染完（实测偶发假红）。
-      // 改成"等界面对齐宿主真值"；真超时了再走下面的详细诊断。
+      // ⚠️ 预算也不能太小：真机（Android 17）上首轮要吃一大坨注入上下文（实测 7000+ 字），
+      // 模型首 token 与界面渲染都更慢 —— 25s 在真机上约 40% 假红。给 75s。
       try {
         await until(
           '界面对齐宿主真值（用户气泡 + 助手正文都出现）',
           `(function(){ const b = userBubbleTexts(); const bodies = assistantBodies();
             return { ok: b.indexOf(${JSON.stringify(prompt)}) >= 0 && bodies.indexOf(${JSON.stringify(truth.replyText)}) >= 0 }; })()`,
-          { timeout: 25000, interval: 600 },
+          { timeout: 75000, interval: 700 },
         );
       } catch (err) {
         note(`等待界面对齐超时（${(err && err.message) || err}），按当前状态继续判定`);
@@ -1264,6 +1291,21 @@ return setNativeValue(el, ${JSON.stringify(cwd)});`);
         before: { assistantCards: before.assistantCards, userBubbles: before.userBubbles },
       });
       expect(problems.length === 0, problems.join('  ／  '), { truth, obs });
+
+      // 注入上下文不能伪装成用户气泡（真机 Android 17 抓到过：7000+ 字记忆快照铺在最前）
+      const injected = await page(`(function(){
+        const notes = Array.from(document.querySelectorAll('[data-testid="injected-note"]'));
+        const bubbles = Array.from(document.querySelectorAll('[class*="justify-end"]'));
+        return { notes: notes.map(function (n) { return n.getAttribute('data-label'); }),
+          bubbleHeads: bubbles.slice(0, 4).map(function (b) { return (b.innerText || '').replace(/\\s+/g, ' ').slice(0, 40); }) };
+      })()`);
+      const leak = (injected.bubbleHeads || []).filter((t) => /MNEMON RUNTIME MEMORY SNAPSHOT|Current runtime context\.|<system-reminder>|\[MNEMON\]/.test(t));
+      expect(
+        leak.length === 0,
+        `注入上下文被当成了用户气泡：${JSON.stringify(leak)}`,
+        injected,
+      );
+      evidence({ injectedNotes: injected.notes, leakedBubbles: leak.length });
       info.reply = { truth, obs };
       return { truth, obs };
     });
@@ -1313,11 +1355,12 @@ async function scenarioCollapse() {
   const groupsBefore = await step('读到分组与默认折叠状态', async () => {
     const g = await page('groupPanels()');
     expect(g.length > 0, '没有读到任何工作区组', g);
+    const storedBefore = (await readLs('dsh.sessions.collapsed.v1')) || '{}';
     evidence({ groups: g.map((x) => ({ label: x.label, expanded: x.expanded, childCount: x.childCount })) });
-    return g;
+    return { groups: g, storedBefore };
   });
-
-  const target = groupsBefore.find((g) => g.expanded) || groupsBefore[0];
+  const groups0 = groupsBefore.groups;
+  const target = groups0.find((g) => g.expanded) || groups0[0];
   const defaultExpanded = target.expanded;
   const clickHeader = (label) =>
     pageFn(`const bs = qsa('button[aria-expanded]').filter(function (b) { const pid = b.getAttribute('aria-controls'); const p = pid ? document.getElementById(pid) : null; return p && (p.getAttribute('aria-label') || '') === ${JSON.stringify(label)}; });
@@ -1326,23 +1369,35 @@ if (!bs.length) throw new Error('找不到组标题 ' + ${JSON.stringify(label)}
     (await page(`collapsedPanels().filter(function (g) { return g.label === ${JSON.stringify(label)}; })`))[0];
 
   await step(`主动折叠「${target.label}」并把状态写进 localStorage`, async () => {
+    const before = parseJsonSafe(groupsBefore.storedBefore, {});
     await clickHeader(target.label);
     await sleep(500);
     const after = await readGroup(target.label);
     const raw = await readLs('dsh.sessions.collapsed.v1');
+    const now = parseJsonSafe(raw, {});
     expect(after.expanded === false, '折叠没生效', after);
-    expect(raw && raw.indexOf('true') >= 0, 'localStorage 里没有折叠状态', { raw });
+
+    // 🔴 判据：**有且仅有被点的那个组**从"不是 true"变成了 true。
+    //   - 只查"整段 JSON 里有 true"会被别的组蒙混过关（旧实现就栽在这，真机 step 5 才暴露）；
+    //   - 只查 label 对应的键也不可靠：界面标签是「X 的会话列表」，存储键却是工作区路径本身。
+    // 前后对比是与实现无关的写法，改分组命名也不会假红。
+    const flipped = Object.keys(now).filter((k) => now[k] === true && before[k] !== true);
+    expect(
+      flipped.length === 1,
+      `折叠后应有且只有一个组从"展开"变成"折叠"，实际变了 ${flipped.length} 个：${JSON.stringify(flipped)}`,
+      { before, now, targetLabel: target.label },
+    );
     result.afterToggle = after;
     result.raw = raw;
-    evidence({ after, localStorage: truncate(raw, 400) });
+    result.flippedKey = flipped[0];
+    evidence({ after, flippedKey: flipped[0], localStorage: truncate(raw, 400) });
     return after;
   });
 
   await step('force-stop 真重启 app 进程（pid 必须变 → 重新 forward + 重新附着 CDP）', async () => {
-    const oldPid = adb(['shell', 'pidof', APP_ID], { allowFail: true }).out.trim().split(/\s+/)[0];
-    const newPid = await attach({ fresh: true });
+    const { oldPid, newPid } = await restartApp();
     expect(newPid && newPid !== oldPid, `重启后 pid 没有变化（旧 ${oldPid} / 新 ${newPid}）`, { oldPid, newPid });
-    evidence({ oldPid, newPid, cdpTarget: cdp.target.url });
+    evidence({ oldPid, newPid, cdpTarget: cdp.target.url, backgroundedBeforeKill: true });
     return { oldPid, newPid };
   });
 
@@ -1350,13 +1405,36 @@ if (!bs.length) throw new Error('找不到组标题 ' + ${JSON.stringify(label)}
     await waitReadyWithSessions({ timeout: 60000 });
     const g = await readGroup(target.label);
     expect(g, `重开后找不到组：${target.label}`, g);
+    // 🔴 取证必须在**断言之前**：先记下"重启后存储里到底是什么"，才能区分
+    // 「写没落盘」与「落盘了但读不出来」—— 只报"变成展开了"等于没查。
+    const raw = await readLs('dsh.sessions.collapsed.v1');
+    const reloaded = parseJsonSafe(raw, {});
+    const storedAfter = result.flippedKey ? reloaded[result.flippedKey] : '(unknown key)';
+    evidence({
+      afterRestart: g,
+      defaultExpanded,
+      flippedKey: result.flippedKey,
+      storedValueAfterRestart: storedAfter,
+      storedKeysAfterRestart: Object.keys(reloaded).slice(0, 6),
+      beforeRestart: result.afterToggle,
+      localStorage: truncate(raw, 300),
+    });
+    expect(
+      storedAfter === true,
+      `重启后存储里这个组不是折叠（stored=${JSON.stringify(storedAfter)}）—— 折叠状态根本没落盘`,
+      { flippedKey: result.flippedKey, storedAfter, localStorage: truncate(raw, 300) },
+    );
     expect(
       g.expanded === false,
-      '重开后组变成展开了 —— 折叠状态没有持久化（默认就是展开，"没记住"就长这样）',
-      { beforeRestart: result.afterToggle, afterRestart: g, defaultExpanded },
+      `存储里明明记着折叠（${result.flippedKey}=true），界面却是展开 —— **读路径**没生效`,
+      {
+        beforeRestart: result.afterToggle,
+        afterRestart: g,
+        defaultExpanded,
+        flippedKey: result.flippedKey,
+        storedAfter,
+      },
     );
-    const raw = await readLs('dsh.sessions.collapsed.v1');
-    evidence({ afterRestart: g, defaultExpanded, localStorage: truncate(raw, 300) });
     result.afterRestart = g;
     return g;
   });
@@ -1444,7 +1522,7 @@ return { found: true, inArchived: inArchived };`);
   });
 
   await step('真重启 app 后归档仍然隐藏（本机归档已落盘）', async () => {
-    await attach({ fresh: true });
+    await restartApp();
     await waitReadyWithSessions({ expectCards: true, timeout: 60000 });
     const state = await pageFn(`const label = ${JSON.stringify(out.openLabel)};
 const buttons = qsa('button[aria-label^="打开会话 "]').filter(function (x) { return x.getAttribute('aria-label') === label; });
@@ -1777,7 +1855,8 @@ async function scenarioApproval() {
 
     await step('force-stop 真重启 → 假主机重放同一个 eventId → 不再弹', async () => {
       const before = fake.state.waterfalls;
-      await attach({ fresh: true });
+      // 应答账本刚写完，必须让 WebView flush（见 restartApp 的注释）
+      await restartApp();
       const deadline = Date.now() + 20000;
       while (fake.state.waterfalls <= before && Date.now() < deadline) await sleep(300);
       const replayed = fake.state.waterfalls - before;
@@ -1956,7 +2035,7 @@ if (!b) throw new Error('没有发送按钮'); clickEl(b); return true;`);
 async function scenarioReadability() {
   const out = {};
 
-  const target = await step('找一个含超长用户消息的真实会话（判定基准取宿主记录）', async () => {
+  const target = await step('找一个含**长助手消息**的真实会话（判定基准取宿主记录）', async () => {
     await attach({ fresh: true });
     await ensurePairedRealHost();
     const list = await hostRpc('session/list', { _request: {} });
@@ -1964,6 +2043,9 @@ async function scenarioReadability() {
       .filter((s) => s.origin !== 'subagent')
       .sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0))
       .slice(0, 12);
+    // 🔴 样本必须是**助手**的长消息，不能是用户消息：
+    // 用户那条超长文本多半是宿主注入的上下文（运行时上下文 / 记忆快照），
+    // 现在渲染成"注记"而不是折叠消息 —— 拿它当样本，这个场景就永远测不到折叠本身。
     let found = null;
     for (const s of items) {
       let recs = [];
@@ -1974,11 +2056,11 @@ async function scenarioReadability() {
       }
       let longest = '';
       for (const r of recs) {
-        if (r.event?.type !== 'user/message') continue;
-        const c = r.event?.data?.content ?? r.event?.data?.message?.content;
+        if (r.event?.type !== 'assistant/message') continue;
+        const c = r.event?.data?.message?.content;
         if (!Array.isArray(c)) continue;
         const text = c
-          .filter((p) => p && (p.type === undefined || p.type === 'text') && typeof p.text === 'string')
+          .filter((p) => p && p.type === 'text' && typeof p.text === 'string')
           .map((p) => p.text)
           .join('\n');
         if (text.length > longest.length) longest = text;
@@ -1990,7 +2072,7 @@ async function scenarioReadability() {
     }
     expect(
       !!found,
-      `最近 ${items.length} 个会话里找不到超过 600 字的用户消息，无法验证折叠（需要一条长消息做样本）`,
+      `最近 ${items.length} 个会话里找不到超过 600 字的**助手**消息，无法验证折叠（需要一条长消息做样本）`,
       { scanned: items.length, titles: items.map((s) => s.projections?.values?.title).slice(0, 6) },
     );
     evidence(found);
@@ -2033,16 +2115,24 @@ if (!b) throw new Error('找不到「打开会话」按钮'); clickEl(b); return
       `折叠标记的中文长度不对（data-full-chars=${collapsed.fullChars}）`,
       collapsed,
     );
-    // 折叠的意义就是"全文不进 DOM"：预览必须明显短于全文
-    const previewLen = await pageFn(`const el = qs('[data-collapsed="true"]');
-return el ? flat(txtOf(el)).length : -1;`);
+    // 🔴 折叠的意义是**正文只占 6 行左右**，不是"全文没进 DOM"：
+    // markdown 走 maxHeight 裁剪（要保住代码块/表格布局），文本仍在 DOM 里只是视觉裁掉；
+    // 而且被测元素是**整张卡**（含标题行、复制条、页脚），高度里混了固定 chrome。
+    // 真机实测踩过两个坑：① 用 innerText 量长度 → 裁剪后仍报 2300+ 字，假红；
+    // ② 量整卡高度 → 279px 超阈值，又一次假红。正确做法：量**正文容器**的高度。
+    const box = await pageFn(`const el = qs('[data-collapsed="true"]');
+if (!el) return { h: -1, bodyH: -1 };
+var body = el.querySelector('[data-collapsed-body]') || el;
+var r = body.getBoundingClientRect();
+return { cardH: Math.round(el.getBoundingClientRect().height), bodyH: Math.round(r.height),
+  lines: Math.round(r.height / 22) };`);
     expect(
-      previewLen > 0 && previewLen < Number(collapsed.fullChars) * 0.6,
-      `折叠后渲染的文本仍然太长（预览 ${previewLen} 字 vs 全文 ${collapsed.fullChars} 字）—— 全文多半还在 DOM 里`,
-      { previewLen, fullChars: collapsed.fullChars },
+      box.bodyH > 0 && box.bodyH <= 200,
+      `折叠后正文仍占 ${box.bodyH}px（≈${box.lines} 行）—— 一屏会被它淹没`,
+      { ...box, fullChars: collapsed.fullChars },
     );
-    evidence({ collapsed, previewLen });
-    out.collapsed = { ...collapsed, previewLen };
+    evidence({ collapsed, box });
+    out.collapsed = { ...collapsed, box };
     return collapsed;
   });
 

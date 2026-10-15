@@ -92,11 +92,18 @@ export const CollapsibleMessage: React.FC<Props> = ({
     >
       {header}
       {mode === 'plain' ? (
-        <span className="whitespace-pre-wrap break-words">{expanded ? text : result.preview}</span>
+        <span
+          className="whitespace-pre-wrap break-words"
+          // E2E 量"正文到底占多高"用（真机断言：折叠时正文 ≈6 行）
+          data-collapsed-body={clamped && !expanded ? 'true' : undefined}
+        >
+          {expanded ? text : result.preview}
+        </span>
       ) : (
         <div
           className={clamped ? 'overflow-hidden' : undefined}
           style={clamped ? { maxHeight: collapsedMaxHeightPx } : undefined}
+          data-collapsed-body={clamped && !expanded ? 'true' : undefined}
         >
           {children}
         </div>

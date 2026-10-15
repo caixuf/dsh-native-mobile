@@ -12,10 +12,12 @@ import {
   elapsedMs,
   emptyActivity,
   formatDuration,
+  formatTokens,
   isProcessEvent,
   modelLabel,
   phaseLabel,
   stepMarkerLine,
+  turnSummary,
 } from '../src/lib/session-activity.ts';
 
 let passed = 0;
@@ -183,6 +185,46 @@ check('快照 + 增量重放结果一致（顺序无关地能收敛）', () => {
   const rest = EVENTS.slice(9).reduce((acc, ev) => applyActivityEvent(acc, ev), half);
   eq(rest.phase, full.phase, '分段重放应与整体一致');
   eq(rest.stepsDone, full.stepsDone, `分段重放 stepsDone=${rest.stepsDone} vs ${full.stepsDone}`);
+});
+
+check('一轮累计 token / 工具次数 / 工具总耗时（不能只看最后一次 usage）', () => {
+  const s = buildActivity(EVENTS);
+  // 真样本：两条 assistant/message 分别带 usage 12000/320 与 13000/900
+  eq(s.tokensOut, 320 + 900, '输出 token 要累加');
+  eq(s.tokensIn, 12000 + 13000, '输入 token 要累加');
+  eq(s.toolCalls, 2, '两次 tool/call');
+  eq(s.toolTotalMs, (7498 - 5785) + (14888 - 14100), '工具总耗时 = 各次之和');
+});
+
+check('新一轮开始时累计值清零（不能把上一轮的数带过来）', () => {
+  eq(buildActivity(EVENTS).tokensOut, 1220, '先确认上一轮确实有量');
+  const second = buildActivity([...EVENTS, { type: 'turn/start', seq: 20, time: T0 + 20000, data: { turn: 2 } }]);
+  eq(second.tokensOut, 0, '新 turn/start 要清零');
+  eq(second.toolCalls, 0);
+  eq(second.toolTotalMs, 0);
+  eq(second.stepsDone, 0);
+});
+
+check('跑完后给出一行总结；数据不足时安静返回空串', () => {
+  const sum = turnSummary(buildActivity(EVENTS), T0 + 18134);
+  ok(sum.includes('2 步'), `总结应含步数：${sum}`);
+  ok(sum.includes('2 次工具调用'), `总结应含工具次数：${sum}`);
+  ok(sum.includes('用时'), `总结应含用时：${sum}`);
+  ok(/输出 1\.2k tokens/.test(sum), `总结应含输出 token：${sum}`);
+  ok(/工具 2秒|工具 3秒/.test(sum), `总结应含工具总耗时：${sum}`);
+
+  eq(turnSummary(emptyActivity(), T0), '', '没跑过就不该有总结');
+  eq(turnSummary(buildActivity(EVENTS.slice(0, 4)), T0 + 2000), '', '还在跑时不显示总结');
+});
+
+check('token 数量格式化', () => {
+  eq(formatTokens(0), '');
+  eq(formatTokens(-5), '');
+  eq(formatTokens(900), '900');
+  eq(formatTokens(1200), '1.2k');
+  eq(formatTokens(12345), '12.3k');
+  eq(formatTokens(1_200_000), '1.2M');
+  eq(formatTokens(NaN), '');
 });
 
 check('畸形/未知事件不炸且不改状态', () => {

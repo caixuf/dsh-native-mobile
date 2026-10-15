@@ -13,6 +13,7 @@ import {
 } from 'lucide-react';
 import { copyToClipboard } from './clipboard';
 import { toolActionLabel, toolKind } from '../../lib/tool-labels';
+import { formatDuration } from '../../lib/session-activity';
 
 interface Props {
   toolName?: string | null;
@@ -23,6 +24,8 @@ interface Props {
   kind?: string | null;
   /** 默认是否展开；缺省时"错误态自动展开"，其余折叠。 */
   defaultExpanded?: boolean;
+  /** 这次调用实际耗时（毫秒）；有值才显示"用时 1.7秒"。 */
+  toolMs?: number | null;
 }
 
 /** 超过这个长度就折叠（参数/结果的"长尾"不再挤爆时间线）。 */
@@ -162,6 +165,7 @@ export const DisclosureToolCard: React.FC<Props> = ({
   isError = false,
   kind,
   defaultExpanded,
+  toolMs,
 }) => {
   const bodyId = useId();
   const [expanded, setExpanded] = useState<boolean>(() => defaultExpanded ?? isError);
@@ -271,6 +275,14 @@ export const DisclosureToolCard: React.FC<Props> = ({
           ) : (
             <span className="text-[#38bdf8] text-[11px] font-medium bg-[#38bdf8]/15 px-2 py-0.5 rounded-full border border-[#38bdf8]/30 animate-pulse">
               执行中…
+            </span>
+          )}
+          {typeof toolMs === 'number' && toolMs >= 0 && (
+            <span
+              data-testid="tool-duration"
+              className="text-[11px] font-mono text-[#64748b] bg-white/[0.05] px-1.5 py-0.5 rounded border border-white/10 shrink-0"
+            >
+              用时 {formatDuration(toolMs)}
             </span>
           )}
           <span className="text-[#64748b]">

@@ -13,6 +13,7 @@ import {
   Terminal,
   RefreshCw,
   ChevronDown,
+  ChevronRight,
   X,
 } from 'lucide-react';
 import { ChatLine, PendingPrompt, TaskStep } from '../../types';
@@ -26,7 +27,7 @@ import { clearDraft, loadDraft, loadExpandedKeys, saveDraft, saveExpandedKeys } 
 import { ConnectionDot } from '../common/ConnectionDot';
 import { DeepSeekLogo } from '../common/DeepSeekLogo';
 import type { QueuedMessage } from '../../lib/message-queue';
-import { elapsedMs, formatDuration, modelLabel, phaseLabel } from '../../lib/session-activity';
+import { elapsedMs, formatDuration, modelLabel, phaseLabel, turnSummary } from '../../lib/session-activity';
 import type { ActivityState } from '../../lib/session-activity';
 
 interface Props {
@@ -311,6 +312,21 @@ export const ChatScreen: React.FC<Props> = ({
   const activityText = activityOn ? phaseLabel(activity as ActivityState, clockTick) : '';
   const activityModel = activityOn ? modelLabel(activity as ActivityState) : '';
   const activityElapsed = activityOn ? formatDuration(elapsedMs(activity as ActivityState, clockTick)) : '';
+  /**
+   * 跑完之后的总结（`3 步 · 2 次工具调用 · 用时 42秒 · 输出 1.2k tokens`）。
+   * 只在"刚跑完一轮"时出现；数据不足就显示空 —— 不塞"0 步 0 秒"这种噪音。
+   */
+  const summaryText = !running && activity ? turnSummary(activity as ActivityState, clockTick) : '';
+
+  // 注入上下文默认收起；用户手动展开的才记住（这些键只在本会话有效）。
+  const [injectedOpenKeys, setInjectedOpenKeys] = useState<Set<string>>(new Set());
+  const toggleInjected = (key: string) =>
+    setInjectedOpenKeys((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
 
   const preparingStages = [
     '唤醒远程守护进程…',
@@ -380,6 +396,14 @@ export const ChatScreen: React.FC<Props> = ({
                 {activityElapsed && <span className="font-mono text-[#7dd3fc] shrink-0">· {activityElapsed}</span>}
               </span>
             )}
+            {!running && summaryText && (
+              <span
+                data-testid="turn-summary"
+                className="text-[11px] text-[#94a3b8] bg-white/[0.04] border border-white/10 px-2.5 py-1 rounded-full max-w-[46vw] truncate font-mono"
+              >
+                {summaryText}
+              </span>
+            )}
             <button
               onClick={onOpenDrawer}
               type="button"
@@ -424,6 +448,40 @@ export const ChatScreen: React.FC<Props> = ({
             );
           }
 
+          // 宿主注入的上下文（运行时上下文 / 记忆快照 / 技能清单…）
+          // 真机实测手机上一进来就是 7000+ 字的记忆快照，以用户气泡形式铺在最前面 ——
+          // 既挤掉真正的对话，又让人以为"我什么时候发过这个"。这里折叠成一条安静注记。
+          if (line.kind === 'user/injected') {
+            const injectedOpen = injectedOpenKeys.has(key);
+            return (
+              <div key={key} className="my-1" data-testid="injected-note" data-label={line.injectedLabel || ''}>
+                <button
+                  type="button"
+                  onClick={() => toggleInjected(key)}
+                  aria-expanded={injectedOpen}
+                  aria-label={`${line.injectedLabel || '上下文'}，共 ${line.text.length} 字，点${injectedOpen ? '收起' : '展开查看'}`}
+                  className="w-full min-h-[44px] flex items-center gap-2 px-3 py-2.5 rounded-xl border border-dashed border-white/10 bg-white/[0.02] text-left cursor-pointer studio-tap"
+                >
+                  {injectedOpen ? (
+                    <ChevronDown size={13} className="text-[#64748b] shrink-0" />
+                  ) : (
+                    <ChevronRight size={13} className="text-[#64748b] shrink-0" />
+                  )}
+                  <span className="text-[11.5px] text-[#94a3b8] truncate">
+                    {line.injectedLabel || '上下文'} · 由电脑端注入，不是你发的（{line.text.length} 字）
+                  </span>
+                </button>
+                {injectedOpen && (
+                  <div className="mt-1.5 px-3 py-2 rounded-xl bg-black/25 border border-white/[0.06]">
+                    <pre className="text-[11px] leading-[1.5] text-[#64748b] whitespace-pre-wrap break-words max-h-[40vh] overflow-y-auto">
+                      {line.text}
+                    </pre>
+                  </div>
+                )}
+              </div>
+            );
+          }
+
           if (line.kind === 'tool/call') {
             // 结果可能在后续的 tool/result 事件里（App 按 seq 逐条映射），这里配对回来
             const paired = line.toolCallId ? resultByCallId.get(line.toolCallId) : undefined;
@@ -434,6 +492,7 @@ export const ChatScreen: React.FC<Props> = ({
                   toolName={line.toolName}
                   toolArgs={line.toolArgs}
                   toolResult={result}
+                  toolMs={line.toolMs ?? paired?.toolMs ?? null}
                   isError={Boolean(line.isError || paired?.isError)}
                   kind="tool/call"
                 />

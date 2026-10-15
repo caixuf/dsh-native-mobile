@@ -48,6 +48,16 @@ export interface ActivityState {
   turnStartedAt: number | null;
   /** 上一条 assistant 消息的 token 用量（有 usage 时才有）。 */
   usage: { inputTokens?: number; outputTokens?: number } | null;
+  /**
+   * 本轮累计 token（多次 assistant/message 累加）。
+   * `assistant/message` 的 usage 每次只带**该次**用量，单看最后一次会严重低估。
+   */
+  tokensIn: number;
+  tokensOut: number;
+  /** 本轮工具调用次数。 */
+  toolCalls: number;
+  /** 本轮所有工具耗时之和（毫秒）。 */
+  toolTotalMs: number;
   /** 正在用的模型（request/context）。 */
   provider: string | null;
   model: string | null;
@@ -66,6 +76,10 @@ export function emptyActivity(): ActivityState {
     toolStartedAt: null,
     turnStartedAt: null,
     usage: null,
+    tokensIn: 0,
+    tokensOut: 0,
+    toolCalls: 0,
+    toolTotalMs: 0,
     provider: null,
     model: null,
     thinking: null,
@@ -120,6 +134,10 @@ export function applyActivityEvent(prev: ActivityState, event: unknown, nowMsNow
       next.toolStartedAt = null;
       next.turnStartedAt = at;
       next.usage = null;
+      next.tokensIn = 0;
+      next.tokensOut = 0;
+      next.toolCalls = 0;
+      next.toolTotalMs = 0;
       next.thinking = null;
       return next;
 
@@ -152,12 +170,14 @@ export function applyActivityEvent(prev: ActivityState, event: unknown, nowMsNow
       next.toolName = typeof data.name === 'string' ? data.name : null;
       next.toolStartedAt = at;
       next.toolMs = null;
+      next.toolCalls += 1;
       return next;
 
     case 'tool/result': {
       // data.message.isError 存在与否不影响阶段，只影响是否算成功
       next.phase = 'thinking';
       next.toolMs = prev.toolStartedAt ? Math.max(0, at - prev.toolStartedAt) : null;
+      if (next.toolMs !== null) next.toolTotalMs += next.toolMs;
       next.toolStartedAt = null;
       return next;
     }
@@ -180,7 +200,11 @@ export function applyActivityEvent(prev: ActivityState, event: unknown, nowMsNow
       // 出现了正文 → 已经不在"想"，而在"答"
       if (text && typeof text.text === 'string' && text.text.trim()) next.phase = 'step';
       const usage = (data.usage || null) as { inputTokens?: number; outputTokens?: number } | null;
-      if (usage && (usage.inputTokens || usage.outputTokens)) next.usage = usage;
+      if (usage && (usage.inputTokens || usage.outputTokens)) {
+        next.usage = usage;
+        next.tokensIn += usage.inputTokens || 0;
+        next.tokensOut += usage.outputTokens || 0;
+      }
       return next;
     }
 
@@ -254,6 +278,35 @@ export function phaseLabel(state: ActivityState, nowMsNow: number): string {
 export function modelLabel(state: ActivityState): string {
   if (!state.model) return '';
   return state.provider ? `${state.provider}/${state.model}` : state.model;
+}
+
+/** token 数 → `1.2k` / `12.4k` / `1.2M`。 */
+export function formatTokens(n: number): string {
+  if (!Number.isFinite(n) || n <= 0) return '';
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+  if (n >= 1000) return `${(n / 1000).toFixed(1)}k`;
+  return String(n);
+}
+
+/**
+ * 一轮跑完后的总结（一行）。
+ * 例：`3 步 · 2 次工具调用 · 用时 42秒 · 输出 1.2k tokens`
+ *
+ * 空状态（没跑过 / 数据不足）返回空串 —— 不要显示"0 步 0 秒"这种噪音。
+ */
+export function turnSummary(state: ActivityState, nowMsNow: number): string {
+  if (state.phase !== 'idle' || !state.turnStartedAt) return '';
+  const parts: string[] = [];
+  if (state.stepsDone > 0) parts.push(`${state.stepsDone} 步`);
+  if (state.toolCalls > 0) {
+    parts.push(`${state.toolCalls} 次工具调用`);
+    if (state.toolTotalMs > 0) parts.push(`工具 ${formatDuration(state.toolTotalMs)}`);
+  }
+  const elapsed = elapsedMs(state, nowMsNow);
+  if (elapsed > 0) parts.push(`用时 ${formatDuration(elapsed)}`);
+  const out = formatTokens(state.tokensOut);
+  if (out) parts.push(`输出 ${out} tokens`);
+  return parts.join(' · ');
 }
 
 /**
