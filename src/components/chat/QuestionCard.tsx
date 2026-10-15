@@ -58,12 +58,12 @@ export const QuestionCard: React.FC<QuestionCardProps> = ({ prompt, onSubmit, on
   };
 
   return (
-    <div className="p-5 rounded-3xl specular-card border-2 border-[#3b82f6] shadow-[0_0_30px_rgba(59,130,246,0.25)] animate-in zoom-in-95 duration-200">
-      <div className="flex items-center gap-2 text-[14px] font-bold text-white">
-        <HelpCircle size={18} className="text-[#38bdf8] shrink-0" />
+    <div className="p-5 rounded-3xl bg-[#f4f4f6] border border-gray-200/80 shadow-xs animate-in zoom-in-95 duration-200">
+      <div className="flex items-center gap-2 text-[14px] font-bold text-[#18181b]">
+        <HelpCircle size={18} className="text-blue-600 shrink-0" />
         <span className="truncate">{prompt.title}</span>
         {isMulti && (
-          <span className="text-[10.5px] px-2 py-0.5 rounded-full bg-[#38bdf8]/15 text-[#38bdf8] font-medium ml-auto shrink-0">
+          <span className="text-[10.5px] px-2 py-0.5 rounded-full bg-blue-50 text-blue-700 border border-blue-200 font-semibold ml-auto shrink-0">
             可多选
           </span>
         )}
@@ -75,12 +75,12 @@ export const QuestionCard: React.FC<QuestionCardProps> = ({ prompt, onSubmit, on
           return (
             <div key={q.id} className="space-y-2">
               {q.question && (
-                <p className="text-[13px] text-[#cbd5e1] leading-relaxed whitespace-pre-wrap">
+                <p className="text-[13px] text-gray-700 leading-relaxed whitespace-pre-wrap">
                   {q.question}
                 </p>
               )}
               {q.detail && (
-                <p className="text-[12px] text-[#94a3b8] bg-[#0c101a] p-3 rounded-xl border border-white/5 leading-relaxed font-mono">
+                <p className="text-[12px] text-gray-600 bg-white p-3 rounded-xl border border-gray-200 leading-relaxed font-mono">
                   {q.detail}
                 </p>
               )}
@@ -95,27 +95,25 @@ export const QuestionCard: React.FC<QuestionCardProps> = ({ prompt, onSubmit, on
                         key={i}
                         type="button"
                         onClick={() => toggleOption(q.id, opt.label, !!q.multiSelect || isMulti)}
-                        className={`min-h-[44px] px-3.5 py-2.5 rounded-xl text-[13px] font-medium text-left flex items-start gap-2.5 transition-all cursor-pointer border studio-tap ${
+                        className={`min-h-[44px] px-3.5 py-2.5 rounded-2xl text-[13px] font-medium text-left flex items-start gap-2.5 transition-all cursor-pointer border ${
                           isChecked
-                            ? 'bg-[#3b82f6]/20 border-[#3b82f6] text-white shadow-[0_0_15px_rgba(59,130,246,0.3)]'
-                            : 'bg-[#141824] border-white/10 text-[#cbd5e1] hover:bg-[#1a2234] hover:border-white/20'
+                            ? 'bg-white border-2 border-black text-[#18181b] shadow-xs'
+                            : 'bg-white border border-gray-200/80 text-gray-800 hover:border-gray-400'
                         }`}
                       >
                         <div
-                          className={`w-4 h-4 mt-0.5 rounded flex items-center justify-center shrink-0 transition-colors ${
-                            q.multiSelect || isMulti ? 'rounded-[4px]' : 'rounded-full'
-                          } ${
+                          className={`w-5 h-5 rounded-md flex items-center justify-center shrink-0 mt-0.5 transition-all ${
                             isChecked
-                              ? 'bg-[#3b82f6] text-white'
-                              : 'border border-white/30 bg-black/20'
+                              ? 'bg-black text-white'
+                              : 'border border-gray-300 bg-white'
                           }`}
                         >
-                          {isChecked && <Check size={12} strokeWidth={3} />}
+                          {isChecked && <Check size={13} strokeWidth={3} />}
                         </div>
                         <div className="flex-1 min-w-0">
-                          <div className="leading-snug break-words">{opt.label}</div>
+                          <div className="font-medium leading-tight">{opt.label}</div>
                           {opt.description && (
-                            <div className="text-[11px] text-[#94a3b8] mt-0.5 leading-tight font-normal">
+                            <div className="text-[11px] text-[#52525b] mt-1 leading-normal font-normal">
                               {opt.description}
                             </div>
                           )}
@@ -129,50 +127,44 @@ export const QuestionCard: React.FC<QuestionCardProps> = ({ prompt, onSubmit, on
           );
         })}
 
-        {/* 自由自定义输入框 */}
+        {/* 自定义输入框（可选补充说明） */}
         <div className="pt-2">
-          <textarea
+          <input
+            type="text"
             value={customText}
             onChange={(e) => setCustomText(e.target.value)}
+            placeholder="补充说明或自定义要求（可选）..."
             onKeyDown={(e) => {
-              if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
-                e.preventDefault();
+              if (e.key === 'Enter' && canSubmit) {
                 handleSubmit();
               }
             }}
-            placeholder="自定义作答或补充说明（可选）..."
-            rows={2}
-            className="w-full px-3.5 py-2.5 rounded-xl bg-[#0c101a] border border-white/10 text-[13px] text-white placeholder-[#64748b] focus:outline-none focus:border-[#3b82f6] focus:ring-1 focus:ring-[#3b82f6] transition-all resize-none leading-relaxed"
+            className="w-full px-3.5 py-2.5 text-[13px] bg-white border border-gray-200 rounded-xl focus:outline-hidden focus:border-black focus:ring-1 focus:ring-black/20 text-[#18181b] placeholder:text-[#52525b]"
           />
         </div>
-      </div>
 
-      {/* 底部操作条 */}
-      <div className="flex items-center justify-between gap-3 mt-4 pt-3 border-t border-white/10">
-        <span className="text-[12px] text-[#94a3b8]">
-          {allSelected.length > 0 ? `已选 ${allSelected.length} 项` : '可直接输入文本提交'}
-        </span>
-        <div className="flex items-center gap-2">
+        {/* 底部提交/取消操作栏 */}
+        <div className="flex items-center justify-end gap-2.5 pt-2 border-t border-gray-200/60">
           {onCancel && (
             <button
               type="button"
               onClick={onCancel}
-              className="min-h-[40px] px-3.5 py-1.5 rounded-xl border border-white/10 text-[12.5px] font-medium text-[#94a3b8] hover:bg-white/5 transition-colors cursor-pointer studio-tap"
+              className="min-h-[44px] px-4 py-2 rounded-full text-[12.5px] font-medium text-[#52525b] hover:text-black hover:bg-gray-200 transition-colors cursor-pointer"
             >
-              稍后处理
+              取消
             </button>
           )}
           <button
             type="button"
-            onClick={handleSubmit}
             disabled={!canSubmit}
-            className={`min-h-[40px] px-4 py-1.5 rounded-xl text-[12.5px] font-semibold flex items-center gap-1.5 transition-all cursor-pointer studio-tap ${
+            onClick={handleSubmit}
+            className={`min-h-[44px] px-5 py-2 rounded-full text-[13px] font-semibold flex items-center gap-1.5 transition-all cursor-pointer ${
               canSubmit
-                ? 'bg-gradient-to-r from-[#3b82f6] to-[#2563eb] text-white shadow-[0_0_20px_rgba(59,130,246,0.4)] active:scale-95'
-                : 'bg-white/5 text-[#64748b] cursor-not-allowed border border-white/5'
+                ? 'bg-black text-white hover:bg-neutral-800 shadow-xs'
+                : 'bg-gray-200 text-[#52525b] cursor-not-allowed'
             }`}
           >
-            <span>确认提交</span>
+            <span>确定提交</span>
             <Send size={13} />
           </button>
         </div>

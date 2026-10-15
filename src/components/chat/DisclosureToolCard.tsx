@@ -88,7 +88,7 @@ const CopyButton: React.FC<{ text: string; label: string }> = ({ text, label }) 
           ? 'text-[#34d399] bg-[#10b981]/15 border-[#10b981]/30'
           : failed
             ? 'text-[#fb7185] bg-[#f43f5e]/10 border-[#f43f5e]/30'
-            : 'text-[#94a3b8] hover:text-white bg-white/[0.04] hover:bg-white/[0.1] border-white/[0.08]'
+            : 'text-[#52525b] hover:text-[#18181b] bg-black/[0.03] hover:bg-black/[0.05] border-black/[0.08]'
       }`}
     >
       {copied ? <Check size={15} /> : <Copy size={15} />}
@@ -104,15 +104,15 @@ const TextBlock: React.FC<{ text: string; tone: 'args' | 'result' | 'error' }> =
 
   const palette =
     tone === 'error'
-      ? 'bg-[#1f0d14] border-[#f43f5e]/40 text-[#fda4af]'
+      ? 'bg-rose-50 border-rose-200 text-rose-800'
       : tone === 'args'
-        ? 'bg-[#07090e] border-white/10 text-[#38bdf8]'
-        : 'bg-[#07090e] border-white/10 text-[#e2e8f0]';
+        ? 'bg-gray-50 border-gray-200 text-gray-800'
+        : 'bg-gray-50 border-gray-200 text-gray-800';
 
   return (
     <div>
       <pre
-        className={`p-2.5 rounded-xl border ${palette} overflow-x-auto max-h-64 whitespace-pre-wrap break-all text-[11.5px] leading-relaxed shadow-inner`}
+        className={`p-2.5 rounded-xl border ${palette} overflow-x-auto max-h-64 whitespace-pre-wrap break-all text-[11.5px] leading-relaxed shadow-2xs font-mono`}
       >
         {shown}
       </pre>
@@ -122,7 +122,7 @@ const TextBlock: React.FC<{ text: string; tone: 'args' | 'result' | 'error' }> =
           onClick={() => setShowAll((v) => !v)}
           aria-expanded={showAll}
           aria-label={showAll ? '收起完整内容' : `展开全部内容，共 ${text.length} 字符`}
-          className="mt-1 min-h-[44px] px-3 rounded-xl text-[11.5px] font-medium text-[#93c5fd] bg-[#3b82f6]/10 hover:bg-[#3b82f6]/20 border border-[#3b82f6]/25 cursor-pointer studio-tap"
+          className="mt-1 min-h-[44px] px-3 rounded-xl text-[11.5px] font-medium text-blue-600 bg-blue-50 hover:bg-blue-100 border border-blue-200 cursor-pointer"
         >
           {showAll ? '收起' : `展开全部（${text.length} 字符）`}
         </button>
@@ -137,8 +137,8 @@ const StructuredArgs: React.FC<{ entries: Array<[string, unknown]> }> = ({ entri
     {entries.map(([key, value]) => {
       const text = stringifyValue(value);
       return (
-        <div key={key} className="rounded-xl bg-[#07090e] border border-white/10 p-2.5">
-          <dt className="text-[11px] font-sans font-semibold text-[#94a3b8] mb-1 break-all">{key}</dt>
+        <div key={key} className="rounded-xl bg-gray-50 border border-gray-200 p-2.5">
+          <dt className="text-[11px] font-sans font-semibold text-gray-600 mb-1 break-all">{key}</dt>
           <dd>
             <TextBlock text={text} tone="args" />
           </dd>
@@ -223,8 +223,8 @@ export const DisclosureToolCard: React.FC<Props> = ({
 
   return (
     <div
-      className={`my-2 rounded-2xl specular-card overflow-hidden text-xs transition-all shadow-lg border ${
-        isError ? 'border-[#f43f5e]/45' : 'border-white/10'
+      className={`my-2 rounded-2xl bg-white overflow-hidden text-xs transition-all shadow-2xs border ${
+        isError ? 'border-rose-200' : 'border-gray-200/80'
       }`}
     >
       <button
@@ -236,24 +236,24 @@ export const DisclosureToolCard: React.FC<Props> = ({
         aria-expanded={expanded}
         aria-controls={bodyId}
         aria-label={`${getFriendlyName()}（${kindLabel}）${isError ? '，失败' : hasResult ? '，已完成' : '，执行中'}，${expanded ? '收起详情' : '展开详情'}`}
-        className="w-full min-h-[44px] flex items-center justify-between gap-2 px-3.5 py-2.5 text-left cursor-pointer bg-[#131724]/80 hover:bg-[#1a2030] transition-colors"
+        className="w-full min-h-[44px] flex items-center justify-between gap-2 px-3.5 py-2.5 text-left cursor-pointer bg-[#f8f9fa] hover:bg-[#f2f3f5] transition-colors"
       >
         <span className="flex items-center gap-2.5 min-w-0">
-          <span className="p-1.5 rounded-lg bg-[#a855f7]/15 border border-[#a855f7]/25 flex items-center justify-center shrink-0">
+          <span className="p-1.5 rounded-lg bg-gray-100 border border-gray-200 flex items-center justify-center shrink-0">
             {getToolIcon()}
           </span>
-          <span className="font-semibold text-white tracking-wide shrink-0">{getFriendlyName()}</span>
+          <span className="font-semibold text-gray-900 tracking-wide shrink-0">{getFriendlyName()}</span>
           <span
             className={`shrink-0 text-[10.5px] font-medium px-1.5 py-0.5 rounded-md border ${
               isResult
-                ? 'text-[#c4b5fd] bg-[#a855f7]/10 border-[#a855f7]/30'
-                : 'text-[#7dd3fc] bg-[#0ea5e9]/10 border-[#0ea5e9]/30'
+                ? 'text-purple-700 bg-purple-50 border-purple-200'
+                : 'text-blue-700 bg-blue-50 border-blue-200'
             }`}
           >
             {kindLabel}
           </span>
           {snippet && (
-            <span className="text-[#94a3b8] font-mono truncate bg-white/[0.04] px-2 py-0.5 rounded border border-white/[0.06] hidden sm:inline">
+            <span className="text-[#52525b] font-mono truncate bg-white px-2 py-0.5 rounded border border-gray-200 hidden sm:inline">
               {snippet.length > 60 ? `${snippet.slice(0, 60)}…` : snippet}
             </span>
           )}
@@ -262,30 +262,30 @@ export const DisclosureToolCard: React.FC<Props> = ({
         <span className="flex items-center gap-2 shrink-0 ml-2">
           {hasResult ? (
             isError ? (
-              <span className="flex items-center gap-1 text-[#fb7185] text-[11px] font-medium bg-[#f43f5e]/15 px-2 py-0.5 rounded-full border border-[#f43f5e]/30">
+              <span className="flex items-center gap-1 text-rose-600 text-[11px] font-medium bg-rose-50 px-2 py-0.5 rounded-full border border-rose-200">
                 <AlertCircle size={12} />
                 失败
               </span>
             ) : (
-              <span className="flex items-center gap-1 text-[#34d399] text-[11px] font-medium bg-[#10b981]/15 px-2 py-0.5 rounded-full border border-[#10b981]/30">
+              <span className="flex items-center gap-1 text-emerald-700 text-[11px] font-medium bg-emerald-50 px-2 py-0.5 rounded-full border border-emerald-200">
                 <CheckCircle2 size={12} />
                 完成
               </span>
             )
           ) : (
-            <span className="text-[#38bdf8] text-[11px] font-medium bg-[#38bdf8]/15 px-2 py-0.5 rounded-full border border-[#38bdf8]/30 animate-pulse">
+            <span className="text-blue-600 text-[11px] font-medium bg-blue-50 px-2 py-0.5 rounded-full border border-blue-200 animate-pulse">
               执行中…
             </span>
           )}
           {typeof toolMs === 'number' && toolMs >= 0 && (
             <span
               data-testid="tool-duration"
-              className="text-[11px] font-mono text-[#64748b] bg-white/[0.05] px-1.5 py-0.5 rounded border border-white/10 shrink-0"
+              className="text-[11px] font-mono text-[#52525b] bg-white px-1.5 py-0.5 rounded border border-gray-200 shrink-0"
             >
               用时 {formatDuration(toolMs)}
             </span>
           )}
-          <span className="text-[#64748b]">
+          <span className="text-[#52525b]">
             {expanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
           </span>
         </span>
@@ -295,18 +295,18 @@ export const DisclosureToolCard: React.FC<Props> = ({
       {isError && !expanded && (
         <p
           role="status"
-          className="px-3.5 py-1.5 text-[11.5px] text-[#fda4af] bg-[#f43f5e]/10 border-t border-[#f43f5e]/25 truncate"
+          className="px-3.5 py-1.5 text-[11.5px] text-rose-700 bg-rose-50 border-t border-rose-200 truncate"
         >
           {errorSummary}
         </p>
       )}
 
       {expanded && (
-        <div id={bodyId} className="px-3.5 pb-3.5 pt-2.5 border-t border-white/[0.06] bg-[#0c0f17] space-y-3">
+        <div id={bodyId} className="px-3.5 pb-3.5 pt-2.5 border-t border-gray-100 bg-white space-y-3">
           {toolArgs && (
             <section>
               <div className="flex items-center justify-between gap-2 mb-1.5">
-                <h4 className="text-[11px] font-sans font-medium text-[#94a3b8]">
+                <h4 className="text-[11px] font-sans font-medium text-[#52525b]">
                   入参 (Arguments){argEntries ? ` · ${argEntries.length} 个字段` : ''}
                 </h4>
                 <div className="flex items-center gap-1.5">
@@ -316,7 +316,7 @@ export const DisclosureToolCard: React.FC<Props> = ({
                       onClick={() => setShowRawArgs((v) => !v)}
                       aria-pressed={showRawArgs}
                       aria-label={showRawArgs ? '切换到结构化入参视图' : '切换到原始 JSON 视图'}
-                      className="min-h-[44px] px-3 rounded-xl text-[11.5px] font-medium text-[#94a3b8] hover:text-white bg-white/[0.04] hover:bg-white/[0.1] border border-white/[0.08] cursor-pointer studio-tap"
+                      className="min-h-[44px] px-3 rounded-xl text-[11.5px] font-medium text-[#52525b] hover:text-[#18181b] bg-black/[0.03] hover:bg-black/[0.05] border border-black/[0.08] cursor-pointer studio-tap"
                     >
                       {showRawArgs ? '结构化' : '原始 JSON'}
                     </button>
@@ -335,7 +335,7 @@ export const DisclosureToolCard: React.FC<Props> = ({
           {toolResult && (
             <section>
               <div className="flex items-center justify-between gap-2 mb-1.5">
-                <h4 className="text-[11px] font-sans font-medium text-[#94a3b8]">
+                <h4 className="text-[11px] font-sans font-medium text-[#52525b]">
                   {isError ? '错误输出 (Error)' : '结果 (Output)'} · {toolResult.length} 字符
                 </h4>
                 <CopyButton text={toolResult} label={isError ? '复制错误输出' : '复制工具结果'} />
@@ -345,7 +345,7 @@ export const DisclosureToolCard: React.FC<Props> = ({
           )}
 
           {!toolArgs && !toolResult && (
-            <p className="text-[11.5px] text-[#64748b]">暂无参数与结果（等待远端返回）…</p>
+            <p className="text-[11.5px] text-[#52525b]">暂无参数与结果（等待远端返回）…</p>
           )}
         </div>
       )}

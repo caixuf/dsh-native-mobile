@@ -39,12 +39,12 @@ export const ArchivedSection: React.FC<Props> = ({
       controlsLabel="已归档会话（仅本机）"
       title={
         <span className="flex items-center gap-2">
-          <Archive size={14} className="shrink-0 text-[#94a3b8]" />
+          <Archive size={14} className="shrink-0 text-[#52525b]" />
           <span className="truncate">已归档</span>
         </span>
       }
     >
-      <p className="px-1 pb-2 text-[11px] leading-relaxed text-[#64748b]">{ARCHIVE_NOTE}</p>
+      <p className="px-1 pb-2 text-[11px] leading-relaxed text-[#52525b]">{ARCHIVE_NOTE}</p>
       <div className="space-y-2">
         {items.map((session) => (
           <SessionCard

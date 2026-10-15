@@ -18,7 +18,15 @@ import {
   Paperclip,
   CheckSquare,
   Cpu,
+  ThumbsUp,
+  ThumbsDown,
+  Copy,
+  RotateCw,
+  Plus,
+  MoreHorizontal,
+  Lightbulb,
 } from 'lucide-react';
+import { copyToClipboard } from '../chat/clipboard';
 import { ChatLine, PendingPrompt, TaskStep, ModelCatalog } from '../../types';
 import { MarkdownView } from '../common/MarkdownView';
 import { DisclosureToolCard } from '../chat/DisclosureToolCard';
@@ -400,100 +408,82 @@ export const ChatScreen: React.FC<Props> = ({
   ];
 
   return (
-    <div className="flex flex-col h-full bg-[#090a0f] text-[#f8fafc] mesh-glow-bg select-none">
-      {/* 1. Studio Execution Context Bar */}
-      <header className="sticky top-0 z-30 studio-glass border-b border-white/[0.08] px-4 py-2.5 transition-all">
+    <div className="flex flex-col h-full bg-white text-[#18181b] select-none">
+      {/* 1. MiniMax Light Header (Screenshot 5) */}
+      <header className="sticky top-0 z-30 bg-white/95 backdrop-blur-md border-b border-gray-100 px-4 py-2.5 transition-all">
         <div className="flex items-center justify-between max-w-2xl mx-auto w-full gap-2">
           <div className="flex items-center gap-2.5 min-w-0 flex-1">
             <button
               onClick={onBack}
               type="button"
               aria-label="返回会话列表"
-              className="w-11 h-11 rounded-xl bg-white/[0.06] hover:bg-white/[0.12] border border-white/[0.08] flex items-center justify-center text-[#e2e8f0] cursor-pointer studio-tap shrink-0"
+              className="w-11 h-11 rounded-full hover:bg-gray-100 flex items-center justify-center text-gray-700 cursor-pointer shrink-0"
             >
-              <ArrowLeft size={17} />
+              <ArrowLeft size={18} />
             </button>
             <div className="min-w-0">
-              <div className="flex items-center gap-2">
-                <DeepSeekLogo size={16} variant="brand" className="shrink-0" />
-                <h2 className="text-[14px] font-bold tracking-tight text-white truncate">
-                  {title || '遥控会话'}
-                </h2>
-              </div>
-              <div className="flex items-center gap-2 text-[11px] text-[#94a3b8] truncate mt-0.5">
-                <span className="flex items-center gap-1.5 font-medium text-[#cbd5e1]">
-                  <ConnectionDot status="online" size={6} />
-                  <span>{hostName || '远程工作站'}</span>
-                </span>
-                <span>·</span>
-                <button
-                  type="button"
-                  onClick={() => setModelPickerOpen(true)}
-                  aria-label={`切换模型：当前 ${activeModelDisplayName}`}
-                  className="flex items-center gap-1 px-2.5 py-1 min-h-[44px] rounded-full bg-white/[0.06] hover:bg-white/[0.12] border border-white/10 text-[10.5px] font-mono text-[#7dd3fc] transition-colors cursor-pointer studio-tap truncate max-w-[130px]"
-                  title="点击切换模型"
-                >
-                  <Cpu size={10} className="text-[#38bdf8] shrink-0" />
-                  <span className="truncate">{activeModelDisplayName}</span>
-                  <ChevronDown size={10} className="text-[#64748b] shrink-0" />
-                </button>
-                <button
-                  type="button"
-                  onClick={togglePlanMode}
-                  aria-label={`计划模式：${planMode ? '已开启' : '已关闭'}`}
-                  className={`flex items-center gap-1 px-2 py-1 min-h-[44px] rounded-full border text-[10.5px] font-mono transition-colors cursor-pointer studio-tap shrink-0 ${
-                    planMode
-                      ? 'bg-purple-500/20 text-purple-300 border-purple-500/40 shadow-[0_0_10px_rgba(168,85,247,0.3)]'
-                      : 'bg-white/[0.06] text-[#94a3b8] hover:bg-white/[0.12] border-white/10'
-                  }`}
-                  title={planMode ? '点击退出计划模式' : '点击开启计划模式'}
-                >
-                  <CheckSquare size={10} className={planMode ? 'text-purple-400' : 'text-[#64748b]'} />
-                  <span>{planMode ? 'Plan 开启' : 'Plan'}</span>
-                </button>
+              <h2 className="text-[15px] font-bold tracking-tight text-gray-900 truncate">
+                {title || '新对话'}
+              </h2>
+              <div className="flex items-center gap-1.5 text-[11px] text-[#52525b] truncate">
+                <span>minimax</span>
+                <span>-</span>
+                <span className="truncate">{hostName || 'caixuf.Windows'}</span>
                 {workspace && (
                   <>
                     <span>·</span>
-                    <span className="flex items-center gap-1 font-mono text-[#94a3b8] truncate max-w-[130px]">
-                      <Folder size={11} className="text-[#3b82f6]" />
-                      <span className="truncate">{workspace}</span>
-                    </span>
+                    <span className="font-mono truncate">{workspace}</span>
                   </>
                 )}
               </div>
             </div>
           </div>
 
-          <div className="flex items-center gap-2 shrink-0">
+          <div className="flex items-center gap-1.5 shrink-0">
             {running && (
-              // 有过程状态就说出"到底在干什么 + 干了多久"，没有就退回原来的"执行中"。
-              // 对齐 GUI 的「正在分析请求」「深度搜索中，用时 1分56秒」。
               <span
-                className="flex items-center gap-1.5 text-[11px] font-semibold text-[#38bdf8] bg-[#38bdf8]/15 border border-[#38bdf8]/30 px-2.5 py-1 rounded-full max-w-[120px] sm:max-w-[180px] shrink-0"
+                className="flex items-center gap-1.5 text-[11px] font-medium text-blue-600 bg-blue-50 px-2.5 py-1 rounded-full shrink-0"
                 data-testid="activity-badge"
                 data-phase={activityOn ? (activity as ActivityState).phase : 'unknown'}
                 title={activityModel ? `模型：${activityModel}` : undefined}
               >
                 <Loader2 size={11} className="animate-spin shrink-0" />
                 <span className="truncate">{activityText || '执行中'}</span>
-                {activityElapsed && <span className="font-mono text-[#7dd3fc] shrink-0">· {activityElapsed}</span>}
+                {activityElapsed && <span className="font-mono shrink-0">· {activityElapsed}</span>}
               </span>
             )}
             {!running && summaryText && (
               <span
                 data-testid="turn-summary"
-                className="text-[11px] text-[#94a3b8] bg-white/[0.04] border border-white/10 px-2.5 py-1 rounded-full max-w-[120px] sm:max-w-[180px] shrink-0 truncate font-mono"
+                className="text-[11px] text-[#52525b] bg-gray-100 px-2.5 py-1 rounded-full max-w-[120px] sm:max-w-[180px] shrink-0 truncate font-mono"
               >
                 {summaryText}
               </span>
             )}
             <button
-              onClick={onOpenDrawer}
+              type="button"
+              onClick={togglePlanMode}
+              aria-label={`计划模式：${planMode ? '已开启' : '已关闭'}`}
+              className={`flex items-center gap-1 px-2.5 py-1 min-h-[44px] rounded-full text-[11px] font-mono transition-colors cursor-pointer shrink-0 ${
+                planMode
+                  ? 'bg-purple-100 text-purple-700 border border-purple-300 font-semibold'
+                  : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
+              }`}
+              title={planMode ? '点击退出计划模式' : '点击开启计划模式'}
+            >
+              <CheckSquare size={11} className={planMode ? 'text-purple-600' : 'text-[#52525b]'} />
+              <span>{planMode ? 'Plan 开启' : 'Plan'}</span>
+            </button>
+            <button
+              onClick={() => {
+                triggerHaptic('light');
+                onOpenDrawer();
+              }}
               type="button"
               aria-label="打开会话菜单"
-              className="w-11 h-11 rounded-xl bg-white/[0.06] hover:bg-white/[0.12] border border-white/[0.08] flex items-center justify-center text-[#e2e8f0] transition-colors cursor-pointer studio-tap"
+              className="w-11 h-11 rounded-full hover:bg-gray-100 flex items-center justify-center text-gray-700 transition-colors cursor-pointer"
             >
-              <Menu size={16} />
+              <MoreHorizontal size={19} />
             </button>
           </div>
         </div>
@@ -531,7 +521,7 @@ export const ChatScreen: React.FC<Props> = ({
                 className="flex items-center gap-3 py-2.5 select-none"
               >
                 <span className="h-px flex-1 bg-gradient-to-r from-transparent via-white/12 to-white/12" />
-                <span className="text-[11px] font-semibold tracking-wide text-[#64748b] shrink-0">
+                <span className="text-[11px] font-semibold tracking-wide text-[#52525b] shrink-0">
                   {line.text}
                 </span>
                 <span className="h-px flex-1 bg-gradient-to-r from-white/12 via-white/12 to-transparent" />
@@ -551,20 +541,20 @@ export const ChatScreen: React.FC<Props> = ({
                   onClick={() => toggleInjected(key)}
                   aria-expanded={injectedOpen}
                   aria-label={`${line.injectedLabel || '上下文'}，共 ${line.text.length} 字，点${injectedOpen ? '收起' : '展开查看'}`}
-                  className="w-full min-h-[44px] flex items-center gap-2 px-3 py-2.5 rounded-xl border border-dashed border-white/10 bg-white/[0.02] text-left cursor-pointer studio-tap"
+                  className="w-full min-h-[44px] flex items-center gap-2 px-3 py-2.5 rounded-xl border border-dashed border-black/[0.08] bg-black/[0.02] text-left cursor-pointer studio-tap"
                 >
                   {injectedOpen ? (
-                    <ChevronDown size={13} className="text-[#64748b] shrink-0" />
+                    <ChevronDown size={13} className="text-[#52525b] shrink-0" />
                   ) : (
-                    <ChevronRight size={13} className="text-[#64748b] shrink-0" />
+                    <ChevronRight size={13} className="text-[#52525b] shrink-0" />
                   )}
-                  <span className="text-[11.5px] text-[#94a3b8] truncate">
+                  <span className="text-[11.5px] text-[#52525b] truncate">
                     {line.injectedLabel || '上下文'} · 由电脑端注入，不是你发的（{line.text.length} 字）
                   </span>
                 </button>
                 {injectedOpen && (
-                  <div className="mt-1.5 px-3 py-2 rounded-xl bg-black/25 border border-white/[0.06]">
-                    <pre className="text-[11px] leading-[1.5] text-[#64748b] whitespace-pre-wrap break-words max-h-[40vh] overflow-y-auto">
+                  <div className="mt-1.5 px-3 py-2 rounded-xl bg-black/25 border border-black/[0.06]">
+                    <pre className="text-[11px] leading-[1.5] text-[#52525b] whitespace-pre-wrap break-words max-h-[40vh] overflow-y-auto">
                       {line.text}
                     </pre>
                   </div>
@@ -611,7 +601,7 @@ export const ChatScreen: React.FC<Props> = ({
           }
 
           if (line.role === 'user') {
-            // 超长用户消息（runtime context 动辄上万字）默认折叠为 6 行 + 复制
+            // 超长用户消息默认折叠为 6 行 + 复制
             return (
               <CollapsibleMessage
                 key={key}
@@ -624,7 +614,7 @@ export const ChatScreen: React.FC<Props> = ({
                 active={activeMessageKey === key}
                 onActivate={setActiveMessageKey}
                 showCursor={isLastMessage}
-                bodyClassName="max-w-[84%] px-4 py-2.5 rounded-2xl rounded-br-xs bg-gradient-to-r from-[#2563eb] to-[#3b82f6] text-white text-[14.5px] leading-relaxed shadow-[0_0_20px_rgba(59,130,246,0.3)] break-words border border-white/10"
+                bodyClassName="max-w-[85%] px-4 py-2.5 rounded-2xl bg-[#f4f4f5] text-[#18181b] text-[14.5px] leading-relaxed shadow-2xs break-words border border-gray-200/60"
               />
             );
           }
@@ -632,14 +622,14 @@ export const ChatScreen: React.FC<Props> = ({
           if (line.role === 'system') {
             return (
               <div key={key} className="flex justify-center my-2">
-                <span className="px-3 py-1 rounded-full text-[11.5px] text-[#94a3b8] bg-[#141824] border border-white/[0.08]">
+                <span className="px-3 py-1 rounded-full text-[11.5px] text-[#52525b] bg-gray-100 border border-gray-200/60">
                   {line.text}
                 </span>
               </div>
             );
           }
 
-          // Assistant message: Obsidian Studio Specular Card（超长正文同样折叠）
+          // Assistant message: CollapsibleMessage with MiniMax light style + Action Bar
           return (
             <CollapsibleMessage
               key={key}
@@ -652,18 +642,59 @@ export const ChatScreen: React.FC<Props> = ({
               active={activeMessageKey === key}
               onActivate={setActiveMessageKey}
               showCursor={isLastMessage}
-              bodyClassName="my-2.5 w-full specular-card p-4 rounded-3xl border border-white/10 shadow-xl"
-              header={
-                <div className="flex items-center gap-2 mb-2.5 pb-2 border-b border-white/[0.08]">
-                  <div className="w-5 h-5 rounded-lg bg-gradient-to-br from-[#1e293b] to-[#0f172a] border border-white/10 flex items-center justify-center p-0.5 shadow-inner">
-                    <DeepSeekLogo size={14} variant="brand" />
-                  </div>
-                  <span className="text-[12px] font-bold text-white tracking-wide">DeepSeek 远程执行响应</span>
-                </div>
-              }
+              bodyClassName="my-2.5 w-full text-[#18181b]"
             >
-              <div className="text-[#f1f5f9] leading-relaxed">
-                <MarkdownView content={line.text} streaming={isLastMessage && running} />
+              <div className="space-y-2">
+                <div className="text-[#18181b] leading-relaxed text-[15px]">
+                  <MarkdownView content={line.text} streaming={isLastMessage && running} />
+                </div>
+                <div className="flex items-center gap-1 pt-1 text-[#52525b]">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      triggerHaptic('light');
+                      void copyToClipboard(line.text);
+                    }}
+                    aria-label="复制回答"
+                    className="min-h-[44px] min-w-[44px] flex items-center justify-center rounded-full hover:bg-gray-100 text-[#52525b] hover:text-black transition-colors cursor-pointer"
+                    title="复制"
+                  >
+                    <Copy size={15} />
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => triggerHaptic('light')}
+                    aria-label="赞同回答"
+                    className="min-h-[44px] min-w-[44px] flex items-center justify-center rounded-full hover:bg-gray-100 text-[#52525b] hover:text-black transition-colors cursor-pointer"
+                    title="赞同"
+                  >
+                    <ThumbsUp size={15} />
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => triggerHaptic('light')}
+                    aria-label="反对回答"
+                    className="min-h-[44px] min-w-[44px] flex items-center justify-center rounded-full hover:bg-gray-100 text-[#52525b] hover:text-black transition-colors cursor-pointer"
+                    title="反对"
+                  >
+                    <ThumbsDown size={15} />
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      triggerHaptic('medium');
+                      void handleSendText('请重新生成');
+                    }}
+                    aria-label="重新生成回答"
+                    className="min-h-[44px] min-w-[44px] flex items-center justify-center rounded-full hover:bg-gray-100 text-[#52525b] hover:text-black transition-colors cursor-pointer"
+                    title="重新生成"
+                  >
+                    <RotateCw size={15} />
+                  </button>
+                  <span className="text-[11px] text-[#52525b] ml-auto font-mono pr-2">
+                    {isLastMessage && running ? '生成中…' : '刚刚'}
+                  </span>
+                </div>
               </div>
             </CollapsibleMessage>
           );
@@ -672,8 +703,8 @@ export const ChatScreen: React.FC<Props> = ({
         {/* Prompt suggestion pills for quick trigger when lines are short */}
         {lines.length <= 2 && (
           <div className="pt-2">
-            <div className="text-[11px] font-semibold text-[#64748b] mb-2 px-1 uppercase tracking-wider flex items-center gap-1.5">
-              <Sparkles size={13} className="text-[#3b82f6]" />
+            <div className="text-[11px] font-semibold text-[#52525b] mb-2 px-1 uppercase tracking-wider flex items-center gap-1.5">
+              <Sparkles size={13} className="text-blue-500" />
               <span>快捷指令建议</span>
             </div>
             <div className="flex flex-wrap gap-2">
@@ -685,7 +716,7 @@ export const ChatScreen: React.FC<Props> = ({
                     triggerHaptic('light');
                     void handleSendText(p);
                   }}
-                  className="px-3.5 py-2 min-h-[44px] rounded-xl bg-[#141824] hover:bg-[#1e2538] hover:border-[#3b82f6]/40 text-[#cbd5e1] hover:text-white border border-white/10 text-[12.5px] font-medium shadow-sm transition-all cursor-pointer studio-tap"
+                  className="px-3.5 py-2 min-h-[44px] rounded-xl bg-[#f4f4f6] hover:bg-[#eaeaea] text-gray-800 border border-gray-200/60 text-[12.5px] font-medium shadow-2xs transition-all cursor-pointer"
                 >
                   {p}
                 </button>
@@ -706,7 +737,7 @@ export const ChatScreen: React.FC<Props> = ({
                 <div
                   key={step}
                   className={`h-1.5 rounded-full transition-all duration-300 ${
-                    step <= preparingStep ? 'bg-[#3b82f6] shadow-[0_0_8px_rgba(59,130,246,0.6)]' : 'bg-white/10'
+                    step <= preparingStep ? 'bg-blue-600 shadow-sm' : 'bg-gray-200'
                   }`}
                 />
               ))}
@@ -718,15 +749,15 @@ export const ChatScreen: React.FC<Props> = ({
         {pending && (
           <div ref={pendingCardRef} className="my-4 scroll-m-24" data-testid="pending-interaction">
             {pending.approval ? (
-              <div className="p-5 rounded-3xl specular-card border-2 border-[#3b82f6] shadow-[0_0_35px_rgba(59,130,246,0.35)] animate-in zoom-in-95 duration-200">
-                <div className="flex items-center gap-2 text-[14px] font-bold text-white">
-                  <AlertTriangle size={18} className="text-[#f59e0b] shrink-0" />
+              <div className="p-5 rounded-3xl bg-white border-2 border-blue-500 shadow-xl animate-in zoom-in-95 duration-200">
+                <div className="flex items-center gap-2 text-[14px] font-bold text-gray-900">
+                  <AlertTriangle size={18} className="text-amber-500 shrink-0" />
                   <span>{pending.title}</span>
                 </div>
-                <p className="text-[13px] text-[#cbd5e1] mt-2.5 leading-relaxed whitespace-pre-wrap">
+                <p className="text-[13px] text-gray-600 mt-2.5 leading-relaxed whitespace-pre-wrap">
                   {pending.body}
                 </p>
-                <div className="flex items-center justify-end gap-3 mt-5 pt-3 border-t border-white/10">
+                <div className="flex items-center justify-end gap-3 mt-5 pt-3 border-t border-gray-100">
                   <button
                     type="button"
                     onClick={() => {
@@ -734,7 +765,7 @@ export const ChatScreen: React.FC<Props> = ({
                       onApprove(false);
                     }}
                     aria-label="拒绝本次操作"
-                    className="min-h-[44px] px-4 py-2 rounded-xl border border-[#f43f5e]/40 text-[13px] font-medium text-[#fb7185] bg-[#f43f5e]/15 hover:bg-[#f43f5e]/25 transition-colors cursor-pointer studio-tap"
+                    className="min-h-[44px] px-4 py-2 rounded-xl border border-rose-200 text-[13px] font-medium text-rose-600 bg-rose-50 hover:bg-rose-100 transition-colors cursor-pointer"
                   >
                     拒绝 (Reject)
                   </button>
@@ -745,7 +776,7 @@ export const ChatScreen: React.FC<Props> = ({
                       onApprove(true);
                     }}
                     aria-label="允许一次"
-                    className="min-h-[44px] px-5 py-2 rounded-xl bg-gradient-to-r from-[#3b82f6] to-[#2563eb] text-white text-[13px] font-semibold shadow-[0_0_20px_rgba(59,130,246,0.4)] transition-transform cursor-pointer studio-tap"
+                    className="min-h-[44px] px-5 py-2 rounded-xl bg-black text-white text-[13px] font-semibold shadow-sm transition-transform cursor-pointer"
                   >
                     允许一次 (Allow Once)
                   </button>
@@ -763,8 +794,8 @@ export const ChatScreen: React.FC<Props> = ({
         {/* 只有工具卡时才需要独立的流式光标（消息类行自己会带） */}
         {showStreamCursor && lastMessageKey === null && (
           <div className="flex items-center gap-2 px-1" role="status">
-            <span className="inline-block w-[7px] h-[15px] rounded-[2px] bg-[#38bdf8] animate-pulse" />
-            <span className="text-[11.5px] text-[#64748b]">正在输出…</span>
+            <span className="inline-block w-[7px] h-[15px] rounded-[2px] bg-blue-600 animate-pulse" />
+            <span className="text-[11.5px] text-[#52525b]">正在输出…</span>
           </div>
         )}
 
@@ -774,8 +805,8 @@ export const ChatScreen: React.FC<Props> = ({
         <div ref={messagesEndRef} />
       </div>
 
-      {/* 3. Floating Composer Dock */}
-      <div className="fixed bottom-0 left-0 right-0 z-20 bg-gradient-to-t from-[#090a0f] via-[#090a0f]/95 to-transparent pt-6 pb-[calc(1.25rem+var(--sab)+var(--keyboard-inset-bottom,0px))] px-4 transition-all duration-150">
+      {/* 3. Floating MiniMax Composer Dock (Screenshot 5) */}
+      <div className="fixed bottom-0 left-0 right-0 z-20 bg-gradient-to-t from-white via-white/95 to-transparent pt-4 pb-[calc(1.25rem+var(--sab)+var(--keyboard-inset-bottom,0px))] px-4 transition-all duration-150">
         <div className="max-w-2xl mx-auto">
           {/* 上滑看历史时才出现；点了回底部并恢复自动跟随 */}
           {showJumpToLatest && (
@@ -784,38 +815,38 @@ export const ChatScreen: React.FC<Props> = ({
                 type="button"
                 onClick={jumpToLatest}
                 aria-label="跳到最新消息"
-                className="flex items-center gap-1.5 min-h-[44px] px-4 rounded-full bg-[#141824]/95 border border-[#3b82f6]/40 text-[#93c5fd] text-[12px] font-medium shadow-lg hover:bg-[#1e2538] backdrop-blur-sm cursor-pointer studio-tap"
+                className="flex items-center gap-1.5 min-h-[44px] px-4 rounded-full bg-white/95 border border-gray-200 text-gray-700 text-[12px] font-medium shadow-md hover:bg-gray-50 backdrop-blur-sm cursor-pointer"
               >
                 <ChevronDown size={14} />
                 <span>跳到最新</span>
               </button>
             </div>
           )}
-          {/* Live event stream status: 断开时明说，不静默假装正常 */}
+          {/* Live event stream status */}
           {liveConnected === false && (
             <div
               role="status"
-              className="flex items-center gap-1.5 mb-2 px-3 py-1.5 rounded-xl bg-[#f59e0b]/10 border border-[#f59e0b]/30 text-[11.5px] text-[#fcd34d]"
+              className="flex items-center gap-1.5 mb-2 px-3 py-1.5 rounded-xl bg-amber-50 border border-amber-200 text-[11.5px] text-amber-800"
             >
-              <AlertTriangle size={12} className="shrink-0" />
+              <AlertTriangle size={12} className="shrink-0 text-amber-600" />
               <span>实时事件流未连接：消息会先入队，恢复后按序补发，结果可能延迟</span>
             </div>
           )}
 
-          {/* 发送失败：明确告知"字没丢"，并给一键重试 */}
+          {/* 发送失败 */}
           {sendError && (
             <div
               role="alert"
               aria-live="polite"
-              className="flex items-center gap-2 mb-2 px-3 py-2 rounded-xl bg-[#f43f5e]/12 border border-[#f43f5e]/35 text-[11.5px] text-[#fda4af]"
+              className="flex items-center gap-2 mb-2 px-3 py-2 rounded-xl bg-rose-50 border border-rose-200 text-[11.5px] text-rose-800"
             >
-              <AlertTriangle size={13} className="shrink-0" />
+              <AlertTriangle size={13} className="shrink-0 text-rose-600" />
               <span className="flex-1">{sendError}</span>
               <button
                 type="button"
                 onClick={() => void handleSendText(inputText)}
                 aria-label="重试发送当前草稿"
-                className="min-h-[44px] px-3 rounded-xl flex items-center gap-1.5 text-[11.5px] font-semibold text-[#fb7185] bg-[#f43f5e]/15 hover:bg-[#f43f5e]/25 border border-[#f43f5e]/35 cursor-pointer studio-tap"
+                className="min-h-[44px] px-3 rounded-xl flex items-center gap-1.5 text-[11.5px] font-semibold text-rose-700 bg-white border border-rose-200 cursor-pointer"
               >
                 <RefreshCw size={13} />
                 <span>重试</span>
@@ -824,33 +855,33 @@ export const ChatScreen: React.FC<Props> = ({
                 type="button"
                 onClick={() => setSendError(null)}
                 aria-label="关闭发送失败提示"
-                className="w-11 h-11 rounded-xl flex items-center justify-center text-[#fda4af] hover:text-white bg-white/[0.05] hover:bg-white/[0.12] border border-white/[0.08] cursor-pointer studio-tap"
+                className="w-11 h-11 rounded-full flex items-center justify-center text-rose-700 hover:bg-rose-100 cursor-pointer"
               >
                 <X size={15} />
               </button>
             </div>
           )}
 
-          {/* 草稿恢复提示：恢复必须是可见的 */}
+          {/* 草稿恢复提示 */}
           {draftNotice && !sendError && (
             <div
               role="status"
-              className="flex items-center gap-2 mb-2 px-3 py-1.5 rounded-xl bg-[#3b82f6]/10 border border-[#3b82f6]/30 text-[11.5px] text-[#93c5fd]"
+              className="flex items-center gap-2 mb-2 px-3 py-1.5 rounded-xl bg-blue-50 border border-blue-200 text-[11.5px] text-blue-800"
             >
-              <Sparkles size={12} className="shrink-0" />
+              <Sparkles size={12} className="shrink-0 text-blue-600" />
               <span className="flex-1">{draftNotice}</span>
               <button
                 type="button"
                 onClick={() => setDraftNotice(null)}
                 aria-label="关闭草稿恢复提示"
-                className="w-11 h-11 rounded-xl flex items-center justify-center text-[#93c5fd] hover:text-white bg-white/[0.05] hover:bg-white/[0.12] border border-white/[0.08] cursor-pointer studio-tap"
+                className="w-11 h-11 rounded-full flex items-center justify-center text-blue-700 hover:bg-blue-100 cursor-pointer"
               >
                 <X size={15} />
               </button>
             </div>
           )}
 
-          {/* 待发队列（运行中补的话都在这里，可展开/删除/重试） */}
+          {/* 待发队列 */}
           <QueuedMessagesBar
             queued={queued || []}
             running={running}
@@ -864,7 +895,7 @@ export const ChatScreen: React.FC<Props> = ({
               <button
                 type="button"
                 onClick={onCancel}
-                className="flex items-center gap-1.5 min-h-[44px] px-4 rounded-full bg-[#1e131d] border border-[#f43f5e]/40 text-[#fb7185] text-[12px] font-medium shadow-lg hover:bg-[#2b1725] transition-transform cursor-pointer studio-tap"
+                className="flex items-center gap-1.5 min-h-[44px] px-4 rounded-full bg-white border border-rose-200 text-rose-600 text-[12px] font-medium shadow-md hover:bg-rose-50 transition-transform cursor-pointer"
               >
                 <Square size={11} fill="currentColor" />
                 <span>停止当前任务</span>
@@ -883,7 +914,7 @@ export const ChatScreen: React.FC<Props> = ({
             filterText={inputText}
           />
 
-          {/* Attachment Bar (Photo / Image Preview & Path Insertion) */}
+          {/* Attachment Bar */}
           <AttachmentBar
             attachment={attachment}
             onRemove={() => setAttachment(null)}
@@ -892,8 +923,8 @@ export const ChatScreen: React.FC<Props> = ({
             workspace={workspace}
           />
 
-          {/* 现代化双层微卡片输入区（全宽文本域 + 底部工具群，无挤压折行） */}
-          <div className="studio-glass-dock p-2.5 rounded-2xl transition-all focus-within:border-[#3b82f6]/50 focus-within:ring-1 focus-within:ring-[#3b82f6]/30 bg-[#121624]/95 backdrop-blur-xl border border-white/10 shadow-2xl">
+          {/* MiniMax Iconic Rounded-3xl Input Capsule Dock (Screenshot 5) */}
+          <div className="p-3 rounded-3xl bg-[#f4f4f6] border border-gray-200/70 shadow-sm focus-within:border-gray-400 focus-within:bg-white transition-all">
             {/* Hidden File Input for Image Chooser */}
             <input
               ref={fileInputRef}
@@ -918,8 +949,8 @@ export const ChatScreen: React.FC<Props> = ({
               }}
             />
 
-            {/* 上层：自适应宽屏文本框，整行宽度，placeholder 舒展大气，绝不折行挤压 */}
-            <div className="w-full">
+            {/* 上层：多行自适应文本域 */}
+            <div className="w-full px-1">
               <textarea
                 rows={1}
                 value={inputText}
@@ -932,24 +963,24 @@ export const ChatScreen: React.FC<Props> = ({
                 placeholder={
                   running
                     ? '任务执行中，继续输入会进入待发队列…'
-                    : '发送遥控指令，例如：检查 git 状态、运行测试…'
+                    : '问点什么吧...'
                 }
-                className="w-full max-h-36 min-h-[40px] py-1 px-1 text-[14px] leading-relaxed resize-none focus:outline-hidden bg-transparent text-white placeholder:text-[#64748b]"
+                className="w-full max-h-36 min-h-[40px] py-1 text-[15px] leading-relaxed resize-none focus:outline-hidden bg-transparent text-gray-900 placeholder:text-[#52525b] font-normal"
               />
             </div>
 
-            {/* 下层：工具与操作栏（左侧工具群，右侧操作按钮） */}
-            <div className="flex items-center justify-between gap-2 pt-1 border-t border-white/[0.05] mt-1">
-              <div className="flex items-center gap-1">
-                {/* 附件 */}
+            {/* 下层：左侧添加/指令按钮，中间模型选择胶囊，右侧麦克风/发送 */}
+            <div className="flex items-center justify-between gap-2 pt-1 border-t border-gray-200/50 mt-1">
+              <div className="flex items-center gap-0.5">
+                {/* 附件与图片 */}
                 <button
                   type="button"
                   onClick={() => fileInputRef.current?.click()}
                   aria-label="添加图片附件"
-                  className="min-h-[44px] min-w-[44px] rounded-xl bg-white/[0.04] text-[#94a3b8] hover:text-[#38bdf8] hover:bg-white/[0.08] flex items-center justify-center transition-colors cursor-pointer studio-tap shrink-0"
+                  className="min-h-[44px] min-w-[44px] rounded-full text-[#52525b] hover:text-black flex items-center justify-center transition-colors cursor-pointer shrink-0"
                   title="添加图片附件"
                 >
-                  <Paperclip size={17} />
+                  <Plus size={19} />
                 </button>
 
                 {/* 快捷指令 */}
@@ -957,43 +988,57 @@ export const ChatScreen: React.FC<Props> = ({
                   type="button"
                   onClick={() => setCommandPaletteOpen((prev) => !prev)}
                   aria-label="快捷指令"
-                  className={`min-h-[44px] min-w-[44px] rounded-xl flex items-center justify-center transition-colors cursor-pointer studio-tap shrink-0 ${
+                  className={`min-h-[44px] min-w-[44px] rounded-full flex items-center justify-center transition-colors cursor-pointer shrink-0 ${
                     commandPaletteOpen
-                      ? 'bg-[#3b82f6]/20 text-[#38bdf8] border border-[#3b82f6]/40'
-                      : 'bg-white/[0.04] text-[#94a3b8] hover:text-[#38bdf8] hover:bg-white/[0.08]'
+                      ? 'bg-blue-100 text-blue-700'
+                      : 'text-[#52525b] hover:text-black'
                   }`}
                   title="快捷指令"
                 >
-                  <Terminal size={16} />
-                </button>
-
-                {/* 语音遥控 */}
-                <button
-                  type="button"
-                  onClick={() => setVoiceOpen(true)}
-                  aria-label="语音遥控"
-                  className="min-h-[44px] min-w-[44px] rounded-xl bg-white/[0.04] text-[#94a3b8] hover:text-[#38bdf8] hover:bg-white/[0.08] flex items-center justify-center transition-colors cursor-pointer studio-tap shrink-0"
-                  title="语音遥控"
-                >
-                  <Mic size={17} />
+                  <Terminal size={17} />
                 </button>
               </div>
 
-              {/* 发送按钮 */}
-              <button
-                type="button"
-                disabled={!inputText.trim() && !attachment}
-                onClick={handleSend}
-                aria-label={running || sending ? '加入待发队列' : '发送'}
-                className="min-h-[44px] px-4 rounded-xl bg-gradient-to-r from-[#3b82f6] to-[#2563eb] text-white disabled:opacity-30 flex items-center gap-1.5 text-[13px] font-medium shadow-[0_0_15px_rgba(59,130,246,0.4)] transition-all cursor-pointer studio-tap disabled:cursor-not-allowed shrink-0"
-              >
-                <span>{running ? '入队' : '发送'}</span>
-                <Send size={14} />
-              </button>
+              <div className="flex items-center gap-2">
+                {/* MiniMax Model Selector Pill (Screenshot 5: M3.1-Flash... default ⌵) */}
+                <button
+                  type="button"
+                  onClick={() => setModelPickerOpen(true)}
+                  aria-label={`切换模型：当前 ${activeModelDisplayName}`}
+                  className="min-h-[44px] px-3.5 py-1.5 rounded-full bg-white hover:bg-gray-50 border border-gray-200/80 text-[12px] font-medium text-gray-700 shadow-2xs flex items-center gap-1.5 cursor-pointer shrink-0 max-w-[170px] truncate"
+                  title="点击切换模型"
+                >
+                  <span className="truncate">{activeModelDisplayName} default</span>
+                  <ChevronDown size={12} className="text-[#52525b] shrink-0" />
+                </button>
+
+                {/* 右侧：无输入时麦克风，有输入时黑色发送按钮 */}
+                {!inputText.trim() && !attachment ? (
+                  <button
+                    type="button"
+                    onClick={() => setVoiceOpen(true)}
+                    aria-label="语音遥控"
+                    className="min-h-[44px] min-w-[44px] rounded-full text-gray-600 hover:text-black flex items-center justify-center transition-colors cursor-pointer shrink-0"
+                    title="语音遥控"
+                  >
+                    <Mic size={18} />
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={handleSend}
+                    aria-label={running || sending ? '加入待发队列' : '发送'}
+                    className="min-h-[44px] min-w-[44px] rounded-full bg-black hover:bg-gray-800 text-white flex items-center justify-center shadow-md active:scale-95 transition-all cursor-pointer shrink-0"
+                    title={running ? '加入待发队列' : '发送'}
+                  >
+                    <Send size={15} />
+                  </button>
+                )}
+              </div>
             </div>
           </div>
 
-          <p id="composer-hint" className="mt-1 px-1 text-[10px] text-[#475569] truncate">
+          <p id="composer-hint" className="mt-1 px-2 text-[10px] text-[#52525b] truncate">
             {running
               ? '任务执行中：Enter 发送即入队'
               : sending

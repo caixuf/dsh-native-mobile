@@ -37,16 +37,16 @@ interface Props {
 
 const HEADER_CLASS: Record<Level, string> = {
   group:
-    'px-3 py-2.5 rounded-2xl bg-white/[0.04] hover:bg-white/[0.07] border border-white/[0.08]',
-  sub: 'px-3 py-2 rounded-xl bg-white/[0.02] hover:bg-white/[0.05] border border-white/[0.06]',
+    'px-3 py-2.5 rounded-2xl bg-black/[0.03] hover:bg-black/[0.05] border border-black/[0.08]',
+  sub: 'px-3 py-2 rounded-xl bg-black/[0.02] hover:bg-black/[0.04] border border-black/[0.06]',
   archive:
-    'px-3 py-2.5 rounded-2xl bg-white/[0.02] hover:bg-white/[0.05] border border-dashed border-white/[0.12]',
+    'px-3 py-2.5 rounded-2xl bg-black/[0.02] hover:bg-black/[0.04] border border-dashed border-black/[0.12]',
 };
 
 const TITLE_CLASS: Record<Level, string> = {
-  group: 'text-[14px] font-semibold text-[#e2e8f0]',
-  sub: 'text-[12.5px] font-medium text-[#cbd5e1]',
-  archive: 'text-[13px] font-medium text-[#94a3b8]',
+  group: 'text-[14px] font-semibold text-[#3f3f46]',
+  sub: 'text-[12.5px] font-medium text-[#3f3f46]',
+  archive: 'text-[13px] font-medium text-[#52525b]',
 };
 
 export const CollapsibleSection: React.FC<Props> = ({
@@ -73,19 +73,19 @@ export const CollapsibleSection: React.FC<Props> = ({
           aria-controls={panelId}
           className={`flex-1 min-w-0 flex items-center gap-2 text-left cursor-pointer transition-colors studio-tap ${HEADER_CLASS[level]}`}
         >
-          <span className="shrink-0 text-[#64748b]">
+          <span className="shrink-0 text-[#52525b]">
             {collapsed ? <ChevronRight size={16} /> : <ChevronDown size={16} />}
           </span>
           <span className={`truncate ${TITLE_CLASS[level]}`}>{title}</span>
 
           {typeof count === 'number' && (
-            <span className="shrink-0 text-[11px] font-mono px-1.5 py-0.5 rounded-md bg-white/[0.06] border border-white/[0.08] text-[#94a3b8]">
+            <span className="shrink-0 text-[11px] font-mono px-1.5 py-0.5 rounded-md bg-black/[0.05] border border-black/[0.08] text-[#52525b]">
               {count}
             </span>
           )}
 
           {runningCount > 0 && (
-            <span className="shrink-0 flex items-center gap-1 text-[11px] font-semibold text-[#38bdf8] bg-[#38bdf8]/12 px-2 py-0.5 rounded-full border border-[#38bdf8]/25">
+            <span className="shrink-0 flex items-center gap-1 text-[11px] font-semibold text-[#0369a1] bg-[#38bdf8]/12 px-2 py-0.5 rounded-full border border-[#38bdf8]/25">
               <span className="w-1.5 h-1.5 rounded-full bg-[#38bdf8] animate-pulse" />
               {runningCount} 运行中
             </span>

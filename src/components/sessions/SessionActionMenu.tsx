@@ -124,20 +124,20 @@ export const SessionActionMenu: React.FC<Props> = ({
         aria-modal="true"
         aria-label={`会话操作：${session.title || session.sessionId}`}
         data-testid="session-action-menu"
-        className="relative w-full max-w-md mx-auto rounded-t-3xl specular-card p-4 pb-[calc(1.5rem+var(--sab))] shadow-2xl border-t border-white/10 animate-in slide-in-from-bottom-4 duration-200"
+        className="relative w-full max-w-md mx-auto rounded-t-3xl specular-card p-4 pb-[calc(1.5rem+var(--sab))] shadow-2xl border-t border-black/[0.08] animate-in slide-in-from-bottom-4 duration-200"
       >
-        <div className="flex items-start justify-between gap-3 pb-3 border-b border-white/[0.08]">
+        <div className="flex items-start justify-between gap-3 pb-3 border-b border-black/[0.08]">
           <div className="min-w-0">
-            <p className="text-[13.5px] font-semibold text-white truncate">
+            <p className="text-[13.5px] font-semibold text-[#18181b] truncate">
               {session.title || '未命名会话'}
             </p>
-            <p className="text-[11px] font-mono text-[#64748b] truncate">{session.sessionId}</p>
+            <p className="text-[11px] font-mono text-[#52525b] truncate">{session.sessionId}</p>
           </div>
           <button
             type="button"
             onClick={onClose}
             aria-label="关闭"
-            className="shrink-0 w-8 h-8 rounded-lg bg-white/[0.06] hover:bg-white/[0.12] border border-white/[0.08] flex items-center justify-center text-[#94a3b8] hover:text-white transition-colors cursor-pointer studio-tap"
+            className="shrink-0 w-8 h-8 rounded-lg bg-black/[0.05] hover:bg-black/[0.06] border border-black/[0.08] flex items-center justify-center text-[#52525b] hover:text-[#18181b] transition-colors cursor-pointer studio-tap"
           >
             <X size={15} />
           </button>
@@ -145,7 +145,7 @@ export const SessionActionMenu: React.FC<Props> = ({
 
         {renaming ? (
           <div className="pt-3">
-            <label className="block text-[12px] font-medium text-[#94a3b8] mb-1.5" htmlFor="dsh-rename-input">
+            <label className="block text-[12px] font-medium text-[#52525b] mb-1.5" htmlFor="dsh-rename-input">
               会话标题
             </label>
             <input
@@ -161,7 +161,7 @@ export const SessionActionMenu: React.FC<Props> = ({
                   void submitRename();
                 }
               }}
-              className="w-full px-3.5 py-2.5 text-[13.5px] bg-[#141824] border border-white/10 rounded-xl focus:outline-hidden focus:border-[#3b82f6] focus:ring-1 focus:ring-[#3b82f6]/40 text-white placeholder:text-[#64748b] disabled:opacity-60"
+              className="w-full px-3.5 py-2.5 text-[13.5px] bg-[#141824] border border-black/[0.08] rounded-xl focus:outline-hidden focus:border-[#3b82f6] focus:ring-1 focus:ring-[#3b82f6]/40 text-white placeholder:text-[#52525b] disabled:opacity-60"
             />
             {error && <p className="mt-2 text-[12px] text-[#f87171]">{error}</p>}
             <div className="flex items-center justify-end gap-2 mt-4">
@@ -173,7 +173,7 @@ export const SessionActionMenu: React.FC<Props> = ({
                   setDraft(session.title || '');
                   setError(null);
                 }}
-                className="px-4 py-2 text-[13px] font-medium text-[#94a3b8] hover:text-white rounded-xl transition-colors cursor-pointer disabled:opacity-60"
+                className="px-4 py-2 text-[13px] font-medium text-[#52525b] hover:text-[#18181b] rounded-xl transition-colors cursor-pointer disabled:opacity-60"
               >
                 取消
               </button>
@@ -204,7 +204,7 @@ export const SessionActionMenu: React.FC<Props> = ({
                     ? 'text-[#475569] cursor-not-allowed'
                     : item.danger
                       ? 'text-[#fca5a5] hover:bg-[#ef4444]/12 cursor-pointer studio-tap'
-                      : 'text-[#e2e8f0] hover:bg-white/[0.08] cursor-pointer studio-tap'
+                      : 'text-[#3f3f46] hover:bg-black/[0.05] cursor-pointer studio-tap'
                 }`}
               >
                 <ActionIcon id={item.id} />

@@ -185,9 +185,9 @@ export const SessionCard: React.FC<Props> = ({
 
   return (
     <div
-      className={`specular-card-interactive group relative overflow-hidden rounded-2xl ${
+      className={`group relative overflow-hidden rounded-2xl bg-[#f8f9fa] hover:bg-[#f4f4f6] border border-gray-200/60 shadow-2xs transition-all ${
         compact ? 'p-3' : 'p-3.5'
-      } ${archived ? 'opacity-70' : ''}`}
+      } ${archived ? 'opacity-60' : ''}`}
       data-session-id={session.sessionId}
       onTouchStart={startLongPress}
       onTouchEnd={clearLongPress}
@@ -207,7 +207,7 @@ export const SessionCard: React.FC<Props> = ({
         >
           <div className="flex items-center gap-2 flex-wrap">
             <h3
-              className={`min-w-0 truncate font-semibold tracking-tight text-white group-hover:text-[#60a5fa] transition-colors ${
+              className={`min-w-0 truncate font-semibold tracking-tight text-[#18181b] group-hover:text-black transition-colors ${
                 compact ? 'text-[13.5px]' : 'text-[15px]'
               }`}
             >
@@ -215,14 +215,14 @@ export const SessionCard: React.FC<Props> = ({
             </h3>
 
             {session.isSubagent && (
-              <span className="shrink-0 text-[10.5px] font-medium px-2 py-0.5 rounded-md bg-[#a855f7]/15 text-[#c084fc] border border-[#a855f7]/25">
+              <span className="shrink-0 text-[10.5px] font-medium px-2 py-0.5 rounded-md bg-purple-50 text-purple-700 border border-purple-200/60">
                 子代理
               </span>
             )}
 
             {session.running && (
-              <span className="shrink-0 flex items-center gap-1.5 text-[11px] font-semibold text-[#38bdf8] bg-[#38bdf8]/15 px-2.5 py-0.5 rounded-full border border-[#38bdf8]/30">
-                <span className="w-1.5 h-1.5 rounded-full bg-[#38bdf8] animate-ping" />
+              <span className="shrink-0 flex items-center gap-1.5 text-[11px] font-semibold text-blue-600 bg-blue-50 px-2.5 py-0.5 rounded-full border border-blue-200/60">
+                <span className="w-1.5 h-1.5 rounded-full bg-blue-500 animate-ping" />
                 电脑执行中
               </span>
             )}
@@ -230,7 +230,7 @@ export const SessionCard: React.FC<Props> = ({
 
           {session.preview && (
             <p
-              className={`text-[#94a3b8] mt-1.5 leading-relaxed font-normal ${
+              className={`text-[#52525b] mt-1 leading-relaxed font-normal ${
                 compact ? 'text-[12px] line-clamp-1' : 'text-[13px] line-clamp-2'
               }`}
             >
@@ -238,11 +238,11 @@ export const SessionCard: React.FC<Props> = ({
             </p>
           )}
 
-          <div className="flex items-center gap-2 mt-2.5 text-[11.5px] text-[#64748b]">
+          <div className="flex items-center gap-2 mt-2 text-[11.5px] text-[#52525b]">
             {session.workspace && (
               <>
-                <span className="flex items-center gap-1 font-mono text-[#cbd5e1] truncate max-w-[220px] bg-white/[0.04] px-2 py-0.5 rounded-md border border-white/[0.06]">
-                  <Folder size={11} className="shrink-0 text-[#3b82f6]" />
+                <span className="flex items-center gap-1 font-mono text-gray-600 truncate max-w-[220px] bg-white px-2 py-0.5 rounded-md border border-gray-200/60">
+                  <Folder size={11} className="shrink-0 text-blue-500" />
                   <span className="truncate">{session.workspace}</span>
                 </span>
                 <span>·</span>
@@ -264,7 +264,7 @@ export const SessionCard: React.FC<Props> = ({
             aria-expanded={menuOpen}
             title="更多操作（重命名 / 复制 id / fork / 取消运行 / 归档）"
             data-testid="session-card-more"
-            className="w-7 h-7 rounded-lg flex items-center justify-center border bg-white/[0.04] hover:bg-white/[0.10] border-white/[0.08] text-[#64748b] hover:text-[#e2e8f0] transition-colors cursor-pointer studio-tap"
+            className="w-7 h-7 rounded-lg flex items-center justify-center border bg-white hover:bg-gray-100 border-gray-200/60 text-[#52525b] hover:text-gray-900 transition-colors cursor-pointer studio-tap"
           >
             <EllipsisVertical size={15} />
           </button>
@@ -277,8 +277,8 @@ export const SessionCard: React.FC<Props> = ({
               title={archived ? '恢复（仅本机归档）' : '归档（仅本机，不会同步回电脑）'}
               className={`w-7 h-7 rounded-lg flex items-center justify-center border transition-colors cursor-pointer studio-tap ${
                 archived
-                  ? 'bg-[#10b981]/10 hover:bg-[#10b981]/20 border-[#10b981]/25 text-[#34d399]'
-                  : 'bg-white/[0.04] hover:bg-white/[0.10] border-white/[0.08] text-[#64748b] hover:text-[#e2e8f0]'
+                  ? 'bg-emerald-50 hover:bg-emerald-100 border-emerald-200 text-emerald-700'
+                  : 'bg-black/[0.03] hover:bg-black/[0.05] border-black/[0.08] text-[#52525b] hover:text-[#3f3f46]'
               }`}
             >
               {archived ? <ArchiveRestore size={14} /> : <Archive size={14} />}

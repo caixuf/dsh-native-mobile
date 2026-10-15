@@ -34,6 +34,7 @@ import { PairScreen } from './components/screens/PairScreen';
 import { SessionsScreen } from './components/screens/SessionsScreen';
 import { ChatScreen } from './components/screens/ChatScreen';
 import { AppDrawer } from './components/drawer/AppDrawer';
+import { UserCenterModal } from './components/common/UserCenterModal';
 
 type Route = 'hosts' | 'pair' | 'sessions' | 'chat';
 
@@ -165,6 +166,7 @@ export const App: React.FC = () => {
       return [];
     }
   });
+  const [userCenterOpen, setUserCenterOpen] = useState(false);
 
   const connRef = useRef<DshConnection | null>(null);
   const advanceTimerRef = useRef<number | null>(null);
@@ -1348,14 +1350,14 @@ export const App: React.FC = () => {
     <div
       // 🔴 刘海/挖孔屏：targetSdk 35 在 Android 15+ 强制边到边，整页需让出上下安全区，
       // 否则标题栏被刘海压住、输入区被手势条压住（真机 RMX5200 / Android 17 实测）。
-      className="flex h-screen w-screen overflow-hidden bg-[#090a0f] text-[#f8fafc] font-sans pt-[var(--sat)] pb-[var(--sab)]"
+      className="flex h-screen w-screen overflow-hidden bg-white text-[#18181b] font-sans pt-[var(--sat)] pb-[var(--sab)]"
       data-safe-area="top-bottom"
     >
       {/* App Drawer */}
       <AppDrawer
         isOpen={drawerOpen}
         onClose={() => setDrawerOpen(false)}
-        activeHostName={linkState.hostName || activeHost?.label || '我的电脑'}
+        activeHostName={linkState.hostName || activeHost?.label || 'caixuf.Windows'}
         isHostOnline={linkState.type === 'ready'}
         sessions={sessions}
         currentSessionId={currentSession?.sessionId}
@@ -1370,6 +1372,27 @@ export const App: React.FC = () => {
         onManageHosts={() => {
           setRoute('hosts');
           setDrawerOpen(false);
+        }}
+        onOpenUserCenter={() => setUserCenterOpen(true)}
+      />
+
+      {/* MiniMax User Center Modal (Screenshot 2) */}
+      <UserCenterModal
+        isOpen={userCenterOpen}
+        onClose={() => setUserCenterOpen(false)}
+        username={linkState.hostName ? linkState.hostName.split('.')[0] : 'caixuf'}
+        hostName={linkState.hostName || activeHost?.label || 'caixuf.Windows'}
+        isOnline={linkState.type === 'ready'}
+        onManageHosts={() => {
+          setUserCenterOpen(false);
+          setRoute('hosts');
+        }}
+        onDisconnect={() => {
+          if (activeHostId) {
+            handleForgetHost(activeHostId);
+          }
+          setUserCenterOpen(false);
+          setRoute('hosts');
         }}
       />
 
@@ -1393,13 +1416,13 @@ export const App: React.FC = () => {
                     setDrawerOpen(true);
                   }
                 }}
-                className="w-full flex items-center gap-2 px-3 py-2.5 text-left bg-violet-500/20 border-b border-violet-400/40 text-violet-100 backdrop-blur-sm active:bg-violet-500/30"
+                className="w-full flex items-center gap-2 px-3.5 py-2.5 text-left bg-violet-50 border-b border-violet-200 text-violet-950 active:bg-violet-100 transition-colors"
               >
-                <span className="shrink-0 w-2 h-2 rounded-full bg-violet-300 animate-pulse" />
-                <span className="flex-1 min-w-0 truncate text-xs">
+                <span className="shrink-0 w-2 h-2 rounded-full bg-violet-600 animate-pulse" />
+                <span className="flex-1 min-w-0 truncate text-xs font-medium">
                   有 1 项待你处理：{pendingPrompt.title}
                 </span>
-                <span className="shrink-0 text-xs underline">去处理</span>
+                <span className="shrink-0 text-xs font-semibold text-violet-700 underline">去处理</span>
               </button>
             )}
 
@@ -1409,12 +1432,12 @@ export const App: React.FC = () => {
                 <button
                   type="button"
                   onClick={alertBanner.onPress}
-                  className="w-full text-left bg-amber-500/15 text-amber-200 border-b border-amber-500/30 px-3 py-2 text-[11px] leading-snug backdrop-blur-sm active:bg-amber-500/25"
+                  className="w-full text-left bg-amber-50 text-amber-900 border-b border-amber-200 px-3.5 py-2 text-[11px] leading-snug font-medium active:bg-amber-100 transition-colors"
                 >
-                  ⚠️ {alertBanner.text} <span className="underline">去处理</span>
+                  ⚠️ {alertBanner.text} <span className="underline font-semibold ml-1">去处理</span>
                 </button>
               ) : (
-                <div className="bg-amber-500/15 text-amber-200 border-b border-amber-500/30 px-3 py-2 text-[11px] leading-snug backdrop-blur-sm">
+                <div className="bg-amber-50 text-amber-900 border-b border-amber-200 px-3.5 py-2 text-[11px] leading-snug font-medium">
                   ⚠️ {alertBanner.text}
                 </div>
               ))}
@@ -1423,7 +1446,7 @@ export const App: React.FC = () => {
             {notice && (
               <div
                 role="status"
-                className="bg-sky-500/15 text-sky-200 border-b border-sky-500/30 px-3 py-2 text-[11px] leading-snug backdrop-blur-sm"
+                className="bg-blue-50 text-blue-900 border-b border-blue-200 px-3.5 py-2 text-[11px] leading-snug font-medium"
               >
                 {notice}
               </div>

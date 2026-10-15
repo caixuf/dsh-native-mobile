@@ -47,7 +47,7 @@ export interface TokenStyle {
 /** One Dark 风格色板（浅色底 / 深色代码块均已按对比度调过）。 */
 export const TOKEN_STYLES: Record<TokenKind, TokenStyle> = {
   plain: { color: '#d4d4d4' },
-  comment: { color: '#7f848e', fontStyle: 'italic' },
+  comment: { color: '#8b919c', fontStyle: 'italic' },
   string: { color: '#98c379' },
   number: { color: '#d19a66' },
   keyword: { color: '#c678dd', fontWeight: 'bold' },

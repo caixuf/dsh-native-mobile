@@ -114,7 +114,7 @@ export const CollapsibleMessage: React.FC<Props> = ({
   const showActions = active;
   const actionOpacity = showActions
     ? 'opacity-100'
-    : 'opacity-70 sm:opacity-0 sm:group-hover/message:opacity-100 focus-within:opacity-100';
+    : 'opacity-100 sm:opacity-0 sm:group-hover/message:opacity-100 focus-within:opacity-100';
 
   return (
     <div
@@ -141,7 +141,7 @@ export const CollapsibleMessage: React.FC<Props> = ({
             onClick={() => onToggleExpand(messageKey)}
             aria-expanded={expanded}
             aria-label={expanded ? '收起这条消息' : expandLabel(result)}
-            className="min-h-[44px] px-3 rounded-xl text-[11.5px] font-medium text-[#93c5fd] bg-[#3b82f6]/10 hover:bg-[#3b82f6]/20 border border-[#3b82f6]/25 cursor-pointer studio-tap"
+            className="min-h-[44px] px-3 rounded-xl text-[11.5px] font-medium text-blue-600 bg-blue-50 hover:bg-blue-100 border border-blue-200 cursor-pointer"
           >
             {expanded ? '收起' : expandLabel(result)}
           </button>
@@ -151,12 +151,12 @@ export const CollapsibleMessage: React.FC<Props> = ({
           type="button"
           onClick={handleCopy}
           aria-label={copied ? '已复制这条消息' : copyFailed ? '复制失败' : '复制这条消息'}
-          className={`min-h-[44px] px-3 rounded-xl flex items-center gap-1.5 text-[11.5px] font-medium border transition-all cursor-pointer studio-tap ${
+          className={`min-h-[44px] px-3 rounded-xl flex items-center gap-1.5 text-[11.5px] font-medium border transition-all cursor-pointer ${
             copied
-              ? 'text-[#34d399] bg-[#10b981]/15 border-[#10b981]/30'
+              ? 'text-emerald-700 bg-emerald-50 border-emerald-200'
               : copyFailed
-                ? 'text-[#fb7185] bg-[#f43f5e]/10 border-[#f43f5e]/30'
-                : 'text-[#94a3b8] hover:text-white bg-white/[0.04] hover:bg-white/[0.1] border-white/[0.08]'
+                ? 'text-rose-700 bg-rose-50 border-rose-200'
+                : 'text-gray-600 hover:text-black bg-gray-100 hover:bg-gray-200 border-gray-200/60'
           } ${actionOpacity}`}
         >
           {copied ? <Check size={13} /> : <Copy size={13} />}
@@ -164,7 +164,7 @@ export const CollapsibleMessage: React.FC<Props> = ({
         </button>
 
         <span
-          className={`text-[10.5px] text-[#64748b] px-1 select-none ${
+          className={`text-[10.5px] text-[#52525b] px-1 select-none ${
             result.collapsed ? 'opacity-100' : actionOpacity
           }`}
         >

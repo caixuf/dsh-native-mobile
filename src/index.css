@@ -10,30 +10,27 @@
 
 @layer base {
   :root {
-    /* 🔴 安全区：刘海/挖孔屏适配。
-       Android 15+（targetSdk 35）对全屏应用**强制边到边**，内容会画到状态栏与
-       刘海底下 —— 真机（RMX5200 / Android 17）实测：标题栏被刘海压住、时间栏压住内容。
-       配合 index.html 里的 `viewport-fit=cover`，用 env(safe-area-inset-*) 让出边距。
-       桌面浏览器/无刘海设备上这些值恒为 0，不会留空白。 */
+    /* 🔴 安全区：刘海/挖孔屏适配 */
     --sat: env(safe-area-inset-top, 0px);
     --sar: env(safe-area-inset-right, 0px);
     --sab: env(safe-area-inset-bottom, 0px);
     --sal: env(safe-area-inset-left, 0px);
-    --bg-canvas: #090a0f;
-    --bg-surface: #0e1118;
-    --bg-surface-elevated: #151822;
-    --bg-surface-card: #12151f;
-    --color-primary: #3b82f6;
-    --color-primary-glow: rgba(59, 130, 246, 0.35);
-    --color-primary-active: #2563eb;
-    --color-border-subtle: rgba(255, 255, 255, 0.08);
-    --color-border-specular: rgba(255, 255, 255, 0.14);
-    --color-text-main: #f8fafc;
-    --color-text-muted: #94a3b8;
-    --color-text-dim: #64748b;
-    --color-tool: #a855f7;
+
+    /* MiniMax 纯净现代色彩系统 */
+    --bg-canvas: #ffffff;
+    --bg-surface: #f4f4f6;
+    --bg-surface-elevated: #ffffff;
+    --bg-surface-card: #f8f8fa;
+    --color-primary: #18181b;
+    --color-primary-blue: #2563eb;
+    --color-border-subtle: #e4e4e7;
+    --color-border-light: #e4e4e7;
+    --color-text-main: #18181b;
+    --color-text-muted: #71717a;
+    --color-text-dim: #71717a;
+    --color-tool: #6366f1;
     --color-success: #10b981;
-    --color-danger: #f43f5e;
+    --color-danger: #ef4444;
     --color-warning: #f59e0b;
   }
 
@@ -46,33 +43,31 @@
     height: 100%;
     margin: 0;
     padding: 0;
-    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text", "Inter", "Segoe UI", Roboto, sans-serif;
+    font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "SF Pro Display", "SF Pro Text", "Inter", sans-serif;
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
-    background-color: #090a0f;
-    color: #f8fafc;
+    background-color: #ffffff;
+    color: #18181b;
     overscroll-behavior-y: none;
     -webkit-overflow-scrolling: touch;
-    /* 整页四边让出安全区：横屏时左右（刘海在侧）、竖屏时上下都能生效。
-       各页面若有自己的吸顶/吸底栏，用 var(--sat)/var(--sab) 叠加即可。 */
     padding-left: var(--sal);
     padding-right: var(--sar);
   }
 
-  /* Sleek modern dark scrollbar */
+  /* Sleek modern clean scrollbar */
   ::-webkit-scrollbar {
-    width: 5px;
-    height: 5px;
+    width: 4px;
+    height: 4px;
   }
   ::-webkit-scrollbar-track {
     background: transparent;
   }
   ::-webkit-scrollbar-thumb {
-    background: rgba(255, 255, 255, 0.12);
+    background: rgba(0, 0, 0, 0.12);
     border-radius: 9999px;
   }
   ::-webkit-scrollbar-thumb:hover {
-    background: rgba(255, 255, 255, 0.24);
+    background: rgba(0, 0, 0, 0.22);
   }
 }
 
@@ -94,51 +89,41 @@
   }
 }
 
-/* Studio Obsidian Specular Card */
+/* MiniMax Modern Surfaces */
 .specular-card {
-  background: linear-gradient(180deg, rgba(25, 29, 41, 0.85) 0%, rgba(15, 18, 26, 0.85) 100%);
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  box-shadow: inset 0 1px 0 0 rgba(255, 255, 255, 0.12), 0 8px 24px -4px rgba(0, 0, 0, 0.5);
-  backdrop-filter: blur(16px);
-  -webkit-backdrop-filter: blur(16px);
+  background-color: #ffffff;
+  border: 1px solid #e4e4e7;
+  box-shadow: 0 4px 20px -2px rgba(0, 0, 0, 0.05);
+  border-radius: 1.5rem;
 }
 
 .specular-card-interactive {
-  background: linear-gradient(180deg, rgba(25, 29, 41, 0.75) 0%, rgba(15, 18, 26, 0.85) 100%);
-  border: 1px solid rgba(255, 255, 255, 0.07);
-  box-shadow: inset 0 1px 0 0 rgba(255, 255, 255, 0.1), 0 4px 16px -2px rgba(0, 0, 0, 0.4);
-  backdrop-filter: blur(16px);
-  -webkit-backdrop-filter: blur(16px);
+  background-color: #ffffff;
+  border: 1px solid #e4e4e7;
+  border-radius: 1.25rem;
   transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
 }
 .specular-card-interactive:hover {
-  background: linear-gradient(180deg, rgba(32, 38, 54, 0.85) 0%, rgba(19, 23, 34, 0.9) 100%);
-  border-color: rgba(59, 130, 246, 0.35);
-  box-shadow: inset 0 1px 0 0 rgba(255, 255, 255, 0.18), 0 8px 30px -4px rgba(59, 130, 246, 0.15);
-  transform: translateY(-1px);
+  background-color: #fbfbfc;
+  border-color: #e4e4e7;
 }
 
-/* Studio Frosted Glass */
+/* MiniMax Frosted Clean Header & Dock */
 .studio-glass {
-  background: rgba(14, 17, 24, 0.82);
-  backdrop-filter: blur(24px) saturate(180%);
-  -webkit-backdrop-filter: blur(24px) saturate(180%);
+  background: rgba(255, 255, 255, 0.92);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
 }
 
 .studio-glass-dock {
-  background: rgba(18, 22, 32, 0.85);
-  backdrop-filter: blur(28px) saturate(200%);
-  -webkit-backdrop-filter: blur(28px) saturate(200%);
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  box-shadow: inset 0 1px 0 0 rgba(255, 255, 255, 0.15), 0 16px 40px -8px rgba(0, 0, 0, 0.65);
+  background: #f4f4f6;
+  border: 1px solid transparent;
+  border-radius: 1.75rem;
 }
 
-/* Raycast / Linear Mesh Background */
+/* MiniMax Clean Background */
 .mesh-glow-bg {
-  background-image: 
-    radial-gradient(at 50% 0%, rgba(59, 130, 246, 0.15) 0px, transparent 55%),
-    radial-gradient(at 100% 25%, rgba(99, 102, 241, 0.08) 0px, transparent 45%),
-    radial-gradient(at 0% 75%, rgba(168, 85, 247, 0.06) 0px, transparent 40%);
+  background-color: #ffffff;
 }
 
 /* Hardware Spring feedback */

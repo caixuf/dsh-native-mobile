@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { CheckCircle2, ChevronDown, ChevronRight, Loader2, ListChecks, Sparkles } from 'lucide-react';
+import { CheckCircle2, ChevronDown, ChevronRight, Loader2, ListChecks } from 'lucide-react';
 import { TaskStep } from '../../types';
 
 interface Props {
@@ -16,71 +16,71 @@ export const TaskProgressCard: React.FC<Props> = ({ steps, running }) => {
   const progressPercent = Math.round((completedCount / steps.length) * 100);
 
   return (
-    <div className="my-3 rounded-2xl specular-card overflow-hidden shadow-xl border border-white/10">
+    <div className="my-3 rounded-2xl bg-[#f4f4f6] border border-gray-200/80 overflow-hidden shadow-2xs">
       <div
         onClick={() => setExpanded(!expanded)}
-        className="flex items-center justify-between px-4 py-3 bg-[#151926]/90 border-b border-white/[0.06] cursor-pointer hover:bg-[#1c2233] transition-colors select-none"
+        className="flex items-center justify-between px-4 py-3 bg-white border-b border-gray-100 cursor-pointer hover:bg-gray-50 transition-colors select-none"
       >
         <div className="flex items-center gap-2.5">
-          <div className="w-6 h-6 rounded-lg bg-[#3b82f6]/15 border border-[#3b82f6]/30 flex items-center justify-center text-[#60a5fa]">
+          <div className="w-6 h-6 rounded-lg bg-[#f4f4f6] flex items-center justify-center text-blue-600">
             <ListChecks size={14} />
           </div>
-          <span className="font-semibold text-xs tracking-wide text-white">
+          <span className="font-semibold text-xs tracking-wide text-[#18181b]">
             规划执行步骤
           </span>
-          <span className="text-[11px] font-mono text-[#94a3b8] bg-white/[0.06] px-2 py-0.5 rounded-full border border-white/[0.06]">
+          <span className="text-[11px] font-mono text-[#52525b] bg-[#f4f4f6] px-2 py-0.5 rounded-full border border-gray-200">
             {completedCount}/{steps.length} ({progressPercent}%)
           </span>
         </div>
 
         <div className="flex items-center gap-2">
           {running && (
-            <div className="flex items-center gap-1.5 text-[11px] font-medium text-[#38bdf8] bg-[#38bdf8]/10 px-2 py-0.5 rounded-full border border-[#38bdf8]/20">
+            <div className="flex items-center gap-1.5 text-[11px] font-medium text-blue-700 bg-blue-50 px-2.5 py-0.5 rounded-full border border-blue-200">
               <Loader2 size={12} className="animate-spin" />
               <span>电脑执行中</span>
             </div>
           )}
-          <div className="text-[#64748b] hover:text-white transition-colors">
+          <div className="text-[#52525b] hover:text-black transition-colors">
             {expanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
           </div>
         </div>
       </div>
 
-      {/* Sleek Gradient Progress Line */}
-      <div className="h-1 w-full bg-[#10141f]">
+      {/* Progress Line */}
+      <div className="h-1 w-full bg-gray-200">
         <div
-          className="h-full bg-gradient-to-r from-[#3b82f6] to-[#60a5fa] transition-all duration-300 shadow-[0_0_10px_rgba(59,130,246,0.5)]"
+          className="h-full bg-black transition-all duration-300"
           style={{ width: `${progressPercent}%` }}
         />
       </div>
 
       {expanded && (
-        <div className="p-3.5 space-y-2.5 bg-[#0e121c]/70">
+        <div className="p-3.5 space-y-2.5 bg-[#f4f4f6]">
           {steps.map((step, idx) => (
             <div key={idx} className="flex items-start gap-2.5 group">
               <div className="mt-0.5 shrink-0">
                 {step.status === 'COMPLETED' ? (
-                  <CheckCircle2 size={15} className="text-[#10b981]" />
+                  <CheckCircle2 size={15} className="text-emerald-700" />
                 ) : step.status === 'RUNNING' ? (
-                  <Loader2 size={15} className="text-[#38bdf8] animate-spin" />
+                  <Loader2 size={15} className="text-blue-600 animate-spin" />
                 ) : (
-                  <div className="w-3.5 h-3.5 rounded-full border border-white/20 bg-white/[0.03]" />
+                  <div className="w-3.5 h-3.5 rounded-full border border-gray-300 bg-white" />
                 )}
               </div>
               <div className="min-w-0 flex-1">
                 <p
                   className={`text-xs leading-relaxed ${
                     step.status === 'COMPLETED'
-                      ? 'text-[#64748b] line-through'
+                      ? 'text-[#52525b] line-through'
                       : step.status === 'RUNNING'
-                      ? 'text-[#60a5fa] font-semibold'
-                      : 'text-[#e2e8f0]'
+                      ? 'text-blue-700 font-semibold'
+                      : 'text-[#18181b]'
                   }`}
                 >
                   {step.title}
                 </p>
                 {step.detail && (
-                  <p className="text-[11px] text-[#94a3b8] font-mono truncate mt-0.5 bg-black/30 px-2 py-0.5 rounded border border-white/[0.04]">
+                  <p className="text-[11px] text-gray-600 font-mono truncate mt-0.5 bg-white px-2 py-0.5 rounded border border-gray-200">
                     {step.detail}
                   </p>
                 )}

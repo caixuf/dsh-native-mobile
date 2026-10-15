@@ -34,7 +34,7 @@ export const StatusPill: React.FC<Props> = ({ linkState, onClick }) => {
     <button
       onClick={onClick}
       type="button"
-      className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-medium bg-[#141824] hover:bg-[#1a2030] text-[#cbd5e1] hover:text-[#ffffff] transition-all cursor-pointer border border-white/10 shadow-inner studio-tap max-w-[120px] sm:max-w-[180px] shrink-0"
+      className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-[11.5px] font-medium bg-[#f4f4f6] hover:bg-[#eaeaea] text-[#18181b] transition-all cursor-pointer border border-gray-200/60 shadow-2xs studio-tap max-w-[130px] sm:max-w-[180px] shrink-0"
       title={title}
     >
       <ConnectionDot status={dotStatus} size={6} />

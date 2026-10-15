@@ -33,23 +33,23 @@ export const QueuedMessagesBar: React.FC<Props> = ({ queued, running = false, on
   return (
     <section
       aria-label="待发消息队列"
-      className="mb-2 rounded-2xl border border-white/[0.08] bg-[#0d1017]/95 backdrop-blur-sm overflow-hidden shadow-lg"
+      className="mb-2 rounded-2xl border border-black/[0.08] bg-[#0d1017]/95 backdrop-blur-sm overflow-hidden shadow-lg"
     >
-      <header className="flex items-center gap-2 px-3 py-1.5 border-b border-white/[0.06]">
+      <header className="flex items-center gap-2 px-3 py-1.5 border-b border-black/[0.06]">
         <ListOrdered size={13} className="text-[#38bdf8] shrink-0" />
-        <span className="text-[11.5px] font-semibold text-[#cbd5e1]">待发队列</span>
-        <span className="text-[11px] text-[#64748b]">{items.length} 条</span>
+        <span className="text-[11.5px] font-semibold text-[#3f3f46]">待发队列</span>
+        <span className="text-[11px] text-[#52525b]">{items.length} 条</span>
         {failed > 0 && (
           <span className="text-[11px] font-medium text-[#fb7185]">
             {failed} 条失败（原文已保留）
           </span>
         )}
-        <span className="ml-auto text-[11px] text-[#64748b]">
+        <span className="ml-auto text-[11px] text-[#52525b]">
           {failed > 0 ? '请重试或删除' : running ? '任务结束后依次发送' : '等待发送'}
         </span>
       </header>
 
-      <ul className="max-h-44 overflow-y-auto divide-y divide-white/[0.05]">
+      <ul className="max-h-44 overflow-y-auto divide-y divide-black/[0.06]">
         {items.map((item) => {
           const isFailed = item.status === 'failed';
           const isOpen = Boolean(expandedIds[item.id]);
@@ -72,7 +72,7 @@ export const QueuedMessagesBar: React.FC<Props> = ({ queued, running = false, on
                   onClick={() => toggle(item.id)}
                   aria-expanded={isOpen}
                   aria-label={isOpen ? `收起第 ${item.seq} 条待发消息` : `展开第 ${item.seq} 条待发消息`}
-                  className="w-full min-h-[44px] py-1 text-left text-[13px] leading-snug text-[#e2e8f0] hover:text-white cursor-pointer studio-tap"
+                  className="w-full min-h-[44px] py-1 text-left text-[13px] leading-snug text-[#3f3f46] hover:text-[#18181b] cursor-pointer studio-tap"
                 >
                   <span className={isOpen ? 'whitespace-pre-wrap break-words' : 'block truncate'}>
                     {item.text}
@@ -81,7 +81,7 @@ export const QueuedMessagesBar: React.FC<Props> = ({ queued, running = false, on
 
                 {isOpen && (
                   <div className="flex items-center justify-end mt-1">
-                    <span className="text-[10.5px] text-[#64748b]">
+                    <span className="text-[10.5px] text-[#52525b]">
                       {item.text.length} 字符
                       {item.attempts ? ` · 已尝试 ${item.attempts} 次` : ''}
                     </span>
@@ -117,7 +117,7 @@ export const QueuedMessagesBar: React.FC<Props> = ({ queued, running = false, on
                     type="button"
                     onClick={() => onRemove(item.id)}
                     aria-label={`删除第 ${item.seq} 条待发消息`}
-                    className="w-11 h-11 rounded-xl flex items-center justify-center text-[#94a3b8] hover:text-white bg-white/[0.05] hover:bg-white/[0.12] border border-white/[0.08] cursor-pointer studio-tap"
+                    className="w-11 h-11 rounded-xl flex items-center justify-center text-[#52525b] hover:text-[#18181b] bg-black/[0.04] hover:bg-black/[0.06] border border-black/[0.08] cursor-pointer studio-tap"
                   >
                     <X size={16} />
                   </button>
@@ -128,7 +128,7 @@ export const QueuedMessagesBar: React.FC<Props> = ({ queued, running = false, on
         })}
       </ul>
 
-      <div className="flex items-center gap-1 px-3 py-1 border-t border-white/[0.06] text-[10.5px] text-[#64748b]">
+      <div className="flex items-center gap-1 px-3 py-1 border-t border-black/[0.06] text-[10.5px] text-[#52525b]">
         <ChevronUp size={11} aria-hidden="true" />
         <span>点标题可展开原文；</span>
         <ChevronDown size={11} aria-hidden="true" />

@@ -828,7 +828,7 @@ async function ensurePairedRealHost() {
 async function waitReadyWithSessions({ expectCards = false, timeout = 45000 } = {}) {
   await until(
     '链路就绪（会话列表页要显示「双向流就绪」）',
-    `(function(){ const t = bodyText(); return { ok: t.indexOf('遥控会话') >= 0 && t.indexOf('双向流就绪') >= 0, pill: flat(txtOf(qs('header'))).slice(0, 80) }; })()`,
+    `(function(){ const t = bodyText(); return { ok: t.indexOf('双向流就绪') >= 0 && (/(\\d+) 个工作区/.test(flat(bodyText())) || qsa('button[aria-label^="打开会话 "]').length > 0), pill: flat(txtOf(qs('header'))).slice(0, 80) }; })()`,
     { timeout, interval: 400 },
   );
   if (expectCards) {
@@ -871,7 +871,7 @@ async function openSessionWithHistory({ maxTries = 8 } = {}) {
       return { index: i, card: cards[i], info: info.info };
     }
     await pageFn(`const b = qs('button[aria-label="返回会话列表"]'); if (!b) throw new Error('没有"返回会话列表"按钮'); b.click(); return true;`);
-    await until('回到会话列表', `(function(){ return { ok: bodyText().indexOf('遥控会话') >= 0 }; })()`, { timeout: 15000 });
+    await until('回到会话列表', `(function(){ return { ok: /(\\d+) 个工作区/.test(flat(bodyText())) || qsa('button[aria-label^="打开会话 "]').length > 0 }; })()`, { timeout: 15000 });
     await expandAllGroups();
     await sleep(300);
   }
@@ -882,7 +882,7 @@ async function openSessionWithHistory({ maxTries = 8 } = {}) {
 
 async function backToSessions() {
   await pageFn(`const b = qs('button[aria-label="返回会话列表"]'); if (b) { b.click(); return true; } return false;`);
-  await until('回到会话列表', `(function(){ return { ok: bodyText().indexOf('遥控会话') >= 0 }; })()`, { timeout: 15000 });
+  await until('回到会话列表', `(function(){ return { ok: /(\\d+) 个工作区/.test(flat(bodyText())) || qsa('button[aria-label^="打开会话 "]').length > 0 }; })()`, { timeout: 15000 });
 }
 
 // ── 假主机（审批 / 队列场景用）──────────────────────────────────────────────
@@ -1149,8 +1149,16 @@ return true;`);
     return p;
   });
 
-  await step('点「完成配对」→ 真网关接受 → 进入会话列表并出现按工作区的分组', async () => {
-    await pageFn(`const b = byText('button', '完成配对'); if (!b) throw new Error('找不到「完成配对」按钮'); clickEl(b); return true;`);
+  // ⚠️ 新界面（v1.1.0）在**第 6 位 PIN 填满时会自动提交配对**（PairScreen.tsx:66：
+  // `if (fullPin.length === 6 && !newDigits.includes('')) onPair(...)`）。
+  // 所以这里不能假定"一定还有按钮可点"：按钮在就点，不在说明上一步已经自动提交过了。
+  // 实测（2026-10-16）：按旧写法会红在「找不到『完成配对』按钮」，而当时页面**已经**
+  // 进了会话列表、`/mobile-gateway/pair` 也已经 200 —— 是测试过期，不是产品坏了。
+  await step('点「完成配对」（或已被 6 位自动提交）→ 真网关接受 → 进入会话列表并出现按工作区的分组', async () => {
+    const submit = await pageFn(`const b = byText('button', '完成配对');
+if (b) { clickEl(b); return 'clicked'; }
+return 'auto-submitted';`);
+    evidence({ submit });
     const res = await until(
       '配对成功后出现按工作区分组',
       `(function(){ const groups = groupPanels(); return { ok: groups.length > 0, groups: groups, text: flat(bodyText()).slice(0, 280) }; })()`,
@@ -1216,13 +1224,13 @@ clickEl(bs[0]); return true;`);
     const SENTINEL = 'E2E-REPLY-7719';
     await step('新建一个一次性会话（不污染用户既有会话）', async () => {
       await backToSessions();
-      await pageFn(`const b = byText('button', '新建会话'); if (!b) throw new Error('找不到浮动「新建会话」按钮'); clickEl(b); return true;`);
-      await until('新建会话对话框', `(function(){ return { ok: bodyText().indexOf('新建遥控会话') >= 0 }; })()`, { timeout: 10000 });
+      await pageFn(`const b = qs('button[aria-label="新建聊天"]') || qs('button[aria-label="在当前工作区新建会话"]'); if (!b) throw new Error('找不到浮动「新建会话」按钮'); clickEl(b); return true;`);
+      await until('新建会话对话框', `(function(){ return { ok: !!document.getElementById('dsh-create-cwd') }; })()`, { timeout: 10000 });
       const cwd = ROOT;
       const set = await pageFn(`const inputs = qsa('input'); const el = inputs.filter(function (i) { return i.value && i.value.indexOf('~/Developer') === 0; })[0] || inputs[inputs.length - 1];
 return setNativeValue(el, ${JSON.stringify(cwd)});`);
       expect(set === cwd, `新建会话的 cwd 没写进去（实际 ${set}）`, { set });
-      await pageFn(`const b = byText('button', '创建会话'); if (!b) throw new Error('找不到「创建会话」按钮'); clickEl(b); return true;`);
+      await pageFn(`const b = byText('button', '开始会话') || byText('button', '创建会话'); if (!b) throw new Error('找不到「创建会话」按钮'); clickEl(b); return true;`);
       const res = await until('进入新会话聊天页', `(function(){ const c = chatInfo(); return { ok: c.onChat, info: c }; })()`, { timeout: 25000 });
       const immediate = res.info;
       // ⚠️ 刚进聊天页时时间线里可能**还是上一个会话的消息**：
@@ -1865,7 +1873,7 @@ async function scenarioApproval() {
       const replayed = fake.state.waterfalls - before;
       await sleep(3000); // 给 UI 反应时间
       const state = await pageFn(`return { banner: qsa('button').filter(function (x) { return /有 1 项待你处理/.test(txtOf(x)); }).length,
-  card: /允许一次/.test(bodyText()), onSessions: /遥控会话/.test(bodyText()),
+  card: /允许一次/.test(bodyText()), onSessions: (/(\\d+) 个工作区/.test(bodyText()) || /新建遥控会话/.test(bodyText())),
   ledger: localStorage.getItem('dsh_answered_events_v1') };`);
       expect(replayed > 0, `假主机重启后没有重放（waterfalls ${before} → ${fake.state.waterfalls}）`, fake.state);
       expect(state.onSessions, '重启后没有回到会话列表页，断言前提不成立', state);
@@ -1890,9 +1898,9 @@ async function scenarioLive() {
     await ensurePairedRealHost();
     await reload();
     await waitReadyWithSessions({ expectCards: true, timeout: 60000 });
-    await pageFn(`const b = byText('button', '新建会话'); if (!b) throw new Error('找不到「新建会话」'); clickEl(b); return true;`);
-    await until('新建会话对话框', `(function(){ return { ok: bodyText().indexOf('新建遥控会话') >= 0 }; })()`, { timeout: 10000 });
-    await pageFn(`const b = byText('button', '创建会话'); if (!b) throw new Error('找不到「创建会话」'); clickEl(b); return true;`);
+    await pageFn(`const b = qs('button[aria-label="新建聊天"]') || qs('button[aria-label="在当前工作区新建会话"]'); if (!b) throw new Error('找不到「新建会话」'); clickEl(b); return true;`);
+    await until('新建会话对话框', `(function(){ return { ok: !!document.getElementById('dsh-create-cwd') }; })()`, { timeout: 10000 });
+    await pageFn(`const b = byText('button', '开始会话') || byText('button', '创建会话'); if (!b) throw new Error('找不到「创建会话」'); clickEl(b); return true;`);
     const info = await until('进入空会话聊天页', `(function(){ const c = chatInfo(); return { ok: c.onChat && c.timelineChildren <= 3, info: c }; })()`, { timeout: 25000 });
     evidence(info.info);
     return info.info;
@@ -2189,14 +2197,14 @@ async function scenarioCreateCwd() {
     const before = await hostRpc('session/list', { _request: {} });
     const beforeIds = new Set(((before && before.items) || []).map((s) => s.sessionId));
 
-    await pageFn(`const b = byText('button', '新建会话'); if (!b) throw new Error('找不到「新建会话」'); clickEl(b); return true;`);
-    await until('新建会话对话框', `(function(){ return { ok: bodyText().indexOf('新建遥控会话') >= 0 }; })()`, { timeout: 10000 });
+    await pageFn(`const b = qs('button[aria-label="新建聊天"]') || qs('button[aria-label="在当前工作区新建会话"]'); if (!b) throw new Error('找不到「新建会话」'); clickEl(b); return true;`);
+    await until('新建会话对话框', `(function(){ return { ok: !!document.getElementById('dsh-create-cwd') }; })()`, { timeout: 10000 });
     // 故意清空 cwd：这正是用户遇到的路径（不选工作区就点创建）
     await pageFn(`const el = document.querySelector('#dsh-create-cwd');
 if (!el) throw new Error('找不到工作区输入框 #dsh-create-cwd');
 setNativeValue(el, '');
 return el.value;`);
-    await pageFn(`const b = byText('button', '创建会话'); if (!b) throw new Error('找不到「创建会话」'); clickEl(b); return true;`);
+    await pageFn(`const b = byText('button', '开始会话') || byText('button', '创建会话'); if (!b) throw new Error('找不到「创建会话」'); clickEl(b); return true;`);
     await until('进入新会话聊天页', `(function(){ const c = chatInfo(); return { ok: c.onChat, info: c }; })()`, { timeout: 25000 });
 
     // 以**宿主**为准找出这个新会话

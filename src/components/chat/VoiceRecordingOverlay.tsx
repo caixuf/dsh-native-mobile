@@ -90,17 +90,17 @@ export const VoiceRecordingOverlay: React.FC<Props> = ({ isOpen, onSend, onCance
 
   return (
     <div className="fixed inset-0 z-50 flex flex-col justify-end bg-black/70 backdrop-blur-md transition-opacity animate-in fade-in duration-200">
-      <div className="w-full max-w-md mx-auto specular-card rounded-t-[32px] p-6 pb-[calc(1.5rem+var(--sab))] shadow-2xl flex flex-col items-center border-t border-white/10 animate-in slide-in-from-bottom-6 duration-250 ease-out">
+      <div className="w-full max-w-md mx-auto specular-card rounded-t-[32px] p-6 pb-[calc(1.5rem+var(--sab))] shadow-2xl flex flex-col items-center border-t border-black/[0.08] animate-in slide-in-from-bottom-6 duration-250 ease-out">
         {/* Pull Handle Bar */}
-        <div className="w-10 h-1 bg-white/20 rounded-full mb-4" />
+        <div className="w-10 h-1 bg-black/10 rounded-full mb-4" />
 
         <div className="text-center mb-5">
           <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-[#3b82f6]/15 border border-[#3b82f6]/30 text-[#60a5fa] text-[12px] font-semibold">
             <DeepSeekLogo size={14} variant="brand" />
             <span>DeepSeek 语音遥控 · {seconds}s</span>
           </div>
-          <h3 className="text-[17px] font-bold text-white mt-2.5 tracking-tight">正在聆听你的指令…</h3>
-          <p className="text-[12px] text-[#94a3b8] mt-0.5">指令将通过加密隧道直接传输至工作电脑</p>
+          <h3 className="text-[17px] font-bold text-[#18181b] mt-2.5 tracking-tight">正在聆听你的指令…</h3>
+          <p className="text-[12px] text-[#52525b] mt-0.5">指令将通过加密隧道直接传输至工作电脑</p>
         </div>
 
         {/* Dynamic Audio Waveform Bars */}
@@ -122,7 +122,7 @@ export const VoiceRecordingOverlay: React.FC<Props> = ({ isOpen, onSend, onCance
           {transcript ? (
             <span className="font-medium text-[#60a5fa]">{transcript}</span>
           ) : (
-            <span className="text-[#64748b] text-[13px]">请说话，例如：“执行项目构建并运行测试”…</span>
+            <span className="text-[#52525b] text-[13px]">请说话，例如：“执行项目构建并运行测试”…</span>
           )}
         </div>
 
@@ -131,7 +131,7 @@ export const VoiceRecordingOverlay: React.FC<Props> = ({ isOpen, onSend, onCance
           <button
             type="button"
             onClick={onCancel}
-            className="flex items-center gap-1.5 px-5 py-2.5 rounded-xl border border-white/10 bg-white/[0.04] text-[#94a3b8] hover:text-white text-[13px] font-medium cursor-pointer transition-colors studio-tap"
+            className="flex items-center gap-1.5 px-5 py-2.5 rounded-xl border border-black/[0.08] bg-black/[0.03] text-[#52525b] hover:text-[#18181b] text-[13px] font-medium cursor-pointer transition-colors studio-tap"
           >
             <X size={16} />
             <span>取消</span>

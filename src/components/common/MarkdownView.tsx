@@ -53,7 +53,7 @@ export const MarkdownView: React.FC<Props> = ({ content, streaming = false }) =>
   }, [content]);
 
   return (
-    <div className="space-y-2.5 text-[15px] leading-[1.7] text-[#f1f5f9] select-text break-words">
+    <div className="space-y-3 text-[15.5px] leading-[1.7] text-[#18181b] select-text break-words">
       {blocks.map((block, idx) => (
         <BlockView key={idx} block={block} isFirst={idx === 0} />
       ))}
@@ -117,19 +117,19 @@ function renderInline(nodes: MdInline[]): React.ReactNode {
 
     if (style.code) {
       el = (
-        <code className="px-[6px] py-[2px] mx-[1px] bg-[#1a2030] text-[#38bdf8] rounded-[6px] font-mono text-[12.5px] border border-white/10 whitespace-nowrap">
+        <code className="px-[6px] py-[2px] mx-[1px] bg-[#f4f4f6] text-[#18181b] rounded-[6px] font-mono text-[13px] border border-gray-200/70 whitespace-nowrap">
           {value}
         </code>
       );
     }
     if (style.strike) {
-      el = <s className="text-[#64748b] decoration-[#475569] decoration-[1.5px]">{el}</s>;
+      el = <s className="text-[#52525b] decoration-[#71717a] decoration-[1.5px]">{el}</s>;
     }
     if (style.italic) {
-      el = <em className="italic text-[#cbd5e1]">{el}</em>;
+      el = <em className="italic text-[#4b5563]">{el}</em>;
     }
     if (style.bold) {
-      el = <strong className="font-semibold text-white">{el}</strong>;
+      el = <strong className="font-semibold text-[#18181b]">{el}</strong>;
     }
     if (style.link) {
       // 🔴 XSS 闸门：模型输出可以造出 `javascript:` / `data:` 链接，
@@ -147,7 +147,7 @@ function renderInline(nodes: MdInline[]): React.ReactNode {
           {el}
         </a>
       ) : (
-        <span className="text-[#64748b] line-through">{el}</span>
+        <span className="text-[#52525b] line-through">{el}</span>
       );
     }
 
@@ -176,11 +176,11 @@ const HeadingBlock: React.FC<{ level: number; isFirst: boolean; children: MdInli
 
   return (
     <div className={`${size} ${mt} mb-1.5`}>
-      <div className="font-semibold text-white tracking-tight whitespace-pre-wrap [overflow-wrap:anywhere]">
+      <div className="font-semibold text-[#18181b] tracking-tight whitespace-pre-wrap [overflow-wrap:anywhere]">
         <Inline nodes={children} />
       </div>
       {level === 1 && (
-        <div className="mt-1.5 mb-2 h-[1px] bg-gradient-to-r from-white/20 via-white/10 to-transparent" />
+        <div className="mt-1.5 mb-2 h-[1px] bg-gradient-to-r from-gray-200 via-gray-100 to-transparent" />
       )}
       {level !== 1 && <div className="h-1.5" />}
     </div>
@@ -188,13 +188,13 @@ const HeadingBlock: React.FC<{ level: number; isFirst: boolean; children: MdInli
 };
 
 const DividerView: React.FC = () => (
-  <div className="my-3.5 h-[1px] bg-gradient-to-r from-transparent via-white/15 to-transparent" />
+  <div className="my-3.5 h-[1px] bg-gradient-to-r from-transparent via-gray-200 to-transparent" />
 );
 
 // ── 引用 / Callout ──────────────────────────────────────────────────────────
 
 const QuoteView: React.FC<{ children: React.ReactNode }> = ({ children }) => (
-  <div className="my-3 pl-[14px] py-1 border-l-2 border-[#3b82f6]/60 bg-white/[0.02] text-[#94a3b8] rounded-r-lg whitespace-pre-wrap">
+  <div className="my-3 pl-[14px] py-1 border-l-2 border-[#3b82f6]/60 bg-black/[0.02] text-[#52525b] rounded-r-lg whitespace-pre-wrap">
     {children}
   </div>
 );
@@ -223,7 +223,7 @@ const CalloutView: React.FC<{
             {title || meta.label}
           </span>
         </div>
-        <div className="text-[#cbd5e1] text-[13.5px] leading-[21px] whitespace-pre-wrap">
+        <div className="text-[#3f3f46] text-[13.5px] leading-[21px] whitespace-pre-wrap">
           <Inline nodes={children} />
         </div>
       </div>
@@ -269,7 +269,7 @@ const ListView: React.FC<{ block: Extract<MdBlock, { type: 'list' }> }> = ({ blo
         return (
           <div key={originalIndex} className="flex items-start" style={{ paddingLeft: padLeft }}>
             <span
-              className={`shrink-0 font-mono text-[#8e8e93] leading-[22px] ${
+              className={`shrink-0 font-mono text-[#52525b] leading-[22px] ${
                 block.ordered ? '' : 'text-[#3964fe] font-bold'
               }`}
               style={{ width: markerW }}
@@ -323,15 +323,15 @@ const ImageCard: React.FC<{ alt: string; url: string }> = ({ alt, url }) => {
 
   const body = (
     <>
-      <ImageIcon size={15} className="shrink-0 text-[#8e8e93]" />
+      <ImageIcon size={15} className="shrink-0 text-[#52525b]" />
       <div className="min-w-0 flex-1">
         <div className="text-[13px] text-[#1c1c1e] truncate">{alt || '图片'}</div>
         {/* 🔴 不安全 URL 不回显原文，否则攻击者可借此把恶意协议显示成可信文本 */}
-        <div className="text-[11px] text-[#aeaeb2] font-mono truncate">
+        <div className="text-[11px] text-[#52525b] font-mono truncate">
           {href ?? '（不安全的链接已被禁用）'}
         </div>
       </div>
-      {href && <ExternalLink size={12} className="shrink-0 text-[#aeaeb2]" />}
+      {href && <ExternalLink size={12} className="shrink-0 text-[#52525b]" />}
     </>
   );
 
@@ -382,7 +382,7 @@ const TableView: React.FC<{ block: Extract<MdBlock, { type: 'table' }> }> = ({ b
   if (colCount === 0) return null;
 
   return (
-    <div className="my-2.5 rounded-xl border border-white/10 overflow-hidden specular-card shadow-lg">
+    <div className="my-2.5 rounded-xl border border-black/[0.08] overflow-hidden specular-card shadow-lg">
       <div className={needsScroll ? 'overflow-x-auto overscroll-x-contain' : 'overflow-hidden'}>
         <table className={`border-collapse ${needsScroll ? 'w-max min-w-full' : 'w-full'}`}>
           <thead className="sticky top-0 z-[1]">
@@ -395,7 +395,7 @@ const TableView: React.FC<{ block: Extract<MdBlock, { type: 'table' }> }> = ({ b
                       ? { minWidth: colWidths[i], width: colWidths[i], textAlign: alignOf(block.aligns[i]) }
                       : { minWidth: 100, textAlign: alignOf(block.aligns[i]) }
                   }
-                  className={`bg-[#161a27] px-3 py-2 border-b border-white/10 text-[12.5px] font-semibold text-white ${
+                  className={`bg-[#f4f4f6] px-3 py-2 border-b border-black/[0.06] text-[12.5px] font-semibold text-[#3f3f46] ${
                     needsScroll ? 'whitespace-nowrap' : '[overflow-wrap:anywhere]'
                   }`}
                 >
@@ -406,7 +406,7 @@ const TableView: React.FC<{ block: Extract<MdBlock, { type: 'table' }> }> = ({ b
           </thead>
           <tbody>
             {block.rows.map((row, rIdx) => (
-              <tr key={rIdx} className={rIdx % 2 === 1 ? 'bg-white/[0.02]' : 'bg-transparent'}>
+              <tr key={rIdx} className={rIdx % 2 === 1 ? 'bg-black/[0.02]' : 'bg-transparent'}>
                 {Array.from({ length: colCount }, (_, c) => (
                   <td
                     key={c}
@@ -415,7 +415,7 @@ const TableView: React.FC<{ block: Extract<MdBlock, { type: 'table' }> }> = ({ b
                         ? { minWidth: colWidths[c], width: colWidths[c], textAlign: alignOf(block.aligns[c]) }
                         : { minWidth: 100, textAlign: alignOf(block.aligns[c]) }
                     }
-                    className="px-3 py-2 border-b border-white/[0.06] text-[13px] text-[#cbd5e1] align-middle [overflow-wrap:anywhere]"
+                    className="px-3 py-2 border-b border-black/[0.06] text-[13px] text-[#3f3f46] align-middle [overflow-wrap:anywhere]"
                   >
                     <Inline nodes={row[c] ?? []} />
                   </td>
@@ -501,7 +501,7 @@ const CodeCard: React.FC<{ lang: string | null; code: string }> = ({ lang, code 
   return (
     <div className="my-2.5 rounded-xl overflow-hidden border border-[#2c2c34] bg-[#1b1b22] shadow-[0_2px_8px_rgba(0,0,0,0.18)]">
       <div className="flex items-center justify-between px-3 py-1.5 bg-[#23232b] border-b border-[#2c2c34]">
-        <span className="text-[10.5px] font-bold uppercase tracking-[0.8px] text-[#7f8490]">
+        <span className="text-[10.5px] font-bold uppercase tracking-[0.8px] text-[#b4b8c4]">
           {normalized || 'code'}
         </span>
         <div className="flex items-center gap-1">
@@ -512,7 +512,7 @@ const CodeCard: React.FC<{ lang: string | null; code: string }> = ({ lang, code 
                 triggerHaptic('selection');
                 setExpanded((v) => !v);
               }}
-              className="flex items-center gap-0.5 text-[11px] text-[#7f8490] hover:text-[#d4d4d4] transition-colors cursor-pointer px-1.5 py-0.5 rounded studio-tap"
+              className="flex items-center gap-0.5 text-[11px] text-[#b4b8c4] hover:text-white transition-colors cursor-pointer px-1.5 py-0.5 rounded studio-tap"
             >
               <ChevronDown
                 size={12}
@@ -524,7 +524,7 @@ const CodeCard: React.FC<{ lang: string | null; code: string }> = ({ lang, code 
           <button
             type="button"
             onClick={handleCopy}
-            className="flex items-center gap-1 text-[11px] text-[#7f8490] hover:text-[#d4d4d4] transition-colors cursor-pointer px-1.5 py-0.5 rounded studio-tap"
+            className="flex items-center gap-1 text-[11px] text-[#b4b8c4] hover:text-white transition-colors cursor-pointer px-1.5 py-0.5 rounded studio-tap"
           >
             {copied ? <Check size={12} className="text-[#4ade80]" /> : <Copy size={12} />}
             <span>{copied ? '已复制' : '复制'}</span>
@@ -542,7 +542,7 @@ const CodeCard: React.FC<{ lang: string | null; code: string }> = ({ lang, code 
               >
                 {showLineNumbers && (
                   <span
-                    className="shrink-0 select-none text-right text-[#4a4d57] px-2.5"
+                    className="shrink-0 select-none text-right text-[#8b8f9a] px-2.5"
                     style={{ minWidth: `${String(lines.length).length * 8 + 22}px` }}
                   >
                     {i + 1}

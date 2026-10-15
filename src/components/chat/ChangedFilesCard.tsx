@@ -1,5 +1,5 @@
 import React, { useState, useMemo } from 'react';
-import { FileCode, ChevronDown, ChevronRight, FileText, Check, Copy, X, Plus, Minus } from 'lucide-react';
+import { FileCode, ChevronDown, ChevronRight, FileText, Check, Copy, X } from 'lucide-react';
 import { ChatLine } from '../../types';
 
 export interface ChangedFile {
@@ -61,29 +61,16 @@ export function extractChangedFiles(lines: ChatLine[]): ChangedFile[] {
 
     if (!targetPath) continue;
 
-    // 格式化路径
     const normalizedPath = targetPath.replace(/\\/g, '/');
-    const parts = normalizedPath.split('/');
-    const name = parts[parts.length - 1] || normalizedPath;
-
-    // 估算增删行
-    const added = diffContent ? (diffContent.match(/^\+ /gm) || []).length : undefined;
-    const removed = diffContent ? (diffContent.match(/^- /gm) || []).length : undefined;
+    const name = normalizedPath.split('/').pop() || targetPath;
 
     const existing = fileMap.get(normalizedPath);
-    if (existing) {
-      if (diffContent && !existing.diff) existing.diff = diffContent;
-      if (isWrite) existing.action = 'create';
-    } else {
-      fileMap.set(normalizedPath, {
-        path: normalizedPath,
-        name,
-        action: isWrite ? 'create' : 'modify',
-        diff: diffContent || undefined,
-        linesAdded: added,
-        linesRemoved: removed,
-      });
-    }
+    fileMap.set(normalizedPath, {
+      path: targetPath,
+      name,
+      action: isWrite ? 'create' : 'modify',
+      diff: diffContent || existing?.diff,
+    });
   }
 
   return Array.from(fileMap.values());
@@ -99,7 +86,6 @@ export const ChangedFilesCard: React.FC<ChangedFilesCardProps> = ({ lines }) => 
   if (changedFiles.length === 0) return null;
 
   const handleCopyDiff = (text: string) => {
-    if (!text) return;
     navigator.clipboard.writeText(text);
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
@@ -107,25 +93,25 @@ export const ChangedFilesCard: React.FC<ChangedFilesCardProps> = ({ lines }) => 
 
   return (
     <>
-      <div className="my-2.5 rounded-2xl specular-card border border-white/10 overflow-hidden shadow-lg transition-all">
+      <div className="my-2.5 rounded-2xl bg-[#f4f4f6] border border-gray-200/80 overflow-hidden shadow-2xs transition-all">
         {/* 卡片头部 */}
         <button
           type="button"
           onClick={() => setExpanded((prev) => !prev)}
-          className="w-full min-h-[44px] px-3.5 py-2.5 flex items-center justify-between bg-white/[0.03] hover:bg-white/[0.06] transition-colors cursor-pointer studio-tap text-left"
+          className="w-full min-h-[44px] px-3.5 py-2.5 flex items-center justify-between bg-white hover:bg-gray-50 transition-colors cursor-pointer text-left"
         >
           <div className="flex items-center gap-2 min-w-0">
-            <div className="w-6 h-6 rounded-lg bg-[#3b82f6]/15 border border-[#3b82f6]/30 flex items-center justify-center shrink-0">
-              <FileCode size={13} className="text-[#38bdf8]" />
+            <div className="w-6 h-6 rounded-lg bg-[#f4f4f6] flex items-center justify-center shrink-0 text-blue-600">
+              <FileCode size={13} />
             </div>
-            <span className="text-[12.5px] font-semibold text-white truncate">
+            <span className="text-[12.5px] font-semibold text-[#18181b] truncate">
               改动文件
             </span>
-            <span className="px-1.5 py-0.5 rounded-full text-[10px] font-mono font-medium bg-[#3b82f6]/20 text-[#38bdf8] border border-[#3b82f6]/30">
+            <span className="px-1.5 py-0.5 rounded-full text-[10px] font-mono font-medium bg-[#f4f4f6] text-blue-700 border border-blue-200">
               {changedFiles.length} 个
             </span>
           </div>
-          <div className="flex items-center gap-1.5 text-[11px] text-[#94a3b8]">
+          <div className="flex items-center gap-1.5 text-[11px] text-[#52525b]">
             <span>{expanded ? '收起' : '展开'}</span>
             {expanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
           </div>
@@ -133,19 +119,19 @@ export const ChangedFilesCard: React.FC<ChangedFilesCardProps> = ({ lines }) => 
 
         {/* 展开的文件列表 */}
         {expanded && (
-          <div className="p-2.5 space-y-1.5 border-t border-white/5 bg-black/20">
+          <div className="p-2.5 space-y-1.5 border-t border-gray-200/60 bg-[#f4f4f6]">
             {changedFiles.map((file, idx) => (
               <div
                 key={idx}
-                className="flex items-center justify-between p-2 rounded-xl bg-white/[0.03] hover:bg-white/[0.07] border border-white/5 transition-all text-[12px]"
+                className="flex items-center justify-between p-2 rounded-xl bg-white border border-gray-200 transition-all text-[12px]"
               >
                 <div className="flex items-center gap-2 min-w-0 flex-1 pr-2">
-                  <FileText size={14} className="text-[#94a3b8] shrink-0" />
+                  <FileText size={14} className="text-[#52525b] shrink-0" />
                   <div className="min-w-0 flex-1">
-                    <div className="font-mono text-white truncate leading-tight">
+                    <div className="font-mono text-[#18181b] truncate leading-tight font-medium">
                       {file.name}
                     </div>
-                    <div className="font-mono text-[10px] text-[#64748b] truncate">
+                    <div className="font-mono text-[10px] text-[#52525b] truncate">
                       {file.path}
                     </div>
                   </div>
@@ -155,8 +141,8 @@ export const ChangedFilesCard: React.FC<ChangedFilesCardProps> = ({ lines }) => 
                   <span
                     className={`px-1.5 py-0.5 rounded text-[9.5px] font-medium uppercase font-mono ${
                       file.action === 'create'
-                        ? 'bg-emerald-500/15 text-emerald-300 border border-emerald-500/30'
-                        : 'bg-amber-500/15 text-amber-300 border border-amber-500/30'
+                        ? 'bg-emerald-50 text-emerald-700 border border-emerald-200'
+                        : 'bg-amber-50 text-amber-700 border border-amber-200'
                     }`}
                   >
                     {file.action === 'create' ? '新增' : '修改'}
@@ -166,7 +152,7 @@ export const ChangedFilesCard: React.FC<ChangedFilesCardProps> = ({ lines }) => 
                     <button
                       type="button"
                       onClick={() => setInspectingFile(file)}
-                      className="px-2 py-1 min-h-[44px] rounded-lg bg-white/[0.06] hover:bg-white/[0.12] text-[11px] font-medium text-[#38bdf8] border border-white/10 transition-colors cursor-pointer studio-tap flex items-center gap-1"
+                      className="px-2 py-1 min-h-[44px] rounded-lg bg-[#f4f4f6] hover:bg-gray-200 text-[11px] font-medium text-blue-600 border border-gray-200 transition-colors cursor-pointer flex items-center gap-1"
                     >
                       差异
                     </button>
@@ -180,15 +166,15 @@ export const ChangedFilesCard: React.FC<ChangedFilesCardProps> = ({ lines }) => 
 
       {/* Diff 检视弹窗 */}
       {inspectingFile && inspectingFile.diff && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 pt-[calc(1rem+var(--sat))] pb-[calc(1rem+var(--sab))] bg-black/80 backdrop-blur-md animate-in fade-in duration-200">
-          <div className="w-full max-w-xl max-h-[80vh] flex flex-col rounded-3xl bg-[#0f1422] border border-white/15 shadow-2xl overflow-hidden">
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 pt-[calc(1rem+var(--sat))] pb-[calc(1rem+var(--sab))] bg-black/40 backdrop-blur-xs animate-in fade-in duration-200">
+          <div className="w-full max-w-xl max-h-[80vh] flex flex-col rounded-3xl bg-white border border-gray-200 shadow-2xl overflow-hidden">
             {/* Header */}
-            <div className="px-4 py-3 flex items-center justify-between border-b border-white/10 bg-white/[0.02]">
+            <div className="px-4 py-3 flex items-center justify-between border-b border-gray-100 bg-[#f4f4f6]">
               <div className="min-w-0 pr-3">
-                <div className="text-[13px] font-bold text-white truncate font-mono">
+                <div className="text-[13px] font-bold text-[#18181b] truncate font-mono">
                   {inspectingFile.name}
                 </div>
-                <div className="text-[10px] text-[#94a3b8] truncate font-mono mt-0.5">
+                <div className="text-[10px] text-[#52525b] truncate font-mono mt-0.5">
                   {inspectingFile.path}
                 </div>
               </div>
@@ -197,15 +183,15 @@ export const ChangedFilesCard: React.FC<ChangedFilesCardProps> = ({ lines }) => 
                 <button
                   type="button"
                   onClick={() => handleCopyDiff(inspectingFile.diff || '')}
-                  className="w-11 h-11 rounded-xl bg-white/[0.06] hover:bg-white/[0.12] border border-white/10 flex items-center justify-center text-[#cbd5e1] hover:text-white cursor-pointer studio-tap"
+                  className="w-9 h-9 rounded-full bg-white hover:bg-gray-100 border border-gray-200 flex items-center justify-center text-gray-700 hover:text-black cursor-pointer min-h-[44px]"
                   title="复制改动内容"
                 >
-                  {copied ? <Check size={15} className="text-emerald-400" /> : <Copy size={15} />}
+                  {copied ? <Check size={15} className="text-emerald-700" /> : <Copy size={15} />}
                 </button>
                 <button
                   type="button"
                   onClick={() => setInspectingFile(null)}
-                  className="w-11 h-11 rounded-xl bg-white/[0.06] hover:bg-white/[0.12] border border-white/10 flex items-center justify-center text-[#cbd5e1] hover:text-white cursor-pointer studio-tap"
+                  className="w-9 h-9 rounded-full bg-white hover:bg-gray-100 border border-gray-200 flex items-center justify-center text-gray-700 hover:text-black cursor-pointer min-h-[44px]"
                   title="关闭"
                 >
                   <X size={16} />
@@ -214,7 +200,7 @@ export const ChangedFilesCard: React.FC<ChangedFilesCardProps> = ({ lines }) => 
             </div>
 
             {/* Diff 内容区 */}
-            <div className="flex-1 overflow-y-auto p-3 font-mono text-[11.5px] leading-relaxed bg-[#07090e]">
+            <div className="flex-1 overflow-y-auto p-3 font-mono text-[11.5px] leading-relaxed bg-[#f8f9fa]">
               <pre className="whitespace-pre-wrap break-all">
                 {inspectingFile.diff.split('\n').map((line, i) => {
                   const isAdd = line.startsWith('+');
@@ -224,10 +210,10 @@ export const ChangedFilesCard: React.FC<ChangedFilesCardProps> = ({ lines }) => 
                       key={i}
                       className={`px-2 py-0.5 rounded ${
                         isAdd
-                          ? 'bg-emerald-500/15 text-emerald-300'
+                          ? 'bg-emerald-50 text-emerald-800'
                           : isDel
-                          ? 'bg-rose-500/15 text-rose-300'
-                          : 'text-[#94a3b8]'
+                          ? 'bg-rose-50 text-rose-800'
+                          : 'text-gray-600'
                       }`}
                     >
                       {line}

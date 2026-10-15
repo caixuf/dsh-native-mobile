@@ -55,7 +55,7 @@ const ExpandRow: React.FC<{
       <button
         type="button"
         onClick={onCollapse}
-        className="w-full flex items-center justify-center gap-1.5 px-3 py-2 rounded-xl border border-dashed border-white/[0.12] bg-white/[0.02] hover:bg-white/[0.06] text-[12px] text-[#64748b] hover:text-[#cbd5e1] transition-colors cursor-pointer studio-tap"
+        className="w-full flex items-center justify-center gap-1.5 px-3 py-2 rounded-xl border border-dashed border-black/[0.12] bg-black/[0.02] hover:bg-black/[0.05] text-[12px] text-[#52525b] hover:text-[#3f3f46] transition-colors cursor-pointer studio-tap"
       >
         <ChevronUp size={13} />
         {SHOW_LESS_LABEL}
@@ -70,7 +70,7 @@ const ExpandRow: React.FC<{
       onClick={onExpand}
       aria-label={`${text}（${label}）`}
       data-testid="show-more"
-      className="w-full flex items-center justify-center gap-1.5 px-3 py-2 rounded-xl border border-dashed border-[#3b82f6]/30 bg-[#3b82f6]/[0.06] hover:bg-[#3b82f6]/[0.14] text-[12px] font-medium text-[#60a5fa] transition-colors cursor-pointer studio-tap"
+      className="w-full flex items-center justify-center gap-1.5 px-3 py-2 rounded-xl border border-dashed border-[#3b82f6]/30 bg-[#3b82f6]/[0.06] hover:bg-[#3b82f6]/[0.14] text-[12px] font-medium text-[#1d4ed8] transition-colors cursor-pointer studio-tap"
     >
       <ChevronDown size={13} />
       {text}
@@ -128,7 +128,7 @@ export const SessionGroupSection: React.FC<Props> = ({
     >
       <div className="space-y-2">
         {isSearch && group.hiddenDuplicateCount > 0 && (
-          <p className="px-1 text-[11px] text-[#64748b]">
+          <p className="px-1 text-[11px] text-[#52525b]">
             已与本地列表合并 {group.hiddenDuplicateCount} 条重复结果
           </p>
         )}
@@ -155,7 +155,7 @@ export const SessionGroupSection: React.FC<Props> = ({
         />
 
         {isSearch && group.sessions.length === 0 && (
-          <p className="px-1 py-2 text-[12px] text-[#64748b]">没有新的远端结果（都已在上面的分组里）</p>
+          <p className="px-1 py-2 text-[12px] text-[#52525b]">没有新的远端结果（都已在上面的分组里）</p>
         )}
 
         {group.subagents.length > 0 && (

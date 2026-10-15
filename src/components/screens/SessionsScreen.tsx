@@ -1,8 +1,9 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { Menu, Search, X, RefreshCw, Plus, Monitor, Cpu, Sparkles, ChevronsDownUp, ChevronsUpDown, FolderOpen } from 'lucide-react';
+import { Menu, Search, X, RefreshCw, Plus, Monitor, Cpu, Sparkles, ChevronsDownUp, ChevronsUpDown, FolderOpen, ChevronDown } from 'lucide-react';
 import { SessionRow, LinkState } from '../../types';
 import { StatusPill } from '../common/StatusPill';
 import { DeepSeekLogo } from '../common/DeepSeekLogo';
+import { MiniMaxMascot } from '../common/MiniMaxMascot';
 import { ConnectionDot } from '../common/ConnectionDot';
 import { triggerHaptic } from '../../utils/haptics';
 import { SessionGroupSection } from '../sessions/SessionGroupSection';
@@ -274,9 +275,9 @@ export const SessionsScreen: React.FC<Props> = ({
   const showEmptyState = !hasContent && !loading;
 
   return (
-    <div className="flex flex-col h-full bg-[#090a0f] text-[#f8fafc] mesh-glow-bg select-none">
-      {/* Studio Top Navigation Bar */}
-      <header className="sticky top-0 z-30 studio-glass border-b border-white/[0.08] px-4 py-3 transition-all">
+    <div className="flex flex-col h-full bg-white text-[#18181b] select-none">
+      {/* MiniMax Top Navigation Bar */}
+      <header className="sticky top-0 z-30 bg-white/95 backdrop-blur-md border-b border-gray-100 px-4 py-3 transition-all">
         <div className="flex items-center justify-between max-w-2xl mx-auto w-full gap-2">
           <div className="flex items-center gap-2.5 min-w-0">
             <button
@@ -286,16 +287,13 @@ export const SessionsScreen: React.FC<Props> = ({
               }}
               type="button"
               aria-label="打开菜单"
-              className="w-9 h-9 rounded-xl bg-white/[0.06] hover:bg-white/[0.12] border border-white/[0.08] flex items-center justify-center text-[#e2e8f0] transition-colors cursor-pointer studio-tap shrink-0"
+              className="w-9 h-9 rounded-full bg-gray-100 hover:bg-gray-200 flex items-center justify-center text-gray-700 transition-colors cursor-pointer shrink-0"
             >
               <Menu size={18} />
             </button>
             <div className="flex items-center gap-2 min-w-0">
-              <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-[#1e293b] to-[#0f172a] border border-white/10 shadow-inner flex items-center justify-center p-1.5 shrink-0">
-                <DeepSeekLogo size={22} variant="brand" />
-              </div>
-              <h1 className="text-[16px] font-bold tracking-tight text-white whitespace-nowrap shrink-0">
-                遥控会话
+              <h1 className="text-[17px] font-bold tracking-tight text-gray-900 whitespace-nowrap shrink-0">
+                连接电脑
               </h1>
               <div className="min-w-0 shrink">
                 <StatusPill linkState={linkState} onClick={onOpenDrawer} />
@@ -312,7 +310,7 @@ export const SessionsScreen: React.FC<Props> = ({
               }}
               type="button"
               aria-label={searchOpen ? '关闭搜索' : '搜索会话'}
-              className="w-9 h-9 rounded-xl bg-white/[0.06] hover:bg-white/[0.12] border border-white/[0.08] flex items-center justify-center text-[#94a3b8] hover:text-white transition-colors cursor-pointer studio-tap"
+              className="w-9 h-9 rounded-full bg-gray-100 hover:bg-gray-200 flex items-center justify-center text-gray-600 hover:text-black transition-colors cursor-pointer"
             >
               {searchOpen ? <X size={17} /> : <Search size={17} />}
             </button>
@@ -323,18 +321,18 @@ export const SessionsScreen: React.FC<Props> = ({
               }}
               type="button"
               aria-label="刷新会话列表"
-              className="w-9 h-9 rounded-xl bg-white/[0.06] hover:bg-white/[0.12] border border-white/[0.08] flex items-center justify-center text-[#94a3b8] hover:text-white transition-colors cursor-pointer studio-tap"
+              className="w-9 h-9 rounded-full bg-gray-100 hover:bg-gray-200 flex items-center justify-center text-gray-600 hover:text-black transition-colors cursor-pointer"
             >
-              <RefreshCw size={16} className={loading ? 'animate-spin text-[#3b82f6]' : ''} />
+              <RefreshCw size={16} className={loading ? 'animate-spin text-blue-600' : ''} />
             </button>
           </div>
         </div>
 
-        {/* Studio Dark Search Bar */}
+        {/* MiniMax Light Search Bar */}
         {searchOpen && (
-          <div className="mt-2.5 pt-2 border-t border-white/[0.06] max-w-2xl mx-auto w-full animate-in fade-in slide-in-from-top-1 duration-150">
+          <div className="mt-2.5 pt-2 border-t border-gray-100 max-w-2xl mx-auto w-full animate-in fade-in slide-in-from-top-1 duration-150">
             <div className="relative flex items-center">
-              <Search size={15} className="absolute left-3.5 text-[#64748b]" />
+              <Search size={15} className="absolute left-3.5 text-[#52525b]" />
               <input
                 type="text"
                 autoFocus
@@ -342,7 +340,7 @@ export const SessionsScreen: React.FC<Props> = ({
                 onChange={(e) => handleSearchChange(e.target.value)}
                 placeholder="搜索会话标题、摘要或工作区…"
                 aria-label="搜索会话"
-                className="w-full pl-10 pr-3 py-2 text-[13px] bg-[#141824] border border-white/10 rounded-xl focus:outline-hidden focus:border-[#3b82f6] focus:ring-1 focus:ring-[#3b82f6]/40 text-white placeholder:text-[#64748b] transition-all"
+                className="w-full pl-10 pr-3 py-2 text-[13px] bg-gray-100 border border-gray-200 rounded-xl focus:outline-hidden focus:border-gray-400 text-gray-900 placeholder:text-[#52525b] transition-all"
               />
             </div>
           </div>
@@ -367,7 +365,7 @@ export const SessionsScreen: React.FC<Props> = ({
                 type="button"
                 onClick={onDismissCreateNotice}
                 aria-label="关闭提示"
-                className="shrink-0 w-6 h-6 rounded-lg flex items-center justify-center text-current/70 hover:text-white hover:bg-white/10 cursor-pointer studio-tap"
+                className="shrink-0 w-6 h-6 rounded-lg flex items-center justify-center text-current/70 hover:text-[#18181b] hover:bg-black/[0.05] cursor-pointer studio-tap"
               >
                 <X size={13} />
               </button>
@@ -375,53 +373,39 @@ export const SessionsScreen: React.FC<Props> = ({
           </div>
         )}
 
-        {/* Bento Remote Host Status Overview Card */}
-        <div className="specular-card p-4 rounded-2xl relative overflow-hidden">
-          <div className="absolute top-0 right-0 -mt-4 -mr-4 w-28 h-28 bg-[#3b82f6]/10 rounded-full blur-2xl pointer-events-none" />
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-3">
-              <div className="w-10 h-10 rounded-xl bg-[#1e2538] border border-white/10 flex items-center justify-center text-[#38bdf8] shadow-inner">
-                <Monitor size={20} />
-              </div>
-              <div>
-                <div className="flex items-center gap-2">
-                  <span className="text-[14px] font-bold text-white">
-                    {linkState.type === 'ready' ? linkState.hostName || '远程工作站' : '远程工作站'}
-                  </span>
-                  <span className="flex items-center gap-1 text-[11px] font-medium text-[#10b981] bg-[#10b981]/10 px-2 py-0.5 rounded-md border border-[#10b981]/20">
-                    <ConnectionDot status={linkState.type === 'ready' ? 'online' : 'offline'} size={5} pulse={false} />
-                    {linkState.type === 'ready' ? '双向流就绪' : '等待连接'}
-                  </span>
-                </div>
-                <p className="text-[12px] text-[#94a3b8] mt-0.5 font-mono flex items-center gap-1.5">
-                  <Cpu size={12} className="text-[#3b82f6]" />
-                  <span>DeepSeek Agent 守护进程 · 延迟 ~18ms</span>
-                </p>
-              </div>
-            </div>
+        {/* Screenshot 3 MiniMax Workspace Row */}
+        <div className="flex items-center justify-between px-1 py-1">
+          <button
+            type="button"
+            onClick={openCreateDialog}
+            className="flex items-center gap-1.5 text-[15px] font-bold text-gray-900 hover:text-black cursor-pointer"
+          >
+            <FolderOpen size={17} className="text-gray-700" />
+            <span>{grouping.groups[0]?.label || 'minimax'}</span>
+            <ChevronDown size={14} className="text-[#52525b]" />
+          </button>
 
-            <button
-              onClick={openCreateDialog}
-              type="button"
-              className="flex items-center gap-1 px-3 py-1.5 rounded-xl bg-[#3b82f6]/20 hover:bg-[#3b82f6]/30 border border-[#3b82f6]/40 text-[#60a5fa] hover:text-white text-[12px] font-semibold transition-all cursor-pointer studio-tap"
-            >
-              <Plus size={14} />
-              <span>新建</span>
-            </button>
-          </div>
+          <button
+            onClick={openCreateDialog}
+            type="button"
+            aria-label="在当前工作区新建会话"
+            className="w-8 h-8 rounded-full bg-gray-100 hover:bg-gray-200 flex items-center justify-center text-gray-700 transition-colors cursor-pointer"
+          >
+            <Plus size={16} />
+          </button>
         </div>
 
         {/* 分组概览 + 全展开/全折叠 */}
         {hasContent && (
           <div className="flex items-center justify-between gap-2 px-1">
-            <p className="min-w-0 truncate text-[12px] text-[#94a3b8]">
-              <span className="font-semibold text-[#cbd5e1]">{grouping.workspaceCount}</span> 个工作区 ·{' '}
-              <span className="font-semibold text-[#cbd5e1]">{grouping.visibleCount}</span> 个会话
+            <p className="min-w-0 truncate text-[12px] text-[#52525b]">
+              <span className="font-semibold text-gray-800">{grouping.workspaceCount}</span> 个工作区 ·{' '}
+              <span className="font-semibold text-gray-800">{grouping.visibleCount}</span> 个会话
               {grouping.runningCount > 0 && (
-                <span className="text-[#38bdf8]"> · {grouping.runningCount} 个执行中</span>
+                <span className="text-blue-600 font-medium"> · {grouping.runningCount} 个执行中</span>
               )}
               {grouping.archivedCount > 0 && (
-                <span className="text-[#64748b]"> · {grouping.archivedCount} 个已归档</span>
+                <span className="text-[#52525b]"> · {grouping.archivedCount} 个已归档</span>
               )}
             </p>
             {grouping.groups.length > 1 && (
@@ -431,7 +415,7 @@ export const SessionsScreen: React.FC<Props> = ({
                   onClick={() => setAllSections(false)}
                   title="展开全部"
                   aria-label="展开全部工作区"
-                  className="flex items-center gap-1 px-2 py-1 rounded-lg bg-white/[0.04] hover:bg-white/[0.10] border border-white/[0.08] text-[11px] text-[#94a3b8] hover:text-white transition-colors cursor-pointer studio-tap"
+                  className="flex items-center gap-1 px-2.5 py-1 rounded-full bg-gray-100 hover:bg-gray-200 border border-gray-200/60 text-[11px] text-gray-600 hover:text-black transition-colors cursor-pointer"
                 >
                   <ChevronsUpDown size={13} />
                   展开
@@ -441,7 +425,7 @@ export const SessionsScreen: React.FC<Props> = ({
                   onClick={() => setAllSections(true)}
                   title="折叠全部"
                   aria-label="折叠全部工作区"
-                  className="flex items-center gap-1 px-2 py-1 rounded-lg bg-white/[0.04] hover:bg-white/[0.10] border border-white/[0.08] text-[11px] text-[#94a3b8] hover:text-white transition-colors cursor-pointer studio-tap"
+                  className="flex items-center gap-1 px-2.5 py-1 rounded-full bg-gray-100 hover:bg-gray-200 border border-gray-200/60 text-[11px] text-gray-600 hover:text-black transition-colors cursor-pointer"
                 >
                   <ChevronsDownUp size={13} />
                   折叠
@@ -451,33 +435,35 @@ export const SessionsScreen: React.FC<Props> = ({
           </div>
         )}
 
-        {/* Empty State */}
+        {/* Empty State matching MiniMax Screenshot 1 */}
         {showEmptyState && (
-          <div className="flex flex-col items-center justify-center p-8 mt-8 text-center specular-card rounded-3xl">
-            <div className="w-14 h-14 rounded-2xl bg-[#1e2538] border border-white/10 text-[#3b82f6] flex items-center justify-center mb-3 p-2.5 shadow-inner">
-              <DeepSeekLogo size={32} variant="brand" />
+          <div className="flex flex-col items-center justify-center p-8 mt-12 text-center">
+            <MiniMaxMascot size={110} />
+            <h2 className="text-[22px] font-bold text-gray-900 mt-4 tracking-tight">
+              有什么可以帮忙的
+            </h2>
+            <div className="inline-flex items-center gap-1.5 px-3 py-1 mt-3 rounded-full bg-[#f4f4f6] text-[12px] font-medium text-gray-600 border border-gray-200/60 shadow-2xs">
+              <Monitor size={13} className="text-[#52525b]" />
+              <span>{linkState.hostName || 'caixuf'}</span>
+              <span className="w-1.5 h-1.5 rounded-full bg-green-500" />
             </div>
-            <h3 className="text-[16px] font-bold text-white">
-              {query.trim() ? '没有匹配的会话' : '暂无匹配的遥控会话'}
-            </h3>
-            <p className="text-[13px] text-[#94a3b8] mt-1.5 max-w-xs leading-relaxed">
-              {query.trim()
-                ? '换个关键词，或清空搜索看看全部工作区。'
-                : '随时发起指令，通过端到端加密双向流遥控你的远程开发电脑。'}
-            </p>
-            <button
-              onClick={openCreateDialog}
-              type="button"
-              className="mt-5 px-5 py-2.5 bg-gradient-to-r from-[#3b82f6] to-[#2563eb] text-white rounded-xl text-[13px] font-semibold transition-transform cursor-pointer studio-tap shadow-[0_0_20px_rgba(59,130,246,0.35)]"
-            >
-              发起新会话
-            </button>
+
+            <div className="w-full max-w-sm mt-8 space-y-2">
+              <button
+                type="button"
+                onClick={openCreateDialog}
+                className="w-full py-3.5 px-5 rounded-2xl bg-[#f4f4f6] hover:bg-[#eaeaea] text-left text-[14px] text-gray-800 font-medium flex items-center justify-between transition-colors shadow-2xs cursor-pointer"
+              >
+                <span>新建遥控会话开始聊天</span>
+                <Plus size={16} className="text-[#52525b]" />
+              </button>
+            </div>
           </div>
         )}
 
         {/* 全部会话都被归档时，别让首屏看起来是空的 */}
         {!showEmptyState && grouping.groups.length === 0 && grouping.archivedCount > 0 && (
-          <p className="px-1 py-2 text-[12px] text-[#64748b]">
+          <p className="px-1 py-2 text-[12px] text-[#52525b]">
             当前没有活跃会话，{grouping.archivedCount} 个已归档的会话在列表底部（仅本机归档）。
           </p>
         )}
@@ -518,35 +504,36 @@ export const SessionsScreen: React.FC<Props> = ({
         />
       </div>
 
-      {/* Floating Action Button (Raycast Glowing Pill) */}
-      <div className="fixed bottom-[calc(1.5rem+var(--sab))] right-6 z-20">
+      {/* MiniMax Iconic Black Pill Button: [+ 聊天] */}
+      <div className="fixed bottom-[calc(1.5rem+var(--sab))] right-5 z-20">
         <button
           onClick={openCreateDialog}
           type="button"
-          className="flex items-center gap-2 px-5 py-3.5 rounded-full bg-gradient-to-r from-[#3b82f6] to-[#2563eb] text-white text-[14px] font-semibold shadow-[0_0_25px_rgba(59,130,246,0.5)] hover:shadow-[0_0_35px_rgba(59,130,246,0.7)] transition-all hover:scale-105 cursor-pointer studio-tap"
+          aria-label="新建聊天"
+          className="flex items-center gap-2 px-5 py-3 rounded-full bg-black hover:bg-gray-800 text-white text-[14px] font-medium shadow-lg hover:shadow-xl active:scale-95 transition-all cursor-pointer"
         >
-          <Sparkles size={17} className="text-white animate-pulse" />
-          <span>新建会话</span>
+          <Plus size={17} />
+          <span>聊天</span>
         </button>
       </div>
 
-      {/* Studio Modal Dialog */}
+      {/* MiniMax Modal Dialog */}
       {createDialogOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 pt-[calc(1rem+var(--sat))] pb-[calc(1rem+var(--sab))] bg-black/70 backdrop-blur-md animate-in fade-in">
-          <div className="w-full max-w-sm rounded-3xl specular-card p-6 shadow-2xl border border-white/10 animate-in zoom-in-95 duration-200">
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 pt-[calc(1rem+var(--sat))] pb-[calc(1rem+var(--sab))] bg-black/40 backdrop-blur-xs animate-in fade-in">
+          <div className="w-full max-w-sm rounded-3xl bg-white p-6 shadow-2xl border border-gray-200 text-gray-900 animate-in zoom-in-95 duration-200">
             <div className="flex items-center gap-2.5 mb-2">
-              <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-[#1e293b] to-[#0f172a] border border-white/10 flex items-center justify-center p-1.5 shadow-inner">
-                <DeepSeekLogo size={20} variant="brand" />
+              <div className="w-9 h-9 rounded-full bg-blue-50 border border-blue-100 flex items-center justify-center p-1 shadow-2xs">
+                <MiniMaxMascot size={26} />
               </div>
-              <h3 className="text-[16px] font-bold text-white">新建遥控会话</h3>
+              <h3 className="text-[16px] font-bold text-gray-900">新建遥控会话</h3>
             </div>
-            <p className="text-[13px] text-[#94a3b8] leading-relaxed">
+            <p className="text-[13px] text-[#52525b] leading-relaxed">
               选择这台电脑上的工作区（cwd），或直接用主机默认工作区。
             </p>
 
             {workspaceChoices.length > 0 && (
               <div className="mt-4">
-                <label className="block text-[12px] font-medium text-[#94a3b8] mb-1.5">
+                <label className="block text-[12px] font-medium text-gray-600 mb-1.5">
                   已知工作区（点一下填入，共 {workspaceChoices.length} 个）
                 </label>
                 <div
@@ -565,15 +552,15 @@ export const SessionsScreen: React.FC<Props> = ({
                         title={option.workspace}
                         data-workspace={option.workspace}
                         onClick={() => setCustomCwd(option.workspace)}
-                        className={`flex items-center gap-2 px-2.5 py-2 rounded-xl border text-left transition-colors cursor-pointer studio-tap ${
+                        className={`flex items-center gap-2 px-2.5 py-2 rounded-xl border text-left transition-colors cursor-pointer ${
                           active
-                            ? 'bg-[#3b82f6]/20 border-[#3b82f6]/50 text-white'
-                            : 'bg-white/[0.03] border-white/[0.08] text-[#cbd5e1] hover:bg-white/[0.08]'
+                            ? 'bg-blue-50 border-blue-200 text-blue-700'
+                            : 'bg-gray-50 border-gray-200/60 text-gray-700 hover:bg-gray-100'
                         }`}
                       >
-                        <FolderOpen size={13} className="shrink-0 text-[#3b82f6]" />
+                        <FolderOpen size={13} className="shrink-0 text-blue-500" />
                         <span className="min-w-0 flex-1 truncate text-[12.5px] font-medium">{option.label}</span>
-                        <span className="shrink-0 text-[10.5px] font-mono text-[#64748b]">
+                        <span className="shrink-0 text-[10.5px] font-mono text-[#52525b]">
                           {option.sessionCount}
                         </span>
                       </button>
@@ -584,7 +571,7 @@ export const SessionsScreen: React.FC<Props> = ({
             )}
 
             <div className="mt-4">
-              <label className="block text-[12px] font-medium text-[#94a3b8] mb-1.5" htmlFor="dsh-create-cwd">
+              <label className="block text-[12px] font-medium text-gray-600 mb-1.5" htmlFor="dsh-create-cwd">
                 电脑工作区路径 (cwd)
               </label>
               <input
@@ -593,7 +580,7 @@ export const SessionsScreen: React.FC<Props> = ({
                 value={customCwd}
                 onChange={(e) => setCustomCwd(e.target.value)}
                 placeholder="例如：~/Developer/projects/my-app（留空 = 主机默认工作区）"
-                className="w-full px-3.5 py-2.5 text-[13px] font-mono bg-[#141824] border border-white/10 rounded-xl focus:outline-hidden focus:border-[#3b82f6] focus:ring-1 focus:ring-[#3b82f6]/40 text-white placeholder:text-[#64748b]"
+                className="w-full px-3.5 py-2.5 text-[13px] font-mono bg-gray-50 border border-gray-200 rounded-xl focus:outline-hidden focus:border-gray-400 text-gray-900 placeholder:text-[#52525b]"
               />
             </div>
 
@@ -601,7 +588,7 @@ export const SessionsScreen: React.FC<Props> = ({
               <button
                 onClick={() => setCreateDialogOpen(false)}
                 type="button"
-                className="px-4 py-2 text-[13px] font-medium text-[#94a3b8] hover:text-white rounded-xl transition-colors cursor-pointer"
+                className="px-4 py-2 text-[13px] font-medium text-[#52525b] hover:text-gray-900 rounded-xl transition-colors cursor-pointer"
               >
                 取消
               </button>
@@ -612,9 +599,9 @@ export const SessionsScreen: React.FC<Props> = ({
                   setCreateDialogOpen(false);
                 }}
                 type="button"
-                className="px-5 py-2 text-[13px] font-semibold text-white bg-gradient-to-r from-[#3b82f6] to-[#2563eb] rounded-xl shadow-[0_0_20px_rgba(59,130,246,0.35)] transition-transform cursor-pointer studio-tap"
+                className="px-5 py-2.5 rounded-full bg-black hover:bg-gray-800 text-white text-[13px] font-semibold transition-all shadow-sm cursor-pointer"
               >
-                创建会话
+                开始会话
               </button>
             </div>
           </div>

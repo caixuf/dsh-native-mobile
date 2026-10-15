@@ -241,23 +241,23 @@ export const QrScannerModal: React.FC<Props> = ({ isOpen, onClose, onScanSuccess
   if (!isOpen) return null;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/85 backdrop-blur-md p-4 pt-[calc(1rem+var(--sat))] pb-[calc(1rem+var(--sab))] animate-in fade-in duration-200">
-      <div className="relative w-full max-w-sm bg-[#0d111a] border border-white/10 rounded-3xl overflow-hidden shadow-2xl flex flex-col">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-xs p-4 pt-[calc(1rem+var(--sat))] pb-[calc(1rem+var(--sab))] animate-in fade-in duration-200">
+      <div className="relative w-full max-w-sm bg-white border border-gray-200 rounded-3xl overflow-hidden shadow-2xl flex flex-col">
         {/* Header */}
-        <div className="flex items-center justify-between px-5 py-4 border-b border-white/[0.08]">
+        <div className="flex items-center justify-between px-5 py-4 border-b border-gray-100">
           <div className="flex items-center gap-2">
-            <div className="w-7 h-7 rounded-lg bg-[#3b82f6]/20 border border-[#3b82f6]/30 flex items-center justify-center text-[#3b82f6]">
+            <div className="w-8 h-8 rounded-full bg-[#f4f4f6] flex items-center justify-center text-blue-600">
               <Camera size={16} />
             </div>
             <div>
-              <h2 className="text-[15px] font-bold text-white tracking-tight">扫码一键连接</h2>
-              <p className="text-[11px] text-[#94a3b8]">扫描电脑端 /mobile-gateway/manage 二维码</p>
+              <h2 className="text-[15px] font-bold text-[#18181b] tracking-tight">扫码一键连接</h2>
+              <p className="text-[11px] text-[#52525b]">扫描电脑端 /mobile-gateway/manage 二维码</p>
             </div>
           </div>
           <button
             onClick={onClose}
             type="button"
-            className="w-8 h-8 rounded-full bg-white/[0.06] hover:bg-white/[0.12] text-[#94a3b8] hover:text-white flex items-center justify-center transition-colors studio-tap"
+            className="w-9 h-9 rounded-full bg-[#f4f4f6] hover:bg-gray-200 text-gray-600 hover:text-black flex items-center justify-center transition-colors min-h-[44px]"
           >
             <X size={17} />
           </button>
@@ -280,10 +280,10 @@ export const QrScannerModal: React.FC<Props> = ({ isOpen, onClose, onScanSuccess
 
           {/* Scanned Success Overlay */}
           {scannedResult && (
-            <div className="absolute inset-0 z-30 bg-[#052e16]/80 backdrop-blur-xs flex flex-col items-center justify-center text-white animate-in zoom-in-95 duration-200">
-              <CheckCircle2 size={56} className="text-[#10b981] mb-2 animate-bounce" />
+            <div className="absolute inset-0 z-30 bg-emerald-950/80 backdrop-blur-xs flex flex-col items-center justify-center text-white animate-in zoom-in-95 duration-200">
+              <CheckCircle2 size={56} className="text-emerald-400 mb-2 animate-bounce" />
               <div className="text-[15px] font-bold">识别成功</div>
-              <div className="text-[11px] text-[#a7f3d0] font-mono mt-1 px-4 text-center line-clamp-2">
+              <div className="text-[11px] text-emerald-200 font-mono mt-1 px-4 text-center line-clamp-2">
                 {scannedResult}
               </div>
             </div>
@@ -293,17 +293,17 @@ export const QrScannerModal: React.FC<Props> = ({ isOpen, onClose, onScanSuccess
           {!cameraError && !scannedResult && (
             <div className="absolute inset-0 pointer-events-none flex flex-col items-center justify-center">
               {/* Outer shadow / mask */}
-              <div className="relative w-56 h-56 rounded-2xl border-2 border-white/20">
+              <div className="relative w-56 h-56 rounded-2xl border-2 border-white/30">
                 {/* 4 Glowing Corner brackets */}
-                <div className="absolute -top-1 -left-1 w-6 h-6 border-t-4 border-l-4 border-[#3b82f6] rounded-tl-lg shadow-[0_0_10px_#3b82f6]" />
-                <div className="absolute -top-1 -right-1 w-6 h-6 border-t-4 border-r-4 border-[#3b82f6] rounded-tr-lg shadow-[0_0_10px_#3b82f6]" />
-                <div className="absolute -bottom-1 -left-1 w-6 h-6 border-b-4 border-l-4 border-[#3b82f6] rounded-bl-lg shadow-[0_0_10px_#3b82f6]" />
-                <div className="absolute -bottom-1 -right-1 w-6 h-6 border-b-4 border-r-4 border-[#3b82f6] rounded-br-lg shadow-[0_0_10px_#3b82f6]" />
+                <div className="absolute -top-1 -left-1 w-6 h-6 border-t-4 border-l-4 border-blue-500 rounded-tl-lg shadow-sm" />
+                <div className="absolute -top-1 -right-1 w-6 h-6 border-t-4 border-r-4 border-blue-500 rounded-tr-lg shadow-sm" />
+                <div className="absolute -bottom-1 -left-1 w-6 h-6 border-b-4 border-l-4 border-blue-500 rounded-bl-lg shadow-sm" />
+                <div className="absolute -bottom-1 -right-1 w-6 h-6 border-b-4 border-r-4 border-blue-500 rounded-br-lg shadow-sm" />
 
                 {/* Animated Laser Scanning Line */}
-                <div className="w-full h-0.5 bg-gradient-to-r from-transparent via-[#38bdf8] to-transparent shadow-[0_0_12px_#38bdf8] animate-pulse absolute top-1/2 -translate-y-1/2" />
+                <div className="w-full h-0.5 bg-gradient-to-r from-transparent via-blue-400 to-transparent shadow-xs animate-pulse absolute top-1/2 -translate-y-1/2" />
               </div>
-              <span className="mt-4 px-3 py-1 rounded-full bg-black/60 backdrop-blur-md text-white/80 text-[11.5px] font-medium border border-white/10">
+              <span className="mt-4 px-3 py-1 rounded-full bg-black/60 backdrop-blur-md text-white/90 text-[11.5px] font-medium border border-white/10">
                 将取景框对准电脑屏幕二维码
               </span>
             </div>
@@ -316,12 +316,12 @@ export const QrScannerModal: React.FC<Props> = ({ isOpen, onClose, onScanSuccess
                 <AlertCircle size={26} />
               </div>
               <div className="text-[13.5px] font-semibold text-white mb-1.5">相机取景暂不可用</div>
-              <p className="text-[11.5px] text-[#94a3b8] leading-relaxed mb-4">{cameraError}</p>
+              <p className="text-[11.5px] text-[#52525b] leading-relaxed mb-4">{cameraError}</p>
               <div className="flex items-center gap-2 flex-wrap justify-center">
                 <button
                   type="button"
                   onClick={startCamera}
-                  className="px-3.5 py-1.5 rounded-xl bg-white/[0.08] hover:bg-white/[0.14] text-white text-[12px] font-medium flex items-center gap-1.5 transition-colors studio-tap"
+                  className="px-3.5 py-1.5 rounded-full bg-white/10 hover:bg-white/20 text-white text-[12px] font-medium flex items-center gap-1.5 transition-colors min-h-[44px]"
                 >
                   <RefreshCw size={13} />
                   <span>重试启动相机</span>
@@ -334,7 +334,7 @@ export const QrScannerModal: React.FC<Props> = ({ isOpen, onClose, onScanSuccess
                   onClick={() => {
                     NativeBridge.openAppSettings();
                   }}
-                  className="px-3.5 py-1.5 rounded-xl bg-blue-500/15 hover:bg-blue-500/25 text-blue-300 text-[12px] font-medium flex items-center gap-1.5 transition-colors studio-tap"
+                  className="px-3.5 py-1.5 rounded-full bg-blue-500/20 hover:bg-blue-500/30 text-blue-200 text-[12px] font-medium flex items-center gap-1.5 transition-colors min-h-[44px]"
                 >
                   <Settings size={13} />
                   <span>打开应用设置</span>
@@ -345,7 +345,7 @@ export const QrScannerModal: React.FC<Props> = ({ isOpen, onClose, onScanSuccess
         </div>
 
         {/* Footer Actions */}
-        <div className="p-4 bg-[#111624] border-t border-white/[0.08] flex items-center gap-2">
+        <div className="p-3.5 bg-[#f4f4f6] border-t border-gray-100 flex items-center gap-2">
           {/* File Picker for Album / Screenshot */}
           <input
             ref={fileInputRef}
@@ -357,10 +357,10 @@ export const QrScannerModal: React.FC<Props> = ({ isOpen, onClose, onScanSuccess
           <button
             type="button"
             onClick={() => fileInputRef.current?.click()}
-            className="flex-1 py-2.5 px-3 rounded-xl bg-white/[0.06] hover:bg-white/[0.1] border border-white/10 text-white text-[12.5px] font-medium flex items-center justify-center gap-1.5 transition-colors studio-tap"
+            className="flex-1 py-2 px-3 rounded-full bg-white hover:bg-gray-100 border border-gray-200 text-[#18181b] text-[12.5px] font-medium flex items-center justify-center gap-1.5 transition-colors min-h-[44px]"
           >
-            <ImageIcon size={15} className="text-[#38bdf8]" />
-            <span>相册选取图片</span>
+            <ImageIcon size={15} className="text-blue-600" />
+            <span>相册选取</span>
           </button>
 
           {/* Switch Camera if camera active */}
@@ -371,7 +371,7 @@ export const QrScannerModal: React.FC<Props> = ({ isOpen, onClose, onScanSuccess
                 setFacingMode((prev) => (prev === 'environment' ? 'user' : 'environment'));
               }}
               title="切换前后摄像头"
-              className="w-10 h-10 rounded-xl bg-white/[0.06] hover:bg-white/[0.1] border border-white/10 text-white flex items-center justify-center transition-colors studio-tap"
+              className="w-11 h-11 rounded-full bg-white hover:bg-gray-100 border border-gray-200 text-[#18181b] flex items-center justify-center transition-colors min-h-[44px]"
             >
               <RefreshCw size={15} />
             </button>
@@ -382,10 +382,10 @@ export const QrScannerModal: React.FC<Props> = ({ isOpen, onClose, onScanSuccess
             type="button"
             onClick={handlePasteClipboard}
             title="从剪贴板粘贴"
-            className="flex-1 py-2.5 px-3 rounded-xl bg-white/[0.06] hover:bg-white/[0.1] border border-white/10 text-white text-[12.5px] font-medium flex items-center justify-center gap-1.5 transition-colors studio-tap"
+            className="flex-1 py-2 px-3 rounded-full bg-white hover:bg-gray-100 border border-gray-200 text-[#18181b] text-[12.5px] font-medium flex items-center justify-center gap-1.5 transition-colors min-h-[44px]"
           >
-            <Clipboard size={15} className="text-[#a78bfa]" />
-            <span>粘贴剪贴板</span>
+            <Clipboard size={15} className="text-purple-600" />
+            <span>剪贴板粘贴</span>
           </button>
         </div>
       </div>

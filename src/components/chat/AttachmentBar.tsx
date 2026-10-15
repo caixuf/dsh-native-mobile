@@ -70,21 +70,21 @@ export const AttachmentBar: React.FC<AttachmentBarProps> = ({
 
       {/* 附件缩略图预览条 */}
       {attachment && (
-        <div className="flex items-center gap-2 mb-2 p-1.5 px-2.5 rounded-xl bg-white/[0.04] border border-white/10 w-fit max-w-full">
-          <div className="w-7 h-7 rounded-lg overflow-hidden bg-black/40 border border-white/10 shrink-0 flex items-center justify-center">
+        <div className="flex items-center gap-2 mb-2 p-1.5 px-2.5 rounded-xl bg-black/[0.03] border border-black/[0.08] w-fit max-w-full">
+          <div className="w-7 h-7 rounded-lg overflow-hidden bg-black/40 border border-black/[0.08] shrink-0 flex items-center justify-center">
             <img
               src={`data:${attachment.mediaType};base64,${attachment.data}`}
               alt={attachment.name}
               className="w-full h-full object-cover"
             />
           </div>
-          <span className="text-[11.5px] font-mono text-[#cbd5e1] truncate max-w-[160px]">
+          <span className="text-[11.5px] font-mono text-[#3f3f46] truncate max-w-[160px]">
             {attachment.name}
           </span>
           <button
             type="button"
             onClick={onRemove}
-            className="w-6 h-6 rounded-md hover:bg-white/10 flex items-center justify-center text-[#94a3b8] hover:text-white cursor-pointer studio-tap"
+            className="w-6 h-6 rounded-md hover:bg-black/[0.05] flex items-center justify-center text-[#52525b] hover:text-[#18181b] cursor-pointer studio-tap"
             title="移除附件"
           >
             <X size={13} />
