@@ -3,6 +3,7 @@ import { ArrowLeft, KeyRound, Monitor, QrCode, Loader2, CheckCircle2, Sparkles, 
 import { PairingClient } from '../../services/pairing';
 import { DeepSeekLogo } from '../common/DeepSeekLogo';
 import { QrScannerModal } from '../pairing/QrScannerModal';
+import { triggerHaptic } from '../../utils/haptics';
 
 interface Props {
   busy: boolean;
@@ -58,7 +59,14 @@ export const PairScreen: React.FC<Props> = ({
     const next = [...pinDigits];
     next[index] = char;
     setPinDigits(next);
-    setPairCode(next.join(''));
+    const fullCode = next.join('');
+    setPairCode(fullCode);
+
+    if (fullCode.length === 6 && fullCode.replace(/\s/g, '').length === 6) {
+      triggerHaptic('success');
+    } else if (char) {
+      triggerHaptic('light');
+    }
 
     // Auto advance focus
     if (char && index < 5) {
@@ -71,6 +79,7 @@ export const PairScreen: React.FC<Props> = ({
     const pasted = e.clipboardData.getData('text');
     const parsed = PairingClient.parsePairingTarget(pasted);
     if (parsed) {
+      triggerHaptic('success');
       setBaseUrl(parsed.baseUrl);
       setPairCode(parsed.code);
       setTab('pair');
@@ -81,6 +90,7 @@ export const PairScreen: React.FC<Props> = ({
   const [scannerOpen, setScannerOpen] = useState(false);
 
   const handleScanResult = (raw: string) => {
+    triggerHaptic('success');
     setScannerOpen(false);
     const parsed = PairingClient.parsePairingTarget(raw);
     if (parsed) {

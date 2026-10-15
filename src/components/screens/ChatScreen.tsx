@@ -35,6 +35,7 @@ import { AttachmentBar, ImageAttachment } from '../chat/AttachmentBar';
 import { clearDraft, loadDraft, loadExpandedKeys, saveDraft, saveExpandedKeys } from '../chat/draft-store';
 import { ConnectionDot } from '../common/ConnectionDot';
 import { DeepSeekLogo } from '../common/DeepSeekLogo';
+import { triggerHaptic } from '../../utils/haptics';
 import type { QueuedMessage } from '../../lib/message-queue';
 import { elapsedMs, formatDuration, modelLabel, phaseLabel, turnSummary } from '../../lib/session-activity';
 import type { ActivityState } from '../../lib/session-activity';
@@ -156,6 +157,7 @@ export const ChatScreen: React.FC<Props> = ({
   };
 
   const jumpToLatest = () => {
+    triggerHaptic('light');
     followBottomRef.current = true;
     setShowJumpToLatest(false);
     scrollToBottom('smooth');
@@ -223,6 +225,7 @@ export const ChatScreen: React.FC<Props> = ({
   const handleSendText = async (raw: string) => {
     const text = raw.trim();
     if (!text && !attachment) return;
+    triggerHaptic('medium');
     const targetSession = sessionId;
     setSendError(null);
     setDraftNotice(null);
@@ -261,6 +264,7 @@ export const ChatScreen: React.FC<Props> = ({
   };
 
   const togglePlanMode = () => {
+    triggerHaptic('selection');
     const next = !planMode;
     setPlanMode(next);
     void handleSendText(next ? '/plan' : '/plan off');
@@ -638,7 +642,7 @@ export const ChatScreen: React.FC<Props> = ({
               }
             >
               <div className="text-[#f1f5f9] leading-relaxed">
-                <MarkdownView content={line.text} />
+                <MarkdownView content={line.text} streaming={isLastMessage && running} />
               </div>
             </CollapsibleMessage>
           );
@@ -656,7 +660,10 @@ export const ChatScreen: React.FC<Props> = ({
                 <button
                   key={idx}
                   type="button"
-                  onClick={() => void handleSendText(p)}
+                  onClick={() => {
+                    triggerHaptic('light');
+                    void handleSendText(p);
+                  }}
                   className="px-3.5 py-2 min-h-[44px] rounded-xl bg-[#141824] hover:bg-[#1e2538] hover:border-[#3b82f6]/40 text-[#cbd5e1] hover:text-white border border-white/10 text-[12.5px] font-medium shadow-sm transition-all cursor-pointer studio-tap"
                 >
                   {p}

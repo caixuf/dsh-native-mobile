@@ -117,11 +117,13 @@
 
 /* Hardware Spring feedback */
 .studio-tap {
-  transition: transform 0.16s cubic-bezier(0.34, 1.56, 0.64, 1), opacity 0.16s ease;
+  transition: transform 0.15s cubic-bezier(0.16, 1, 0.3, 1), opacity 0.15s ease;
+  user-select: none;
+  -webkit-user-select: none;
 }
 .studio-tap:active {
-  transform: scale(0.97);
-  opacity: 0.9;
+  transform: scale(0.965);
+  opacity: 0.85;
 }
 
 /* Animations */
@@ -133,7 +135,7 @@
   }
   50% {
     opacity: 1;
-    transform: scale(1.1);
+    transform: scale(1.08);
     box-shadow: 0 0 24px rgba(59, 130, 246, 0.8);
   }
 }
@@ -150,3 +152,101 @@
 .voice-bar {
   animation: voiceWave 1s cubic-bezier(0.4, 0, 0.2, 1) infinite;
 }
+
+/* Streaming Typing Cursor */
+@keyframes cursorPulse {
+  0%, 100% { opacity: 1; transform: scaleY(1); }
+  50% { opacity: 0.2; transform: scaleY(0.9); }
+}
+
+.streaming-cursor {
+  display: inline-block;
+  width: 2.5px;
+  height: 1.15em;
+  background: #38bdf8;
+  border-radius: 1.5px;
+  vertical-align: text-bottom;
+  margin-left: 2px;
+  animation: cursorPulse 0.9s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+  box-shadow: 0 0 8px #38bdf8;
+}
+
+/* MiniMax / Claude-grade Markdown typography */
+.markdown-prose {
+  font-size: 15px;
+  line-height: 1.7;
+  color: #f1f5f9;
+  font-feature-settings: "tnum";
+}
+
+.markdown-prose p {
+  margin-top: 0.65rem;
+  margin-bottom: 0.65rem;
+}
+
+.markdown-prose p:first-child {
+  margin-top: 0;
+}
+
+.markdown-prose p:last-child {
+  margin-bottom: 0;
+}
+
+.markdown-prose code {
+  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+  font-size: 0.875em;
+  padding: 0.2em 0.4em;
+  border-radius: 0.375rem;
+  background-color: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  color: #93c5fd;
+}
+
+.markdown-prose pre {
+  margin-top: 0.75rem;
+  margin-bottom: 0.75rem;
+  border-radius: 0.75rem;
+  background: #0b0f19;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  padding: 0.875rem 1rem;
+  overflow-x: auto;
+}
+
+.markdown-prose pre code {
+  background: transparent;
+  border: none;
+  padding: 0;
+  font-size: 13px;
+  color: #e2e8f0;
+}
+
+.markdown-prose blockquote {
+  border-left: 3px solid #3b82f6;
+  padding-left: 0.875rem;
+  margin-left: 0;
+  margin-right: 0;
+  margin-top: 0.75rem;
+  margin-bottom: 0.75rem;
+  color: #94a3b8;
+  font-style: italic;
+}
+
+.markdown-prose ul {
+  list-style-type: disc;
+  padding-left: 1.25rem;
+  margin-top: 0.5rem;
+  margin-bottom: 0.5rem;
+}
+
+.markdown-prose ol {
+  list-style-type: decimal;
+  padding-left: 1.25rem;
+  margin-top: 0.5rem;
+  margin-bottom: 0.5rem;
+}
+
+.markdown-prose li {
+  margin-top: 0.25rem;
+  margin-bottom: 0.25rem;
+}
+

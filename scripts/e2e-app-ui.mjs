@@ -2141,6 +2141,94 @@ clickEl(b); return 'clicked';`);
   return out;
 }
 
+// ── 场景：建会话必须落在真工作区（用户报"手机建的会话电脑不显示"）──────────
+async function scenarioCreateCwd() {
+  const PROFILE_DIR = /[\\/]\.dsh[\\/](profiles|sessions)[\\/]/i;
+
+  await step('准备：配对真主机 → 进入会话列表', async () => {
+    await attach({ fresh: true });
+    await ensurePairedRealHost();
+    await reload();
+    await waitReadyWithSessions({ expectCards: true, timeout: 60000 });
+    return 'ok';
+  });
+
+  const created = await step('**不选工作区**直接建会话 → 宿主里的新会话必须落在真工作区', async () => {
+    const before = await hostRpc('session/list', { _request: {} });
+    const beforeIds = new Set(((before && before.items) || []).map((s) => s.sessionId));
+
+    await pageFn(`const b = byText('button', '新建会话'); if (!b) throw new Error('找不到「新建会话」'); clickEl(b); return true;`);
+    await until('新建会话对话框', `(function(){ return { ok: bodyText().indexOf('新建遥控会话') >= 0 }; })()`, { timeout: 10000 });
+    // 故意清空 cwd：这正是用户遇到的路径（不选工作区就点创建）
+    await pageFn(`const el = document.querySelector('#dsh-create-cwd');
+if (!el) throw new Error('找不到工作区输入框 #dsh-create-cwd');
+setNativeValue(el, '');
+return el.value;`);
+    await pageFn(`const b = byText('button', '创建会话'); if (!b) throw new Error('找不到「创建会话」'); clickEl(b); return true;`);
+    await until('进入新会话聊天页', `(function(){ const c = chatInfo(); return { ok: c.onChat, info: c }; })()`, { timeout: 25000 });
+
+    // 以**宿主**为准找出这个新会话
+    const after = await hostRpc('session/list', { _request: {} });
+    const fresh = ((after && after.items) || [])
+      .filter((s) => !beforeIds.has(s.sessionId))
+      .sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0))[0];
+    expect(!!fresh, '宿主里找不到新建的会话 —— 说明 session/create 根本没成功（界面却在假装成功）', {
+      beforeCount: beforeIds.size,
+      afterCount: ((after && after.items) || []).length,
+    });
+    evidence({ sessionId: fresh.sessionId, cwd: fresh.cwd, blank: fresh.blank });
+
+    // 🔴 核心断言：绝不能落在 .dsh\profiles\desktop（那样桌面按 Workspace 分组时找不到）
+    expect(
+      !PROFILE_DIR.test(String(fresh.cwd || '')),
+      `新会话落在了 profile 目录「${fresh.cwd}」—— 桌面版按 Workspace 实体分组，这个会话在电脑上不会出现。` +
+        `（根因：session/create 没带 cwd，主机就丢进 .dsh\\profiles；实测 2026-10-15）`,
+      { cwd: fresh.cwd },
+    );
+    expect(
+      typeof fresh.cwd === 'string' && fresh.cwd.trim().length > 0,
+      `新会话没有 cwd（${JSON.stringify(fresh.cwd)}）`,
+      { cwd: fresh.cwd },
+    );
+    // 还要能对上"已知工作区"里的某一个，否则依然进不了桌面的分组
+    const known = new Set(
+      ((after && after.items) || [])
+        .map((s) => s.cwd)
+        .filter((c) => typeof c === 'string' && c.trim() && !PROFILE_DIR.test(c)),
+    );
+    expect(
+      known.has(fresh.cwd),
+      `新会话的 cwd「${fresh.cwd}」不属于任何一个已知工作区，桌面侧依然看不见`,
+      { known: [...known].slice(0, 6) },
+    );
+    return { sessionId: fresh.sessionId, cwd: fresh.cwd, blank: fresh.blank };
+  });
+
+  await step('界面如实提示：发出第一条消息后电脑端才看得见（桌面隐藏空白会话）', async () => {
+    // 建完会话 App 会直接进聊天页，而提示条渲染在**会话列表页** —— 先返回列表
+    await backToSessions();
+    const res = await until(
+      '会话列表出现建会话提示条',
+      `(function(){ const el = document.querySelector('[data-testid="create-notice"]'); return { ok: !!el, text: el ? (el.innerText || '').replace(/\\s+/g,' ').trim() : '' }; })()`,
+      { timeout: 10000, interval: 500 },
+    );
+    evidence(res.text);
+    expect(
+      (res.text || '').includes('发出第一条消息后电脑端才会看到它'),
+      `没有给用户解释"空白会话在电脑端不显示"—— 用户会以为会话丢了。实际提示条内容：${truncate(res.text || '(空)', 240)}`,
+      { text: res.text },
+    );
+    expect(
+      (res.text || '').includes('已在「') && (res.text || '').includes(created.cwd),
+      `提示里没有写明会话建在哪个工作区（期望包含「${created.cwd}」）`,
+      { text: res.text },
+    );
+    return 'ok';
+  });
+
+  return { created };
+}
+
 // ── 场景：T7 聊天可读性（超长消息折叠）──────────────────────────────────────
 async function scenarioReadability() {
   const out = {};
@@ -2426,6 +2514,8 @@ async function runScenario(name, ctx) {
       return scenarioLive();
     case 'stats':
       return scenarioStats();
+    case 'create-cwd':
+      return scenarioCreateCwd();
     case 'bad-token':
       return scenarioBadToken();
     case 'approval':
@@ -2444,7 +2534,7 @@ async function main() {
   ADB = adbInfo.bin;
   note(`adb = ${ADB} (${adbInfo.version})`);
 
-  const list = SCENARIO === 'all' ? ['chain', 'collapse', 'archive', 'queue', 'session-ops', 'readability', 'live', 'stats', 'bad-token', 'approval'] : [SCENARIO];
+  const list = SCENARIO === 'all' ? ['chain', 'collapse', 'archive', 'queue', 'session-ops', 'readability', 'live', 'stats', 'create-cwd', 'bad-token', 'approval'] : [SCENARIO];
   const results = [];
   let failed = null;
 

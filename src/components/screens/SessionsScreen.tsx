@@ -4,6 +4,7 @@ import { SessionRow, LinkState } from '../../types';
 import { StatusPill } from '../common/StatusPill';
 import { DeepSeekLogo } from '../common/DeepSeekLogo';
 import { ConnectionDot } from '../common/ConnectionDot';
+import { triggerHaptic } from '../../utils/haptics';
 import { SessionGroupSection } from '../sessions/SessionGroupSection';
 import { ArchivedSection } from '../sessions/ArchivedSection';
 import {
@@ -215,9 +216,13 @@ export const SessionsScreen: React.FC<Props> = ({
     persistCollapse({ ...storedCollapse, ...collapsed, [key]: value });
   };
 
-  const toggleSection = (key: string) => setSectionCollapsed(key, !isCollapsed(key));
+  const toggleSection = (key: string) => {
+    triggerHaptic('selection');
+    setSectionCollapsed(key, !isCollapsed(key));
+  };
 
   const setAllSections = (collapseAll: boolean) => {
+    triggerHaptic('selection');
     const next: CollapseState = { ...storedCollapse };
     for (const group of grouping.groups) {
       // 搜索组是当前动作的上下文，永远保持展开
@@ -258,6 +263,7 @@ export const SessionsScreen: React.FC<Props> = ({
   };
 
   const openCreateDialog = () => {
+    triggerHaptic('light');
     // 组内已有的工作区优先填入，用户不用手打；一个都没有才退回老默认值。
     const fallback = workspaceChoices[0]?.workspace || FALLBACK_CWD;
     setCustomCwd((prev) => (prev.trim() ? prev : fallback));
@@ -274,7 +280,10 @@ export const SessionsScreen: React.FC<Props> = ({
         <div className="flex items-center justify-between max-w-2xl mx-auto w-full gap-2">
           <div className="flex items-center gap-2.5 min-w-0">
             <button
-              onClick={onOpenDrawer}
+              onClick={() => {
+                triggerHaptic('light');
+                onOpenDrawer();
+              }}
               type="button"
               aria-label="打开菜单"
               className="w-9 h-9 rounded-xl bg-white/[0.06] hover:bg-white/[0.12] border border-white/[0.08] flex items-center justify-center text-[#e2e8f0] transition-colors cursor-pointer studio-tap shrink-0"
@@ -297,6 +306,7 @@ export const SessionsScreen: React.FC<Props> = ({
           <div className="flex items-center gap-1.5">
             <button
               onClick={() => {
+                triggerHaptic('selection');
                 setSearchOpen(!searchOpen);
                 if (searchOpen) handleSearchChange('');
               }}
@@ -307,7 +317,10 @@ export const SessionsScreen: React.FC<Props> = ({
               {searchOpen ? <X size={17} /> : <Search size={17} />}
             </button>
             <button
-              onClick={onRefresh}
+              onClick={() => {
+                triggerHaptic('light');
+                onRefresh();
+              }}
               type="button"
               aria-label="刷新会话列表"
               className="w-9 h-9 rounded-xl bg-white/[0.06] hover:bg-white/[0.12] border border-white/[0.08] flex items-center justify-center text-[#94a3b8] hover:text-white transition-colors cursor-pointer studio-tap"

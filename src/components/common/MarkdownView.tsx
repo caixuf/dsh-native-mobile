@@ -25,8 +25,11 @@ import {
 } from '../../lib/markdown';
 import { TOKEN_STYLES, highlight, normalizeLang } from '../../lib/highlight';
 
+import { triggerHaptic } from '../../utils/haptics';
+
 interface Props {
   content: string;
+  streaming?: boolean;
 }
 
 const CALLOUT_ICONS: Record<
@@ -42,32 +45,19 @@ const CALLOUT_ICONS: Record<
 
 /**
  * 生产级 Markdown 富文本渲染器（Web 版）。
- *
- * 与 Android 端 `render/MarkdownView.kt` 同构，并对齐 DSH 上游
- * `@deepseek-ai/dsh-client-ui-primitives` 的真实设计基线：
- * - **CodeCard 卡片**：深色终端底 + 语言徽标 + 一键复制 + 行号 + 语法高亮；
- * - **GitHub Callout**：五种语义色警告块（说明/提示/重要/注意/危险）；
- * - **表格分两类**：≤3 列自适应填充（不滚动），≥4 列横向滚动（上游同款阈值）；
- * - **流式增量解析**：冻结稳定前缀，每个 chunk 只重解析尾部（上游同款策略）；
- * - **流式鲁棒**：未闭合语法降级为纯文本，不闪烁、不抛异常。
  */
-export const MarkdownView: React.FC<Props> = ({ content }) => {
-  // 用增量解析：流式输出时避免每次全量重解析（累计 O(n²) → 接近 O(n)）。
-  //
-  // ⚠️ 缓存是模块级的，切换内容语义（换会话/编辑）时必须失效，
-  // 否则会把上一个会话的块复用进来 —— 所以这里用 `content` 是否
-  // 以缓存前缀开头做校验（见 parseMarkdownIncremental 内部），
-  // 并在内容明显回退（变短）时重置。
+export const MarkdownView: React.FC<Props> = ({ content, streaming = false }) => {
   const blocks = useMemo(() => {
     const text = content ?? '';
     return parseMarkdownIncremental(text);
   }, [content]);
 
   return (
-    <div className="space-y-2 text-[14.5px] leading-[22px] text-[#e2e8f0] break-words">
+    <div className="space-y-2.5 text-[15px] leading-[1.7] text-[#f1f5f9] select-text break-words">
       {blocks.map((block, idx) => (
         <BlockView key={idx} block={block} isFirst={idx === 0} />
       ))}
+      {streaming && <span className="streaming-cursor" />}
     </div>
   );
 };
@@ -233,7 +223,7 @@ const CalloutView: React.FC<{
             {title || meta.label}
           </span>
         </div>
-        <div className="text-[#3d3d44] text-[13.5px] leading-[20px] whitespace-pre-wrap">
+        <div className="text-[#cbd5e1] text-[13.5px] leading-[21px] whitespace-pre-wrap">
           <Inline nodes={children} />
         </div>
       </div>
@@ -495,6 +485,7 @@ const CodeCard: React.FC<{ lang: string | null; code: string }> = ({ lang, code 
   const handleCopy = async () => {
     try {
       await navigator.clipboard.writeText(code);
+      triggerHaptic('success');
       setCopied(true);
       window.setTimeout(() => setCopied(false), 2000);
     } catch {
@@ -517,8 +508,11 @@ const CodeCard: React.FC<{ lang: string | null; code: string }> = ({ lang, code 
           {isLong && (
             <button
               type="button"
-              onClick={() => setExpanded((v) => !v)}
-              className="flex items-center gap-0.5 text-[11px] text-[#7f8490] hover:text-[#d4d4d4] transition-colors cursor-pointer px-1.5 py-0.5 rounded"
+              onClick={() => {
+                triggerHaptic('selection');
+                setExpanded((v) => !v);
+              }}
+              className="flex items-center gap-0.5 text-[11px] text-[#7f8490] hover:text-[#d4d4d4] transition-colors cursor-pointer px-1.5 py-0.5 rounded studio-tap"
             >
               <ChevronDown
                 size={12}
@@ -530,7 +524,7 @@ const CodeCard: React.FC<{ lang: string | null; code: string }> = ({ lang, code 
           <button
             type="button"
             onClick={handleCopy}
-            className="flex items-center gap-1 text-[11px] text-[#7f8490] hover:text-[#d4d4d4] transition-colors cursor-pointer px-1.5 py-0.5 rounded"
+            className="flex items-center gap-1 text-[11px] text-[#7f8490] hover:text-[#d4d4d4] transition-colors cursor-pointer px-1.5 py-0.5 rounded studio-tap"
           >
             {copied ? <Check size={12} className="text-[#4ade80]" /> : <Copy size={12} />}
             <span>{copied ? '已复制' : '复制'}</span>
