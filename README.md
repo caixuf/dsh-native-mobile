@@ -2,6 +2,14 @@
 
 给 [DeepSeek Harness (DSH)](https://deepseek-harness.github.io/deepseek-harness/) 打造的**原生体验移动端 Web 遥控应用**，提供手机端发起、电脑端执行的完整遥控伴侣体验。
 
+## 下载安装
+
+| 版本 | APK | 说明 |
+|---|---|---|
+| **v1.0.7**（最新） | [dsh-mobile-v1.0.7.apk](https://github.com/caixuf/dsh-native-mobile/releases/download/v1.0.7/dsh-mobile-v1.0.7.apk) | 顶栏会话统计 + 双层输入坞；构建可复现 |
+
+全部版本见 [Releases](https://github.com/caixuf/dsh-native-mobile/releases)。APK 用 debug 密钥签名（可直接覆盖安装，**不适合上架分发**）；`minSdk 26（Android 8.0）`。
+
 ## 架构与核心功能
 
 手机端与 DSH 移动网关通过双向协议实时交互：
@@ -61,11 +69,11 @@ npm run build:apk      # 产物：dist-apk/dsh-mobile-v<版本>.apk
 ## 测试与验证
 
 ```bash
-node --run test          # 客户端 269 条（markdown / 增量流式 / 审批契约 / 会话翻页 /
-                         #   会话分组折叠归档 / 发送队列与草稿 / 连接策略 / 桌面通知降级）
+node --run test          # 客户端 394 条（markdown / 增量流式 / 审批契约 / 会话翻页 / 会话统计 /
+                         #   二维码解码 / 会话分组折叠归档 / 发送队列与草稿 / 连接策略 / 桌面通知降级）
 node --run test:gateway  # 网关 96 条（e2e 85 + 存储往返 11）
-node --run test:android  # Android 原生 57 条（审批契约 / JSON / 帧解码 / 分类与账本）
-node --run verify        # 以上全部 + tsc + vite build
+node --run test:android  # Android 原生 94 条（审批契约 / JSON / 帧解码 / 分类与账本）
+node --run verify        # 以上全部 + tsc + vite build（合计 584 条断言）
 ```
 
 `node --run` 不依赖 npm/pnpm 在 PATH 上。CI 或手动验收直接跑 `verify` 即可。
