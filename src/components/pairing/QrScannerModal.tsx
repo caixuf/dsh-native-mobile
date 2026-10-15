@@ -20,13 +20,27 @@ export const QrScannerModal: React.FC<Props> = ({ isOpen, onClose, onScanSuccess
   const [scanning, setScanning] = useState(false);
   const [scannedResult, setScannedResult] = useState<string | null>(null);
 
+  /**
+   * 🔴 流必须放在 ref 里，不能只放 state。
+   *
+   * 之前的写法：`stopCamera` 依赖 state 的 `stream` → `startCamera` 依赖 `stopCamera`
+   * → 挂载相机的 effect 依赖 `[isOpen, startCamera, stopCamera]`。
+   * 于是形成死循环：相机起来 → `stream` 变化 → `stopCamera` 换了身份 →
+   * effect 重跑 → cleanup **把刚开的流关掉** → 再起来……
+   * 现象就是真机上报的"授权后一直闪烁那个播放按钮背景"：视频永远停在未播放态，
+   * canvas 也永远抓不到帧，扫不出任何东西。
+   */
+  const streamRef = useRef<MediaStream | null>(null);
+
   // Stop current camera stream
   const stopCamera = useCallback(() => {
-    if (stream) {
-      stream.getTracks().forEach((track) => track.stop());
+    const current = streamRef.current;
+    if (current) {
+      current.getTracks().forEach((track) => track.stop());
+      streamRef.current = null;
       setStream(null);
     }
-  }, [stream]);
+  }, []);
 
   // Start camera stream
   const startCamera = useCallback(async () => {
@@ -49,11 +63,24 @@ export const QrScannerModal: React.FC<Props> = ({ isOpen, onClose, onScanSuccess
         audio: false,
       });
 
+      streamRef.current = mediaStream;
       setStream(mediaStream);
-      if (videoRef.current) {
-        videoRef.current.srcObject = mediaStream;
-        videoRef.current.setAttribute('playsinline', 'true');
-        await videoRef.current.play();
+      // 等 React 把 <video> 真正挂上来再挂流，并显式设置 muted 属性
+      // （WebView 的自动播放策略看的是 muted **属性**，只写 muted JSX 属性不够）
+      await new Promise((r) => setTimeout(r, 60));
+      const video = videoRef.current;
+      if (video) {
+        video.muted = true;
+        video.setAttribute('muted', '');
+        video.setAttribute('playsinline', 'true');
+        video.setAttribute('webkit-playsinline', 'true');
+        video.srcObject = mediaStream;
+        try {
+          await video.play();
+        } catch {
+          // 有些 WebView 要等 loadedmetadata 才肯播
+          video.addEventListener('loadedmetadata', () => void video.play().catch(() => {}), { once: true });
+        }
       }
       setScanning(true);
     } catch (err: unknown) {
@@ -110,9 +137,13 @@ export const QrScannerModal: React.FC<Props> = ({ isOpen, onClose, onScanSuccess
 
     let animId: number;
     let lastScanTime = 0;
+    // 看门狗：真机上出现过"授权通过但视频永远不播"的 ROM 组合，
+    // 表现是取景框一直闪、扫不出东西 —— 那必须**如实报错**，而不是无声空转。
+    const startedAt = Date.now();
+    let reported = false;
 
     const scanFrame = async (timestamp: number) => {
-      if (!scanning) return;
+      if (scanning) return;
 
       const video = videoRef.current;
       const canvas = canvasRef.current;
@@ -137,8 +168,16 @@ export const QrScannerModal: React.FC<Props> = ({ isOpen, onClose, onScanSuccess
                 return;
               }
             }
+          } else if (!reported && Date.now() - startedAt > 8000) {
+            reported = true;
+            setScanning(false);
+            setCameraError('相机已授权，但这台手机没能把取景画面显示出来（视频一直不播放）。可以改用「相册选取图片」扫码，或重启一次 App 再试。');
           }
         }
+      } else if (!reported && Date.now() - startedAt > 8000) {
+        reported = true;
+        setScanning(false);
+        setCameraError('相机已授权，但取景画面没能启动。可以改用「相册选取图片」扫码，或重启一次 App 再试。');
       }
 
       animId = requestAnimationFrame(scanFrame);
@@ -210,12 +249,14 @@ export const QrScannerModal: React.FC<Props> = ({ isOpen, onClose, onScanSuccess
           {/* Hidden Canvas for Decoding */}
           <canvas ref={canvasRef} className="hidden" />
 
-          {/* Video Stream */}
+          {/* Video Stream —— autoPlay + 显式 muted：WebView 里少一个都不播 */}
           <video
             ref={videoRef}
             className={`w-full h-full object-cover ${cameraError ? 'hidden' : 'block'}`}
+            autoPlay
             muted
             playsInline
+            disablePictureInPicture
           />
 
           {/* Scanned Success Overlay */}
