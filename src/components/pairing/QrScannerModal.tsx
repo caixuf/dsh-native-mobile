@@ -143,7 +143,10 @@ export const QrScannerModal: React.FC<Props> = ({ isOpen, onClose, onScanSuccess
     let reported = false;
 
     const scanFrame = async (timestamp: number) => {
-      if (scanning) return;
+      // 🔴 这里必须是 `!scanning`。
+      // v1.0.3 误写成 `if (scanning) return` —— 于是循环一进来就退出、
+      // 而且再也不排下一帧，**一帧都没解码过**：画面照常显示，却永远识别不出码。
+      if (!scanning) return;
 
       const video = videoRef.current;
       const canvas = canvasRef.current;
@@ -156,13 +159,29 @@ export const QrScannerModal: React.FC<Props> = ({ isOpen, onClose, onScanSuccess
           const height = video.videoHeight;
 
           if (width > 0 && height > 0) {
-            canvas.width = width;
-            canvas.height = height;
+            // 降采样到长边 ≤720 再解码：实测整帧 720p 解码比 640x360 慢 4 倍，
+            // 而手机 CPU 只有本机零头 —— 降采样后识别反而更快。
+            const MAX_SIDE = 720;
+            const ratio = Math.min(1, MAX_SIDE / Math.max(width, height));
+            const dw = Math.round(width * ratio);
+            const dh = Math.round(height * ratio);
+            canvas.width = dw;
+            canvas.height = dh;
             const ctx = canvas.getContext('2d', { willReadFrequently: true });
             if (ctx) {
-              ctx.drawImage(video, 0, 0, width, height);
-              const imgData = ctx.getImageData(0, 0, width, height);
-              const decoded = await decodeQrFromImageData(imgData);
+              ctx.drawImage(video, 0, 0, dw, dh);
+              const imgData = ctx.getImageData(0, 0, dw, dh);
+              let decoded = await decodeQrFromImageData(imgData);
+              // 兜底：万一系统只给了**前摄**（画面是镜像的），jsQR 对镜像码识别率很低，
+              // 水平翻转再试一次。
+              if (!decoded) {
+                ctx.save();
+                ctx.translate(dw, 0);
+                ctx.scale(-1, 1);
+                ctx.drawImage(video, 0, 0, dw, dh);
+                ctx.restore();
+                decoded = await decodeQrFromImageData(ctx.getImageData(0, 0, dw, dh));
+              }
               if (decoded) {
                 triggerSuccess(decoded);
                 return;
