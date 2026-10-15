@@ -129,9 +129,32 @@ export class DeviceStore {
     const snapshot = JSON.stringify(this.#state, null, 2);
     this.#writeChain = this.#writeChain.then(async () => {
       await mkdir(dirname(this.#file), { recursive: true });
-      const tmp = `${this.#file}.${process.pid}.tmp`;
+      const tmp = `${this.#file}.${process.pid}.${Date.now()}-${Math.random().toString(36).slice(2)}.tmp`;
       await writeFile(tmp, snapshot, { encoding: 'utf8', mode: 0o600 });
-      await rename(tmp, this.#file);
+      let renamed = false;
+      for (let attempt = 0; attempt < 5; attempt++) {
+        try {
+          await rename(tmp, this.#file);
+          renamed = true;
+          break;
+        } catch (err) {
+          if (err && (err.code === 'EPERM' || err.code === 'EBUSY' || err.code === 'EACCES') && attempt < 4) {
+            await new Promise((r) => setTimeout(r, 25 * (attempt + 1)));
+          } else {
+            break;
+          }
+        }
+      }
+      if (!renamed) {
+        // Windows 文件锁回退：直接写目标文件并清理临时文件
+        await writeFile(this.#file, snapshot, { encoding: 'utf8' });
+        try {
+          const { unlink } = await import('node:fs/promises');
+          await unlink(tmp).catch(() => {});
+        } catch {
+          /* ignore */
+        }
+      }
       try {
         await chmod(this.#file, 0o600);
       } catch {

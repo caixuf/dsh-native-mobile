@@ -90,7 +90,7 @@ export const VoiceRecordingOverlay: React.FC<Props> = ({ isOpen, onSend, onCance
 
   return (
     <div className="fixed inset-0 z-50 flex flex-col justify-end bg-black/70 backdrop-blur-md transition-opacity animate-in fade-in duration-200">
-      <div className="w-full max-w-md mx-auto specular-card rounded-t-[32px] p-6 shadow-2xl flex flex-col items-center border-t border-white/10 animate-in slide-in-from-bottom-6 duration-250 ease-out">
+      <div className="w-full max-w-md mx-auto specular-card rounded-t-[32px] p-6 pb-[calc(1.5rem+var(--sab))] shadow-2xl flex flex-col items-center border-t border-white/10 animate-in slide-in-from-bottom-6 duration-250 ease-out">
         {/* Pull Handle Bar */}
         <div className="w-10 h-1 bg-white/20 rounded-full mb-4" />
 

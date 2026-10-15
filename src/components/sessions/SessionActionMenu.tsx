@@ -124,7 +124,7 @@ export const SessionActionMenu: React.FC<Props> = ({
         aria-modal="true"
         aria-label={`会话操作：${session.title || session.sessionId}`}
         data-testid="session-action-menu"
-        className="relative w-full max-w-md mx-auto rounded-t-3xl specular-card p-4 pb-8 shadow-2xl border-t border-white/10 animate-in slide-in-from-bottom-4 duration-200"
+        className="relative w-full max-w-md mx-auto rounded-t-3xl specular-card p-4 pb-[calc(1.5rem+var(--sab))] shadow-2xl border-t border-white/10 animate-in slide-in-from-bottom-4 duration-200"
       >
         <div className="flex items-start justify-between gap-3 pb-3 border-b border-white/[0.08]">
           <div className="min-w-0">

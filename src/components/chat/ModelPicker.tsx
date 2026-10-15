@@ -135,7 +135,7 @@ export const ModelPicker: React.FC<ModelPickerProps> = ({
         )}
 
         {/* 模型列表 */}
-        <div className="flex-1 overflow-y-auto p-4 space-y-4">
+        <div className="flex-1 overflow-y-auto p-4 pb-[calc(1.5rem+var(--sab))] space-y-4">
           {loading && (
             <div className="flex flex-col items-center justify-center py-12 text-[#94a3b8] space-y-2">
               <div className="w-6 h-6 border-2 border-[#3b82f6] border-t-transparent rounded-full animate-spin" />

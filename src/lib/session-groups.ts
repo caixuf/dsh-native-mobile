@@ -859,3 +859,35 @@ export function listWorkspaceOptions(
     return a.workspace < b.workspace ? -1 : a.workspace > b.workspace ? 1 : 0;
   });
 }
+
+/**
+ * 建会话时该用哪个 cwd —— **必须有值**。
+ *
+ * 🔴 实测（2026-10-15 活主机）：`session/create` 不带 cwd，主机会把会话放进
+ * `C:\Users\<user>\.dsh\profiles\desktop`。桌面版按 **Workspace 实体**分组
+ * （`ui-workspace/src/client/tree.ts:334-376`），落在 profile 目录里的会话
+ * 不属于任何工作区 → 手机上建完，电脑上根本找不到。
+ *
+ * 所以：优先用用户显式选的；没选就用**最近活动过的工作区**（列表里第一个，
+ * 与桌面"最近更新"语义一致）；一个已知工作区都没有（全新主机）才返回空，
+ * 由调用方决定是否提示用户先选一个。
+ */
+export function inferDefaultCwd(
+  rows: readonly { workspace?: string | null; updatedAt?: number }[] | null | undefined,
+): string {
+  const list = Array.isArray(rows) ? rows : [];
+  let best = '';
+  let bestAt = -Infinity;
+  for (const row of list) {
+    const ws = typeof row?.workspace === 'string' ? row.workspace.trim() : '';
+    if (!ws) continue;
+    // profile 目录不是工作区，别拿它当默认值（否则又建出一个电脑上看不见的会话）
+    if (/[\\/]\.dsh[\\/](profiles|sessions)[\\/]/i.test(ws)) continue;
+    const at = typeof row.updatedAt === 'number' ? row.updatedAt : 0;
+    if (at > bestAt) {
+      bestAt = at;
+      best = ws;
+    }
+  }
+  return best;
+}

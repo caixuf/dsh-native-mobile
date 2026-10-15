@@ -23,6 +23,7 @@ import type { SessionProjections } from './lib/session-stats';
 import {
   applySessionRename,
   buildForkedSession,
+  inferDefaultCwd,
   readArchivedIds,
   setArchivedId,
   writeArchivedIds,
@@ -153,6 +154,8 @@ export const App: React.FC = () => {
 
   /** 聊天页的读取错误（子代理读不到、网络失败等）——必须让用户看见，不能只 console.warn。 */
   const [chatError, setChatError] = useState<string | null>(null);
+  /** 新建会话后的一次性提示（告诉用户会话建在哪个工作区、什么时候电脑端才看得见）。 */
+  const [createNotice, setCreateNotice] = useState<{ kind: 'info' | 'error'; text: string } | null>(null);
 
   /** 本机归档的会话 id（真主机没有 archive 端点，UI 已如实标注"仅本机归档"）。 */
   const [archivedIds, setArchivedIds] = useState<string[]>(() => {
@@ -779,8 +782,14 @@ export const App: React.FC = () => {
     const conn = connRef.current;
     if (!conn) return;
     try {
+      // 🔴 一定要挑一个**真工作区**，不能留空。
+      // 实测（2026-10-15 活主机）：cwd 缺省时主机把会话丢进
+      // `C:\Users\<user>\.dsh\profiles\desktop`，而桌面版是**按 Workspace 实体分组**的，
+      // 落在 profile 目录的会话不属于任何工作区 → 在电脑上根本找不到。
+      // 另外 `{ cwd: undefined }` 会被 JSON.stringify 丢掉、退化成 `{}`，所以必须显式填。
+      const targetCwd = cwd && cwd.trim() ? cwd.trim() : inferDefaultCwd(sessions);
       const res = (await conn.call('session.create', {
-        request: { cwd },
+        request: { cwd: targetCwd },
       })) as { sessionId?: string };
 
       const newId = res?.sessionId || 'session-' + Date.now();
@@ -791,13 +800,18 @@ export const App: React.FC = () => {
         updatedAt: Date.now(),
         running: false,
         isSubagent: false,
-        workspace: cwd || '~/Developer/workspaces/app',
+        workspace: targetCwd,
       };
 
       setSessions([newRow, ...sessions]);
       handleOpenSession(newRow);
+      setCreateNotice({
+        kind: 'info',
+        text: `已在「${targetCwd}」建会话。发出第一条消息后电脑端才会看到它（桌面版会隐藏还没说过话的空白会话）。`,
+      });
     } catch (err) {
       console.warn('Failed to create session', err);
+      setCreateNotice({ kind: 'error', text: '建会话失败：' + (err instanceof Error ? err.message : String(err)) });
     }
   };
 
@@ -1343,138 +1357,143 @@ export const App: React.FC = () => {
       />
 
       {/* Main Screen Router */}
-      <main className="flex-1 h-full overflow-hidden relative">
-        {/* 顶部横幅栈：待审批优先级最高（它有时效），其次才是环境警示 */}
-        <div className="absolute top-0 inset-x-0 z-50 flex flex-col">
-          {/*
-            用户在会话列表/主机页时，待审批项原本**完全看不见** —— 只有进到聊天页才渲染。
-            真主机的审批载荷带 sessionId，所以这里可以直接跳到出事的那个会话。
-          */}
-          {pendingPrompt && route !== 'chat' && (
-            <button
-              type="button"
-              onClick={() => {
-                const target = promptSessionId
-                  ? [...sessions, ...subagentSessions].find((s) => s.sessionId === promptSessionId)
-                  : currentSession;
-                if (target) {
-                  handleOpenSession(target);
-                } else {
-                  // 找不到对应会话（比如它还没出现在列表里）：至少把列表打开，
-                  // 不要给一个点了没反应的横幅。
-                  setDrawerOpen(true);
-                }
-              }}
-              className="w-full flex items-center gap-2 px-3 py-2.5 text-left bg-violet-500/20 border-b border-violet-400/40 text-violet-100 backdrop-blur-sm active:bg-violet-500/30"
-            >
-              <span className="shrink-0 w-2 h-2 rounded-full bg-violet-300 animate-pulse" />
-              <span className="flex-1 min-w-0 truncate text-xs">
-                有 1 项待你处理：{pendingPrompt.title}
-              </span>
-              <span className="shrink-0 text-xs underline">去处理</span>
-            </button>
-          )}
-
-          {/* 环境/鉴权警示必须明说，不能静默 */}
-          {alertBanner &&
-            (alertBanner.onPress ? (
+      <main className="flex-1 h-full overflow-hidden flex flex-col relative">
+        {/* 顶部横幅栈：流式自然排布，绝不遮挡下层屏幕的标题栏与操作按钮 */}
+        {Boolean((pendingPrompt && route !== 'chat') || alertBanner || notice) && (
+          <div className="shrink-0 z-40 flex flex-col shadow-md">
+            {pendingPrompt && route !== 'chat' && (
               <button
                 type="button"
-                onClick={alertBanner.onPress}
-                className="w-full text-left bg-amber-500/15 text-amber-200 border-b border-amber-500/30 px-3 py-2 text-[11px] leading-snug backdrop-blur-sm active:bg-amber-500/25"
+                onClick={() => {
+                  const target = promptSessionId
+                    ? [...sessions, ...subagentSessions].find((s) => s.sessionId === promptSessionId)
+                    : currentSession;
+                  if (target) {
+                    handleOpenSession(target);
+                  } else {
+                    // 找不到对应会话（比如它还没出现在列表里）：至少把列表打开，
+                    // 不要给一个点了没反应的横幅。
+                    setDrawerOpen(true);
+                  }
+                }}
+                className="w-full flex items-center gap-2 px-3 py-2.5 text-left bg-violet-500/20 border-b border-violet-400/40 text-violet-100 backdrop-blur-sm active:bg-violet-500/30"
               >
-                ⚠️ {alertBanner.text} <span className="underline">去处理</span>
+                <span className="shrink-0 w-2 h-2 rounded-full bg-violet-300 animate-pulse" />
+                <span className="flex-1 min-w-0 truncate text-xs">
+                  有 1 项待你处理：{pendingPrompt.title}
+                </span>
+                <span className="shrink-0 text-xs underline">去处理</span>
               </button>
-            ) : (
-              <div className="bg-amber-500/15 text-amber-200 border-b border-amber-500/30 px-3 py-2 text-[11px] leading-snug backdrop-blur-sm">
-                ⚠️ {alertBanner.text}
-              </div>
-            ))}
+            )}
 
-          {/* 轻提示（离线已入队等）：不打断操作，几秒自消 */}
-          {notice && (
-            <div
-              role="status"
-              className="bg-sky-500/15 text-sky-200 border-b border-sky-500/30 px-3 py-2 text-[11px] leading-snug backdrop-blur-sm"
-            >
-              {notice}
-            </div>
+            {/* 环境/鉴权警示必须明说，不能静默 */}
+            {alertBanner &&
+              (alertBanner.onPress ? (
+                <button
+                  type="button"
+                  onClick={alertBanner.onPress}
+                  className="w-full text-left bg-amber-500/15 text-amber-200 border-b border-amber-500/30 px-3 py-2 text-[11px] leading-snug backdrop-blur-sm active:bg-amber-500/25"
+                >
+                  ⚠️ {alertBanner.text} <span className="underline">去处理</span>
+                </button>
+              ) : (
+                <div className="bg-amber-500/15 text-amber-200 border-b border-amber-500/30 px-3 py-2 text-[11px] leading-snug backdrop-blur-sm">
+                  ⚠️ {alertBanner.text}
+                </div>
+              ))}
+
+            {/* 轻提示（离线已入队等）：不打断操作，几秒自消 */}
+            {notice && (
+              <div
+                role="status"
+                className="bg-sky-500/15 text-sky-200 border-b border-sky-500/30 px-3 py-2 text-[11px] leading-snug backdrop-blur-sm"
+              >
+                {notice}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* 屏幕内容区 */}
+        <div className="flex-1 min-h-0 relative">
+          {route === 'hosts' && (
+            <HostsScreen
+              hosts={hosts}
+              activeId={activeHostId}
+              linkState={linkState}
+              onOpen={handleSelectHost}
+              onForget={handleForgetHost}
+              onRename={handleRenameHost}
+              onReconnect={() => activeHostId && startHostConnection(activeHostId)}
+              onAdd={() => setRoute('pair')}
+              onBack={() => setRoute('sessions')}
+            />
+          )}
+
+          {route === 'pair' && (
+            <PairScreen
+              busy={busy}
+              error={error}
+              onBack={hosts.length > 0 ? () => setRoute('hosts') : null}
+              onLogin={handleLogin}
+              onPair={handlePair}
+              deviceName={DEVICE_NAME}
+            />
+          )}
+
+          {route === 'sessions' && (
+            <SessionsScreen
+              linkState={linkState}
+              sessions={sessions}
+              subagentSessions={subagentSessions}
+              searchResults={searchResults}
+              loading={sessionsLoading}
+              archivedIds={archivedIds}
+              onArchive={(s) => applyArchive(s, true)}
+              onUnarchive={(s) => applyArchive(s, false)}
+              onRenameSession={handleRenameSession}
+              onForkSession={handleForkSession}
+              onCancelSession={handleCancelSession}
+              onOpen={handleOpenSession}
+              onRefresh={() => loadSessions()}
+              onSearch={handleSearchSessions}
+              onCreate={handleCreateSession}
+              createNotice={createNotice}
+              onDismissCreateNotice={() => setCreateNotice(null)}
+              onOpenDrawer={() => setDrawerOpen(true)}
+            />
+          )}
+
+          {route === 'chat' && currentSession && (
+            <ChatScreen
+              sessionId={currentSession.sessionId}
+              title={currentSession.title}
+              lines={chatLines}
+              pending={pendingPrompt}
+              running={running}
+              sending={sending}
+              preparing={preparing}
+              preparingStep={preparingStep}
+              hostName={linkState.hostName || activeHost?.label}
+              workspace={currentSession.workspace}
+              queued={queued}
+              onRemoveQueued={handleRemoveQueued}
+              onRetryQueued={handleRetryQueued}
+              liveConnected={linkState.type === 'ready'}
+              activity={activity}
+              readouts={readouts}
+              onBack={() => setRoute('sessions')}
+              onSend={handleSendPrompt}
+              onCancel={handleCancelPrompt}
+              onApprove={handleApprove}
+              onAnswerOption={handleAnswerOption}
+              onOpenDrawer={() => setDrawerOpen(true)}
+              modelCatalog={modelCatalog}
+              selectedModel={selectedModel}
+              onSelectModel={handleSelectModel}
+            />
           )}
         </div>
-        {route === 'hosts' && (
-          <HostsScreen
-            hosts={hosts}
-            activeId={activeHostId}
-            linkState={linkState}
-            onOpen={handleSelectHost}
-            onForget={handleForgetHost}
-            onRename={handleRenameHost}
-            onReconnect={() => activeHostId && startHostConnection(activeHostId)}
-            onAdd={() => setRoute('pair')}
-          />
-        )}
-
-        {route === 'pair' && (
-          <PairScreen
-            busy={busy}
-            error={error}
-            onBack={hosts.length > 0 ? () => setRoute('hosts') : null}
-            onLogin={handleLogin}
-            onPair={handlePair}
-            deviceName={DEVICE_NAME}
-          />
-        )}
-
-        {route === 'sessions' && (
-          <SessionsScreen
-            linkState={linkState}
-            sessions={sessions}
-            subagentSessions={subagentSessions}
-            searchResults={searchResults}
-            loading={sessionsLoading}
-            archivedIds={archivedIds}
-            onArchive={(s) => applyArchive(s, true)}
-            onUnarchive={(s) => applyArchive(s, false)}
-            onRenameSession={handleRenameSession}
-            onForkSession={handleForkSession}
-            onCancelSession={handleCancelSession}
-            onOpen={handleOpenSession}
-            onRefresh={() => loadSessions()}
-            onSearch={handleSearchSessions}
-            onCreate={handleCreateSession}
-            onOpenDrawer={() => setDrawerOpen(true)}
-          />
-        )}
-
-        {route === 'chat' && currentSession && (
-          <ChatScreen
-            sessionId={currentSession.sessionId}
-            title={currentSession.title}
-            lines={chatLines}
-            pending={pendingPrompt}
-            running={running}
-            sending={sending}
-            preparing={preparing}
-            preparingStep={preparingStep}
-            hostName={linkState.hostName || activeHost?.label}
-            workspace={currentSession.workspace}
-            queued={queued}
-            onRemoveQueued={handleRemoveQueued}
-            onRetryQueued={handleRetryQueued}
-            liveConnected={linkState.type === 'ready'}
-            activity={activity}
-            readouts={readouts}
-            onBack={() => setRoute('sessions')}
-            onSend={handleSendPrompt}
-            onCancel={handleCancelPrompt}
-            onApprove={handleApprove}
-            onAnswerOption={handleAnswerOption}
-            onOpenDrawer={() => setDrawerOpen(true)}
-            modelCatalog={modelCatalog}
-            selectedModel={selectedModel}
-            onSelectModel={handleSelectModel}
-          />
-        )}
       </main>
     </div>
   );

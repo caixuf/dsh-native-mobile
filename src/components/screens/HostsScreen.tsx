@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Plus, RefreshCw, Trash2, Edit2, Monitor, ArrowRight, Laptop, Sparkles, ScanLine, QrCode } from 'lucide-react';
+import { Plus, RefreshCw, Trash2, Edit2, Monitor, ArrowRight, ArrowLeft, Laptop, Sparkles, ScanLine, QrCode } from 'lucide-react';
 import { HostRecord, LinkState } from '../../types';
 import { ConnectionDot } from '../common/ConnectionDot';
 import { DeepSeekLogo } from '../common/DeepSeekLogo';
@@ -13,6 +13,7 @@ interface Props {
   onRename: (id: string, name: string) => void;
   onReconnect: () => void;
   onAdd: () => void;
+  onBack?: () => void;
 }
 
 export const HostsScreen: React.FC<Props> = ({
@@ -24,6 +25,7 @@ export const HostsScreen: React.FC<Props> = ({
   onRename,
   onReconnect,
   onAdd,
+  onBack,
 }) => {
   const [forgetTarget, setForgetTarget] = useState<string | null>(null);
   const [renameTarget, setRenameTarget] = useState<HostRecord | null>(null);
@@ -42,14 +44,24 @@ export const HostsScreen: React.FC<Props> = ({
     <div className="flex flex-col h-full bg-[#090a0f] text-[#f8fafc] mesh-glow-bg select-none">
       {/* Studio Top Navigation Bar */}
       <header className="sticky top-0 z-30 studio-glass border-b border-white/[0.08] px-4 py-3">
-        <div className="flex items-center justify-between max-w-2xl mx-auto w-full">
-          <div className="flex items-center gap-3">
-            <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-[#1e293b] to-[#0f172a] border border-white/10 shadow-inner flex items-center justify-center p-1.5">
+        <div className="flex items-center justify-between max-w-2xl mx-auto w-full gap-2">
+          <div className="flex items-center gap-2.5 min-w-0">
+            {onBack && (
+              <button
+                onClick={onBack}
+                type="button"
+                aria-label="返回会话"
+                className="w-8 h-8 rounded-xl bg-white/[0.06] hover:bg-white/[0.12] border border-white/[0.08] text-[#e2e8f0] flex items-center justify-center mr-1 transition-colors cursor-pointer studio-tap shrink-0"
+              >
+                <ArrowLeft size={17} />
+              </button>
+            )}
+            <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-[#1e293b] to-[#0f172a] border border-white/10 shadow-inner flex items-center justify-center p-1.5 shrink-0">
               <DeepSeekLogo size={22} variant="brand" />
             </div>
-            <div>
-              <h1 className="text-[17px] font-bold tracking-tight text-white">我的工作电脑</h1>
-              <p className="text-[11px] text-[#94a3b8]">已配对的远程工作站与守护进程</p>
+            <div className="min-w-0">
+              <h1 className="text-[16px] font-bold tracking-tight text-white whitespace-nowrap truncate">我的工作电脑</h1>
+              <p className="text-[11px] text-[#94a3b8] whitespace-nowrap truncate">已配对的远程工作站与守护进程</p>
             </div>
           </div>
           <div className="flex items-center gap-2">
@@ -74,7 +86,7 @@ export const HostsScreen: React.FC<Props> = ({
       </header>
 
       {/* Main Content */}
-      <div className="flex-1 overflow-y-auto p-4 space-y-3.5 max-w-2xl w-full mx-auto pb-32">
+      <div className="flex-1 overflow-y-auto p-4 space-y-3.5 max-w-2xl w-full mx-auto pb-[calc(8rem+var(--sab))]">
         {/* Connection Status Card */}
         <div className="flex items-center justify-between p-4 rounded-2xl specular-card border border-white/10">
           <div className="flex items-center gap-3">
@@ -199,7 +211,7 @@ export const HostsScreen: React.FC<Props> = ({
       </div>
 
       {/* Floating Action Button */}
-      <div className="fixed bottom-6 right-6 z-20">
+      <div className="fixed bottom-[calc(1.5rem+var(--sab))] right-6 z-20">
         <button
           onClick={onAdd}
           type="button"
@@ -212,7 +224,7 @@ export const HostsScreen: React.FC<Props> = ({
 
       {/* Delete Confirmation Modal */}
       {forgetTarget && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-md animate-in fade-in">
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 pt-[calc(1rem+var(--sat))] pb-[calc(1rem+var(--sab))] bg-black/70 backdrop-blur-md animate-in fade-in">
           <div className="w-full max-w-sm rounded-3xl specular-card p-6 shadow-2xl border border-white/10 animate-in zoom-in-95 duration-200">
             <h3 className="text-[16px] font-bold text-white">解除电脑配对</h3>
             <p className="text-[13px] text-[#94a3b8] mt-2 leading-relaxed">
@@ -243,7 +255,7 @@ export const HostsScreen: React.FC<Props> = ({
 
       {/* Rename Modal */}
       {renameTarget && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-md animate-in fade-in">
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 pt-[calc(1rem+var(--sat))] pb-[calc(1rem+var(--sab))] bg-black/70 backdrop-blur-md animate-in fade-in">
           <div className="w-full max-w-sm rounded-3xl specular-card p-6 shadow-2xl border border-white/10 animate-in zoom-in-95 duration-200">
             <h3 className="text-[16px] font-bold text-white">修改电脑备注名</h3>
             <input

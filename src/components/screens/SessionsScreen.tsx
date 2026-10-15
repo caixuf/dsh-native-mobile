@@ -70,6 +70,13 @@ interface Props {
   onRefresh: () => void;
   onSearch: (q: string) => void;
   onCreate: (cwd?: string) => void;
+  /**
+   * 建会话后的一次性提示。用来如实告诉用户两件他一定会困惑的事：
+   * ① 会话建在哪个工作区；② 桌面版会隐藏"还没说过话"的空白会话，
+   * 发出第一条消息后电脑端才看得见（桌面 `tree.ts:233-245` 按设计如此）。
+   */
+  createNotice?: { kind: 'info' | 'error'; text: string } | null;
+  onDismissCreateNotice?: () => void;
   onOpenDrawer: () => void;
   /** 已归档会话 id（传入即受控：组件只通知，不回写内部状态）。 */
   archivedIds?: string[];
@@ -94,6 +101,8 @@ export const SessionsScreen: React.FC<Props> = ({
   onRefresh,
   onSearch,
   onCreate,
+  createNotice,
+  onDismissCreateNotice,
   onOpenDrawer,
   archivedIds,
   onArchive,
@@ -262,27 +271,25 @@ export const SessionsScreen: React.FC<Props> = ({
     <div className="flex flex-col h-full bg-[#090a0f] text-[#f8fafc] mesh-glow-bg select-none">
       {/* Studio Top Navigation Bar */}
       <header className="sticky top-0 z-30 studio-glass border-b border-white/[0.08] px-4 py-3 transition-all">
-        <div className="flex items-center justify-between max-w-2xl mx-auto w-full">
-          <div className="flex items-center gap-3">
+        <div className="flex items-center justify-between max-w-2xl mx-auto w-full gap-2">
+          <div className="flex items-center gap-2.5 min-w-0">
             <button
               onClick={onOpenDrawer}
               type="button"
               aria-label="打开菜单"
-              className="w-9 h-9 rounded-xl bg-white/[0.06] hover:bg-white/[0.12] border border-white/[0.08] flex items-center justify-center text-[#e2e8f0] transition-colors cursor-pointer studio-tap"
+              className="w-9 h-9 rounded-xl bg-white/[0.06] hover:bg-white/[0.12] border border-white/[0.08] flex items-center justify-center text-[#e2e8f0] transition-colors cursor-pointer studio-tap shrink-0"
             >
               <Menu size={18} />
             </button>
-            <div className="flex items-center gap-2.5">
-              <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-[#1e293b] to-[#0f172a] border border-white/10 shadow-inner flex items-center justify-center p-1.5">
+            <div className="flex items-center gap-2 min-w-0">
+              <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-[#1e293b] to-[#0f172a] border border-white/10 shadow-inner flex items-center justify-center p-1.5 shrink-0">
                 <DeepSeekLogo size={22} variant="brand" />
               </div>
-              <div>
-                <div className="flex items-center gap-2">
-                  <h1 className="text-[17px] font-bold tracking-tight text-white flex items-center gap-1.5">
-                    遥控会话
-                  </h1>
-                  <StatusPill linkState={linkState} onClick={onOpenDrawer} />
-                </div>
+              <h1 className="text-[16px] font-bold tracking-tight text-white whitespace-nowrap shrink-0">
+                遥控会话
+              </h1>
+              <div className="min-w-0 shrink">
+                <StatusPill linkState={linkState} onClick={onOpenDrawer} />
               </div>
             </div>
           </div>
@@ -331,6 +338,30 @@ export const SessionsScreen: React.FC<Props> = ({
 
       {/* Main Sessions List */}
       <div className="flex-1 overflow-y-auto p-4 space-y-3.5 max-w-2xl w-full mx-auto pb-32">
+        {createNotice && (
+          <div
+            data-testid="create-notice"
+            className={`flex items-start gap-2.5 p-3 rounded-2xl border text-[12.5px] leading-relaxed ${
+              createNotice.kind === 'error'
+                ? 'bg-[#f43f5e]/10 border-[#f43f5e]/25 text-[#fda4af]'
+                : 'bg-[#3b82f6]/10 border-[#3b82f6]/25 text-[#bfdbfe]'
+            }`}
+          >
+            <Sparkles size={15} className="shrink-0 mt-0.5" />
+            <span className="flex-1 min-w-0">{createNotice.text}</span>
+            {onDismissCreateNotice && (
+              <button
+                type="button"
+                onClick={onDismissCreateNotice}
+                aria-label="关闭提示"
+                className="shrink-0 w-6 h-6 rounded-lg flex items-center justify-center text-current/70 hover:text-white hover:bg-white/10 cursor-pointer studio-tap"
+              >
+                <X size={13} />
+              </button>
+            )}
+          </div>
+        )}
+
         {/* Bento Remote Host Status Overview Card */}
         <div className="specular-card p-4 rounded-2xl relative overflow-hidden">
           <div className="absolute top-0 right-0 -mt-4 -mr-4 w-28 h-28 bg-[#3b82f6]/10 rounded-full blur-2xl pointer-events-none" />
@@ -475,7 +506,7 @@ export const SessionsScreen: React.FC<Props> = ({
       </div>
 
       {/* Floating Action Button (Raycast Glowing Pill) */}
-      <div className="fixed bottom-6 right-6 z-20">
+      <div className="fixed bottom-[calc(1.5rem+var(--sab))] right-6 z-20">
         <button
           onClick={openCreateDialog}
           type="button"
@@ -488,7 +519,7 @@ export const SessionsScreen: React.FC<Props> = ({
 
       {/* Studio Modal Dialog */}
       {createDialogOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-md animate-in fade-in">
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 pt-[calc(1rem+var(--sat))] pb-[calc(1rem+var(--sab))] bg-black/70 backdrop-blur-md animate-in fade-in">
           <div className="w-full max-w-sm rounded-3xl specular-card p-6 shadow-2xl border border-white/10 animate-in zoom-in-95 duration-200">
             <div className="flex items-center gap-2.5 mb-2">
               <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-[#1e293b] to-[#0f172a] border border-white/10 flex items-center justify-center p-1.5 shadow-inner">

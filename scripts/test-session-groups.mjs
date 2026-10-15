@@ -46,6 +46,7 @@ import {
   formatShowMoreLabel,
   groupSessions,
   listWorkspaceOptions,
+  inferDefaultCwd,
   normalizeSessionTitle,
   normalizeWorkspace,
   readArchivedIds,
@@ -826,6 +827,40 @@ check('T6 新建会话：工作区候选只取真实路径，按最近活动倒�
   eq(options[1].label, 'proj', '候选要带友好名');
   eq(listWorkspaceOptions(null), []);
   eq(listWorkspaceOptions([]), []);
+});
+
+check('建会话必须有 cwd：不能留空（否则会话落到 .dsh\\profiles，电脑端看不见）', () => {
+  // 实测（2026-10-15 活主机）：session/create 不带 cwd 时主机把会话放进
+  // `C:\Users\<user>\.dsh\profiles\desktop`；桌面按 Workspace 实体分组，压根找不到它。
+  const rows = [
+    { workspace: '/old/proj', updatedAt: 100 },
+    { workspace: '/new/proj', updatedAt: 900 },
+    { workspace: '/mid/proj', updatedAt: 500 },
+  ];
+  eq(inferDefaultCwd(rows), '/new/proj', '应取最近活动的工作区');
+
+  // profile / sessions 目录不是工作区，不能当默认值（否则又建出隐形会话）
+  eq(
+    inferDefaultCwd([
+      { workspace: 'C:\\Users\\me\\.dsh\\profiles\\desktop', updatedAt: 9999 },
+      { workspace: 'C:\\work\\real', updatedAt: 1 },
+    ]),
+    'C:\\work\\real',
+    'profile 目录必须被排除',
+  );
+  eq(inferDefaultCwd([]), '', '一个工作区都没有时返回空，由调用方决定是否提示');
+  eq(inferDefaultCwd(null), '');
+  eq(inferDefaultCwd([{ workspace: '   ', updatedAt: 5 }]), '', '空白工作区不算数');
+
+  // App.tsx 必须真的用它，而且不能再出现 `cwd || 假路径` 这种兜底
+  const app = readFileSync(path.join(ROOT, 'src/App.tsx'), 'utf8');
+  ok(app.includes('inferDefaultCwd'), 'App.tsx 必须用 inferDefaultCwd 保证建会话带 cwd');
+  ok(
+    !app.includes("cwd || '~/Developer/workspaces/app'"),
+    '不允许再用假工作区兜底 —— 那会让会话落到不存在的目录',
+  );
+  // 提示用户"发出第一条消息后电脑端才看得见"（桌面按设计隐藏 blank 会话）
+  ok(app.includes('setCreateNotice'), '建完会话要如实告诉用户它建在哪、什么时候电脑端可见');
 });
 
 // ── 15. 组件层契约（T6，不跑构建，只做源码级检查）────────────────────────────

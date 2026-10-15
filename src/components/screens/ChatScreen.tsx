@@ -386,8 +386,8 @@ export const ChatScreen: React.FC<Props> = ({
     <div className="flex flex-col h-full bg-[#090a0f] text-[#f8fafc] mesh-glow-bg select-none">
       {/* 1. Studio Execution Context Bar */}
       <header className="sticky top-0 z-30 studio-glass border-b border-white/[0.08] px-4 py-2.5 transition-all">
-        <div className="flex items-center justify-between max-w-2xl mx-auto w-full">
-          <div className="flex items-center gap-2.5 min-w-0">
+        <div className="flex items-center justify-between max-w-2xl mx-auto w-full gap-2">
+          <div className="flex items-center gap-2.5 min-w-0 flex-1">
             <button
               onClick={onBack}
               type="button"
@@ -452,7 +452,7 @@ export const ChatScreen: React.FC<Props> = ({
               // 有过程状态就说出"到底在干什么 + 干了多久"，没有就退回原来的"执行中"。
               // 对齐 GUI 的「正在分析请求」「深度搜索中，用时 1分56秒」。
               <span
-                className="flex items-center gap-1.5 text-[11px] font-semibold text-[#38bdf8] bg-[#38bdf8]/15 border border-[#38bdf8]/30 px-2.5 py-1 rounded-full max-w-[46vw]"
+                className="flex items-center gap-1.5 text-[11px] font-semibold text-[#38bdf8] bg-[#38bdf8]/15 border border-[#38bdf8]/30 px-2.5 py-1 rounded-full max-w-[120px] sm:max-w-[180px] shrink-0"
                 data-testid="activity-badge"
                 data-phase={activityOn ? (activity as ActivityState).phase : 'unknown'}
                 title={activityModel ? `模型：${activityModel}` : undefined}
@@ -465,7 +465,7 @@ export const ChatScreen: React.FC<Props> = ({
             {!running && summaryText && (
               <span
                 data-testid="turn-summary"
-                className="text-[11px] text-[#94a3b8] bg-white/[0.04] border border-white/10 px-2.5 py-1 rounded-full max-w-[46vw] truncate font-mono"
+                className="text-[11px] text-[#94a3b8] bg-white/[0.04] border border-white/10 px-2.5 py-1 rounded-full max-w-[120px] sm:max-w-[180px] shrink-0 truncate font-mono"
               >
                 {summaryText}
               </span>
@@ -486,7 +486,7 @@ export const ChatScreen: React.FC<Props> = ({
       <div
         ref={timelineRef}
         onScroll={handleTimelineScroll}
-        className="flex-1 overflow-y-auto px-4 py-4 space-y-4 max-w-2xl w-full mx-auto pb-36"
+        className="flex-1 overflow-y-auto px-4 py-4 space-y-4 max-w-2xl w-full mx-auto pb-[calc(10rem+var(--sab))]"
       >
         {/* Task Progress Summary if steps exist */}
         {steps.length > 0 && <TaskProgressCard steps={steps} running={running} />}
@@ -739,7 +739,7 @@ export const ChatScreen: React.FC<Props> = ({
       </div>
 
       {/* 3. Floating Composer Dock */}
-      <div className="fixed bottom-0 left-0 right-0 z-20 bg-gradient-to-t from-[#090a0f] via-[#090a0f]/95 to-transparent pt-6 pb-5 px-4">
+      <div className="fixed bottom-0 left-0 right-0 z-20 bg-gradient-to-t from-[#090a0f] via-[#090a0f]/95 to-transparent pt-6 pb-[calc(1.25rem+var(--sab))] px-4">
         <div className="max-w-2xl mx-auto">
           {/* 上滑看历史时才出现；点了回底部并恢复自动跟随 */}
           {showJumpToLatest && (

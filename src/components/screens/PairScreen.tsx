@@ -123,20 +123,20 @@ export const PairScreen: React.FC<Props> = ({
               <ArrowLeft size={17} />
             </button>
           )}
-          <div className="flex items-center gap-2.5">
-            <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-[#1e293b] to-[#0f172a] border border-white/10 shadow-inner flex items-center justify-center p-1.5">
+          <div className="flex items-center gap-2.5 min-w-0 flex-1">
+            <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-[#1e293b] to-[#0f172a] border border-white/10 shadow-inner flex items-center justify-center p-1.5 shrink-0">
               <DeepSeekLogo size={22} variant="brand" />
             </div>
-            <div>
-              <h1 className="text-[16px] font-bold tracking-tight text-white">连接工作电脑</h1>
-              <p className="text-[11px] text-[#94a3b8]">局域网直连或内网穿透加密隧道</p>
+            <div className="min-w-0">
+              <h1 className="text-[16px] font-bold tracking-tight text-white truncate whitespace-nowrap">连接工作电脑</h1>
+              <p className="text-[11px] text-[#94a3b8] truncate">局域网直连或内网穿透加密隧道</p>
             </div>
           </div>
           <button
             type="button"
             onClick={() => setScannerOpen(true)}
             title="扫码配对"
-            className="ml-auto flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-[#3b82f6]/15 hover:bg-[#3b82f6]/25 border border-[#3b82f6]/30 text-[#38bdf8] text-[12px] font-semibold transition-colors studio-tap cursor-pointer"
+            className="ml-auto flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-[#3b82f6]/15 hover:bg-[#3b82f6]/25 border border-[#3b82f6]/30 text-[#38bdf8] text-[12px] font-semibold transition-colors studio-tap cursor-pointer shrink-0"
           >
             <ScanLine size={15} />
             <span>扫码</span>
@@ -145,7 +145,7 @@ export const PairScreen: React.FC<Props> = ({
       </header>
 
       {/* Main Form Body */}
-      <div className="flex-1 overflow-y-auto p-4 max-w-lg w-full mx-auto pb-16">
+      <div className="flex-1 overflow-y-auto p-4 max-w-lg w-full mx-auto pb-[calc(4rem+var(--sab))]">
         {/* Hero QR Scan Banner */}
         <div className="mb-4 p-3.5 rounded-2xl bg-gradient-to-r from-[#1e293b] via-[#0f172a] to-[#1e1b4b] border border-[#3b82f6]/30 shadow-lg flex items-center justify-between gap-3">
           <div className="flex items-center gap-3 min-w-0">

@@ -241,7 +241,7 @@ export const QrScannerModal: React.FC<Props> = ({ isOpen, onClose, onScanSuccess
   if (!isOpen) return null;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/85 backdrop-blur-md p-4 animate-in fade-in duration-200">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/85 backdrop-blur-md p-4 pt-[calc(1rem+var(--sat))] pb-[calc(1rem+var(--sab))] animate-in fade-in duration-200">
       <div className="relative w-full max-w-sm bg-[#0d111a] border border-white/10 rounded-3xl overflow-hidden shadow-2xl flex flex-col">
         {/* Header */}
         <div className="flex items-center justify-between px-5 py-4 border-b border-white/[0.08]">

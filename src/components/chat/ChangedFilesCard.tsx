@@ -180,7 +180,7 @@ export const ChangedFilesCard: React.FC<ChangedFilesCardProps> = ({ lines }) => 
 
       {/* Diff 检视弹窗 */}
       {inspectingFile && inspectingFile.diff && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-md animate-in fade-in duration-200">
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 pt-[calc(1rem+var(--sat))] pb-[calc(1rem+var(--sab))] bg-black/80 backdrop-blur-md animate-in fade-in duration-200">
           <div className="w-full max-w-xl max-h-[80vh] flex flex-col rounded-3xl bg-[#0f1422] border border-white/15 shadow-2xl overflow-hidden">
             {/* Header */}
             <div className="px-4 py-3 flex items-center justify-between border-b border-white/10 bg-white/[0.02]">

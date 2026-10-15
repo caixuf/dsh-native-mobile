@@ -40,7 +40,7 @@ export const AppDrawer: React.FC<Props> = ({
       {/* Studio Drawer sheet */}
       <div className="relative z-50 w-[320px] max-w-[85vw] h-full bg-[#0b0e17]/95 backdrop-blur-2xl border-r border-white/10 shadow-2xl flex flex-col text-[#f8fafc] transition-transform animate-in slide-in-from-left duration-250 ease-out">
         {/* 1. Header with DeepSeek Logo & Title */}
-        <div className="flex items-center justify-between px-5 pt-6 pb-4 border-b border-white/[0.08]">
+        <div className="flex items-center justify-between px-5 pt-[calc(1.25rem+var(--sat))] pb-4 border-b border-white/[0.08]">
           <div className="flex items-center gap-3">
             <div className="w-10 h-10 rounded-2xl bg-gradient-to-br from-[#1e293b] to-[#0f172a] border border-white/10 shadow-inner flex items-center justify-center p-1.5">
               <DeepSeekLogo size={26} variant="brand" />
@@ -139,7 +139,7 @@ export const AppDrawer: React.FC<Props> = ({
         </div>
 
         {/* 4. Bottom Actions */}
-        <div className="p-4 border-t border-white/[0.08] space-y-2 bg-[#090b12]">
+        <div className="p-4 pb-[calc(1.25rem+var(--sab))] border-t border-white/[0.08] space-y-2 bg-[#090b12]">
           <button
             type="button"
             onClick={() => {
