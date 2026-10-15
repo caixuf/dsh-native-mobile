@@ -163,11 +163,24 @@ export const ChatScreen: React.FC<Props> = ({
     scrollToBottom('smooth');
   };
 
+  const pendingCardRef = useRef<HTMLDivElement>(null);
+
   // 🔴 自动跟随只在"本来就在底部"时生效（原来无条件 scrollIntoView，
   //    用户上滑读历史时每条流式增量都会把他拽回底部）。
   useEffect(() => {
     if (followBottomRef.current) scrollToBottom();
   }, [lines, running, preparing]);
+
+  // 当出现待批准操作或选项提问时，这是最高优先级交互，确保卡片平滑滚动到屏幕中央，绝不被遮挡
+  useEffect(() => {
+    if (pending) {
+      triggerHaptic('warning');
+      const timer = setTimeout(() => {
+        pendingCardRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      }, 120);
+      return () => clearTimeout(timer);
+    }
+  }, [pending]);
 
   // 切会话：恢复该会话的草稿与展开状态，并给出**可见**提示（静默恢复 = 没恢复）
   useEffect(() => {
@@ -486,11 +499,19 @@ export const ChatScreen: React.FC<Props> = ({
         </div>
       </header>
 
+      {/* 1.1 Session Performance & Readouts Bar (对齐桌面端 StatsPills，置顶展开，不遮挡底栏操作) */}
+      <SessionStatsBar
+        activity={(readouts && readouts.activity) || null}
+        usage={(readouts && readouts.usage) || null}
+        context={(readouts && readouts.context) || null}
+        detail={(readouts && readouts.detail) || []}
+      />
+
       {/* 2. Chat Timeline */}
       <div
         ref={timelineRef}
         onScroll={handleTimelineScroll}
-        className="flex-1 overflow-y-auto px-4 py-4 space-y-4 max-w-2xl w-full mx-auto pb-[calc(10rem+var(--sab)+var(--keyboard-inset-bottom,0px))]"
+        className="flex-1 overflow-y-auto px-4 py-4 space-y-4 max-w-2xl w-full mx-auto pb-[calc(11rem+var(--sab)+var(--keyboard-inset-bottom,0px))]"
       >
         {/* Task Progress Summary if steps exist */}
         {steps.length > 0 && <TaskProgressCard steps={steps} running={running} />}
@@ -695,40 +716,48 @@ export const ChatScreen: React.FC<Props> = ({
 
         {/* Pending Approval or Question Card */}
         {pending && (
-          pending.approval ? (
-            <div className="p-5 rounded-3xl specular-card border-2 border-[#3b82f6] shadow-[0_0_30px_rgba(59,130,246,0.25)] animate-in zoom-in-95 duration-200">
-              <div className="flex items-center gap-2 text-[14px] font-bold text-white">
-                <AlertTriangle size={18} className="text-[#f59e0b]" />
-                <span>{pending.title}</span>
+          <div ref={pendingCardRef} className="my-4 scroll-m-24" data-testid="pending-interaction">
+            {pending.approval ? (
+              <div className="p-5 rounded-3xl specular-card border-2 border-[#3b82f6] shadow-[0_0_35px_rgba(59,130,246,0.35)] animate-in zoom-in-95 duration-200">
+                <div className="flex items-center gap-2 text-[14px] font-bold text-white">
+                  <AlertTriangle size={18} className="text-[#f59e0b] shrink-0" />
+                  <span>{pending.title}</span>
+                </div>
+                <p className="text-[13px] text-[#cbd5e1] mt-2.5 leading-relaxed whitespace-pre-wrap">
+                  {pending.body}
+                </p>
+                <div className="flex items-center justify-end gap-3 mt-5 pt-3 border-t border-white/10">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      triggerHaptic('medium');
+                      onApprove(false);
+                    }}
+                    aria-label="拒绝本次操作"
+                    className="min-h-[44px] px-4 py-2 rounded-xl border border-[#f43f5e]/40 text-[13px] font-medium text-[#fb7185] bg-[#f43f5e]/15 hover:bg-[#f43f5e]/25 transition-colors cursor-pointer studio-tap"
+                  >
+                    拒绝 (Reject)
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      triggerHaptic('success');
+                      onApprove(true);
+                    }}
+                    aria-label="允许一次"
+                    className="min-h-[44px] px-5 py-2 rounded-xl bg-gradient-to-r from-[#3b82f6] to-[#2563eb] text-white text-[13px] font-semibold shadow-[0_0_20px_rgba(59,130,246,0.4)] transition-transform cursor-pointer studio-tap"
+                  >
+                    允许一次 (Allow Once)
+                  </button>
+                </div>
               </div>
-              <p className="text-[13px] text-[#cbd5e1] mt-2.5 leading-relaxed whitespace-pre-wrap">
-                {pending.body}
-              </p>
-              <div className="flex items-center justify-end gap-2.5 mt-5 pt-3 border-t border-white/10">
-                <button
-                  type="button"
-                  onClick={() => onApprove(false)}
-                  aria-label="拒绝本次操作"
-                  className="min-h-[44px] px-4 py-2 rounded-xl border border-[#f43f5e]/30 text-[13px] font-medium text-[#fb7185] bg-[#f43f5e]/10 hover:bg-[#f43f5e]/20 transition-colors cursor-pointer studio-tap"
-                >
-                  拒绝 (Reject)
-                </button>
-                <button
-                  type="button"
-                  onClick={() => onApprove(true)}
-                  aria-label="允许一次"
-                  className="min-h-[44px] px-5 py-2 rounded-xl bg-gradient-to-r from-[#3b82f6] to-[#2563eb] text-white text-[13px] font-semibold shadow-[0_0_20px_rgba(59,130,246,0.4)] transition-transform cursor-pointer studio-tap"
-                >
-                  允许一次 (Allow Once)
-                </button>
-              </div>
-            </div>
-          ) : (
-            <QuestionCard
-              prompt={pending}
-              onSubmit={(selected, customText) => onAnswerOption(selected, customText)}
-            />
-          )
+            ) : (
+              <QuestionCard
+                prompt={pending}
+                onSubmit={(selected, customText) => onAnswerOption(selected, customText)}
+              />
+            )}
+          </div>
         )}
 
         {/* 只有工具卡时才需要独立的流式光标（消息类行自己会带） */}
@@ -821,16 +850,6 @@ export const ChatScreen: React.FC<Props> = ({
             </div>
           )}
 
-          {/* 底部状态栏：对齐桌面版 StatsPills —— 轮/步/速度、token 与缓存命中、上下文占用。
-              点一下展开明细（模型耗时、工具耗时、首字延迟、各 token 桶、上下文构成）。
-              任何一项拿不到就整项隐藏，绝不显示 0 冒充真实值。 */}
-          <SessionStatsBar
-            activity={(readouts && readouts.activity) || null}
-            usage={(readouts && readouts.usage) || null}
-            context={(readouts && readouts.context) || null}
-            detail={(readouts && readouts.detail) || []}
-          />
-
           {/* 待发队列（运行中补的话都在这里，可展开/删除/重试） */}
           <QueuedMessagesBar
             queued={queued || []}
@@ -873,7 +892,8 @@ export const ChatScreen: React.FC<Props> = ({
             workspace={workspace}
           />
 
-          <div className="flex items-end gap-2.5 studio-glass-dock p-2 rounded-3xl transition-all focus-within:border-[#3b82f6]/50 focus-within:ring-2 focus-within:ring-[#3b82f6]/30">
+          {/* 现代化双层微卡片输入区（全宽文本域 + 底部工具群，无挤压折行） */}
+          <div className="studio-glass-dock p-2.5 rounded-2xl transition-all focus-within:border-[#3b82f6]/50 focus-within:ring-1 focus-within:ring-[#3b82f6]/30 bg-[#121624]/95 backdrop-blur-xl border border-white/10 shadow-2xl">
             {/* Hidden File Input for Image Chooser */}
             <input
               ref={fileInputRef}
@@ -898,79 +918,87 @@ export const ChatScreen: React.FC<Props> = ({
               }}
             />
 
-            {/* Paperclip Button for Attachments */}
-            <button
-              type="button"
-              onClick={() => fileInputRef.current?.click()}
-              aria-label="添加图片附件"
-              className="w-11 h-11 rounded-xl bg-white/[0.06] text-[#94a3b8] hover:text-[#38bdf8] hover:bg-white/[0.1] border border-white/[0.08] flex items-center justify-center transition-colors cursor-pointer studio-tap shrink-0"
-              title="添加图片附件"
-            >
-              <Paperclip size={17} />
-            </button>
+            {/* 上层：自适应宽屏文本框，整行宽度，placeholder 舒展大气，绝不折行挤压 */}
+            <div className="w-full">
+              <textarea
+                rows={1}
+                value={inputText}
+                onChange={handleInputChange}
+                onKeyDown={handleKeyDown}
+                aria-label="输入遥控指令"
+                aria-describedby="composer-hint"
+                enterKeyHint="send"
+                autoComplete="off"
+                placeholder={
+                  running
+                    ? '任务执行中，继续输入会进入待发队列…'
+                    : '发送遥控指令，例如：检查 git 状态、运行测试…'
+                }
+                className="w-full max-h-36 min-h-[40px] py-1 px-1 text-[14px] leading-relaxed resize-none focus:outline-hidden bg-transparent text-white placeholder:text-[#64748b]"
+              />
+            </div>
 
-            {/* 🔴 运行中/发送中**都不禁用**：继续输入即入队（历史缺陷：Composer(enabled = !running)） */}
-            <textarea
-              rows={1}
-              value={inputText}
-              onChange={handleInputChange}
-              onKeyDown={handleKeyDown}
-              aria-label="输入遥控指令"
-              aria-describedby="composer-hint"
-              enterKeyHint="send"
-              autoComplete="off"
-              placeholder={
-                running
-                  ? '任务执行中，继续输入会进入待发队列…'
-                  : '发送遥控指令，例如：检查 git 状态、运行测试…'
-              }
-              className="flex-1 max-h-32 min-h-[44px] py-2 px-3 text-[14px] leading-relaxed resize-none focus:outline-hidden bg-transparent text-white placeholder:text-[#64748b]"
-            />
+            {/* 下层：工具与操作栏（左侧工具群，右侧操作按钮） */}
+            <div className="flex items-center justify-between gap-2 pt-1 border-t border-white/[0.05] mt-1">
+              <div className="flex items-center gap-1">
+                {/* 附件 */}
+                <button
+                  type="button"
+                  onClick={() => fileInputRef.current?.click()}
+                  aria-label="添加图片附件"
+                  className="min-h-[44px] min-w-[44px] rounded-xl bg-white/[0.04] text-[#94a3b8] hover:text-[#38bdf8] hover:bg-white/[0.08] flex items-center justify-center transition-colors cursor-pointer studio-tap shrink-0"
+                  title="添加图片附件"
+                >
+                  <Paperclip size={17} />
+                </button>
 
-            {/* Slash Command Palette Toggle */}
-            <button
-              type="button"
-              onClick={() => setCommandPaletteOpen((prev) => !prev)}
-              aria-label="快捷指令"
-              className={`w-11 h-11 rounded-xl border flex items-center justify-center transition-colors cursor-pointer studio-tap shrink-0 ${
-                commandPaletteOpen
-                  ? 'bg-[#3b82f6]/20 text-[#38bdf8] border-[#3b82f6]'
-                  : 'bg-white/[0.06] text-[#94a3b8] hover:text-[#38bdf8] hover:bg-white/[0.1] border-white/[0.08]'
-              }`}
-              title="快捷指令"
-            >
-              <Terminal size={17} />
-            </button>
+                {/* 快捷指令 */}
+                <button
+                  type="button"
+                  onClick={() => setCommandPaletteOpen((prev) => !prev)}
+                  aria-label="快捷指令"
+                  className={`min-h-[44px] min-w-[44px] rounded-xl flex items-center justify-center transition-colors cursor-pointer studio-tap shrink-0 ${
+                    commandPaletteOpen
+                      ? 'bg-[#3b82f6]/20 text-[#38bdf8] border border-[#3b82f6]/40'
+                      : 'bg-white/[0.04] text-[#94a3b8] hover:text-[#38bdf8] hover:bg-white/[0.08]'
+                  }`}
+                  title="快捷指令"
+                >
+                  <Terminal size={16} />
+                </button>
 
-            {/* Voice Dictation Button */}
-            <button
-              type="button"
-              onClick={() => setVoiceOpen(true)}
-              aria-label="语音遥控"
-              className="w-11 h-11 rounded-xl bg-white/[0.06] text-[#94a3b8] hover:text-[#38bdf8] hover:bg-white/[0.1] border border-white/[0.08] flex items-center justify-center transition-colors cursor-pointer studio-tap shrink-0"
-              title="语音遥控"
-            >
-              <Mic size={18} />
-            </button>
+                {/* 语音遥控 */}
+                <button
+                  type="button"
+                  onClick={() => setVoiceOpen(true)}
+                  aria-label="语音遥控"
+                  className="min-h-[44px] min-w-[44px] rounded-xl bg-white/[0.04] text-[#94a3b8] hover:text-[#38bdf8] hover:bg-white/[0.08] flex items-center justify-center transition-colors cursor-pointer studio-tap shrink-0"
+                  title="语音遥控"
+                >
+                  <Mic size={17} />
+                </button>
+              </div>
 
-            {/* Send Arrow Button：只按"有没有内容"禁用，不再看 sending/running */}
-            <button
-              type="button"
-              disabled={!inputText.trim() && !attachment}
-              onClick={handleSend}
-              aria-label={running || sending ? '加入待发队列' : '发送'}
-              className="w-11 h-11 rounded-xl bg-gradient-to-r from-[#3b82f6] to-[#2563eb] text-white disabled:opacity-30 flex items-center justify-center transition-all shadow-[0_0_15px_rgba(59,130,246,0.5)] cursor-pointer studio-tap shrink-0"
-            >
-              <Send size={16} />
-            </button>
+              {/* 发送按钮 */}
+              <button
+                type="button"
+                disabled={!inputText.trim() && !attachment}
+                onClick={handleSend}
+                aria-label={running || sending ? '加入待发队列' : '发送'}
+                className="min-h-[44px] px-4 rounded-xl bg-gradient-to-r from-[#3b82f6] to-[#2563eb] text-white disabled:opacity-30 flex items-center gap-1.5 text-[13px] font-medium shadow-[0_0_15px_rgba(59,130,246,0.4)] transition-all cursor-pointer studio-tap disabled:cursor-not-allowed shrink-0"
+              >
+                <span>{running ? '入队' : '发送'}</span>
+                <Send size={14} />
+              </button>
+            </div>
           </div>
 
-          <p id="composer-hint" className="mt-1.5 px-2 text-[10.5px] text-[#64748b]">
+          <p id="composer-hint" className="mt-1 px-1 text-[10px] text-[#475569] truncate">
             {running
-              ? '任务执行中：Enter 发送即入队，不会被丢弃'
+              ? '任务执行中：Enter 发送即入队'
               : sending
-                ? '正在发送：继续输入会排队，按序发出'
-                : 'Enter 发送 · Shift+Enter 换行 · 草稿自动保存（切会话/退出不丢）'}
+                ? '正在发送：继续输入会排队'
+                : 'Enter 发送 · Shift+Enter 换行 · 草稿自动保存'}
           </p>
         </div>
       </div>
