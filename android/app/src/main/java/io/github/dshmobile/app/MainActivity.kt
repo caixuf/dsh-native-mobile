@@ -49,6 +49,9 @@ class MainActivity : Activity() {
     /** 网页端文件选择器回调（拍照/选图）。 */
     private var uploadMessage: ValueCallback<Array<Uri>>? = null
 
+    /** 网页端相机/录音权限请求暂存。 */
+    private var pendingWebPermissionRequest: PermissionRequest? = null
+
     /** 页面就绪后的补推用（深链回调注册晚于 load 事件）。 */
     private val handler = Handler(Looper.getMainLooper())
 
@@ -119,7 +122,24 @@ class MainActivity : Activity() {
 
             webChromeClient = object : WebChromeClient() {
                 override fun onPermissionRequest(request: PermissionRequest) {
-                    request.grant(request.resources)
+                    val requestedResources = request.resources
+                    val needsCamera = requestedResources.contains(PermissionRequest.RESOURCE_VIDEO_CAPTURE)
+                    val needsAudio = requestedResources.contains(PermissionRequest.RESOURCE_AUDIO_CAPTURE)
+
+                    val missing = mutableListOf<String>()
+                    if (needsCamera && checkSelfPermission(Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
+                        missing.add(Manifest.permission.CAMERA)
+                    }
+                    if (needsAudio && checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+                        missing.add(Manifest.permission.RECORD_AUDIO)
+                    }
+
+                    if (missing.isNotEmpty()) {
+                        pendingWebPermissionRequest = request
+                        requestPermissions(missing.toTypedArray(), REQUEST_WEB_PERMISSIONS)
+                    } else {
+                        request.grant(requestedResources)
+                    }
                 }
 
                 override fun onShowFileChooser(
@@ -320,9 +340,47 @@ class MainActivity : Activity() {
         super.onDestroy()
     }
 
+    override fun onRequestPermissionsResult(
+        requestCode: Int,
+        permissions: Array<out String>,
+        grantResults: IntArray
+    ) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (requestCode == REQUEST_WEB_PERMISSIONS) {
+            val pending = pendingWebPermissionRequest
+            pendingWebPermissionRequest = null
+            if (pending != null) {
+                val granted = mutableListOf<String>()
+                for (resource in pending.resources) {
+                    when (resource) {
+                        PermissionRequest.RESOURCE_VIDEO_CAPTURE -> {
+                            val idx = permissions.indexOf(Manifest.permission.CAMERA)
+                            if (idx >= 0 && grantResults.getOrNull(idx) == PackageManager.PERMISSION_GRANTED) {
+                                granted.add(resource)
+                            }
+                        }
+                        PermissionRequest.RESOURCE_AUDIO_CAPTURE -> {
+                            val idx = permissions.indexOf(Manifest.permission.RECORD_AUDIO)
+                            if (idx >= 0 && grantResults.getOrNull(idx) == PackageManager.PERMISSION_GRANTED) {
+                                granted.add(resource)
+                            }
+                        }
+                        else -> granted.add(resource)
+                    }
+                }
+                if (granted.isNotEmpty()) {
+                    pending.grant(granted.toTypedArray())
+                } else {
+                    pending.deny()
+                }
+            }
+        }
+    }
+
     private companion object {
         const val REQUEST_NOTIFICATIONS = 0x4453
         const val FILE_CHOOSER_REQUEST_CODE = 0x4454
+        const val REQUEST_WEB_PERMISSIONS = 0x4455
         const val TAG = "DshMobile"
 
         /**

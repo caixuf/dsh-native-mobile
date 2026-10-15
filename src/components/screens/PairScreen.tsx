@@ -1,7 +1,8 @@
 import React, { useState, useEffect } from 'react';
-import { ArrowLeft, KeyRound, Monitor, QrCode, Loader2, CheckCircle2, Sparkles, ShieldCheck } from 'lucide-react';
+import { ArrowLeft, KeyRound, Monitor, QrCode, Loader2, CheckCircle2, Sparkles, ShieldCheck, Camera, ScanLine } from 'lucide-react';
 import { PairingClient } from '../../services/pairing';
 import { DeepSeekLogo } from '../common/DeepSeekLogo';
+import { QrScannerModal } from '../pairing/QrScannerModal';
 
 interface Props {
   busy: boolean;
@@ -76,6 +77,38 @@ export const PairScreen: React.FC<Props> = ({
     }
   };
 
+  // Scanner modal state
+  const [scannerOpen, setScannerOpen] = useState(false);
+
+  const handleScanResult = (raw: string) => {
+    setScannerOpen(false);
+    const parsed = PairingClient.parsePairingTarget(raw);
+    if (parsed) {
+      setBaseUrl(parsed.baseUrl);
+      if (parsed.code) {
+        setPairCode(parsed.code);
+        if (/^\d{6}$/.test(parsed.code)) {
+          setPinDigits(parsed.code.split(''));
+        }
+        setTab('pair');
+        // Auto connect immediately
+        onPair(parsed.baseUrl, parsed.code, devName);
+      }
+    } else {
+      const text = raw.trim();
+      if (text.startsWith('http://') || text.startsWith('https://')) {
+        setBaseUrl(text);
+      } else if (/^\d{6}$/.test(text) || text.toLowerCase().startsWith('dshm')) {
+        setPairCode(text);
+        if (/^\d{6}$/.test(text)) {
+          setPinDigits(text.split(''));
+        }
+        setTab('pair');
+        onPair(baseUrl, text, devName);
+      }
+    }
+  };
+
   return (
     <div className="flex flex-col h-full bg-[#090a0f] text-[#f8fafc] mesh-glow-bg select-none" onPaste={handleQrPaste}>
       {/* Top Header */}
@@ -99,11 +132,48 @@ export const PairScreen: React.FC<Props> = ({
               <p className="text-[11px] text-[#94a3b8]">局域网直连或内网穿透加密隧道</p>
             </div>
           </div>
+          <button
+            type="button"
+            onClick={() => setScannerOpen(true)}
+            title="扫码配对"
+            className="ml-auto flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-[#3b82f6]/15 hover:bg-[#3b82f6]/25 border border-[#3b82f6]/30 text-[#38bdf8] text-[12px] font-semibold transition-colors studio-tap cursor-pointer"
+          >
+            <ScanLine size={15} />
+            <span>扫码</span>
+          </button>
         </div>
       </header>
 
       {/* Main Form Body */}
       <div className="flex-1 overflow-y-auto p-4 max-w-lg w-full mx-auto pb-16">
+        {/* Hero QR Scan Banner */}
+        <div className="mb-4 p-3.5 rounded-2xl bg-gradient-to-r from-[#1e293b] via-[#0f172a] to-[#1e1b4b] border border-[#3b82f6]/30 shadow-lg flex items-center justify-between gap-3">
+          <div className="flex items-center gap-3 min-w-0">
+            <div className="w-11 h-11 rounded-xl bg-[#3b82f6] text-white flex items-center justify-center shadow-[0_0_15px_rgba(59,130,246,0.4)] shrink-0">
+              <QrCode size={22} />
+            </div>
+            <div className="min-w-0">
+              <div className="flex items-center gap-1.5">
+                <span className="text-[14px] font-bold text-white tracking-tight">扫码一键连接</span>
+                <span className="text-[10px] font-extrabold px-1.5 py-0.5 rounded-md bg-[#3b82f6]/20 border border-[#3b82f6]/40 text-[#60a5fa]">
+                  推荐
+                </span>
+              </div>
+              <p className="text-[11.5px] text-[#94a3b8] leading-tight mt-0.5 truncate">
+                直接扫描电脑端二维码，无需手输
+              </p>
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={() => setScannerOpen(true)}
+            className="py-2 px-3.5 rounded-xl bg-gradient-to-r from-[#3b82f6] to-[#2563eb] text-white text-[12.5px] font-semibold shadow-[0_0_15px_rgba(59,130,246,0.35)] flex items-center gap-1.5 shrink-0 transition-all studio-tap cursor-pointer hover:opacity-90"
+          >
+            <Camera size={14} />
+            <span>扫码</span>
+          </button>
+        </div>
+
         {/* Segmented Control */}
         <div className="flex p-1 bg-[#141824] border border-white/[0.08] rounded-2xl mb-4">
           <button
@@ -196,11 +266,20 @@ export const PairScreen: React.FC<Props> = ({
             </>
           ) : (
             <>
-              {/* 6-Digit PIN or Code */}
               <div>
-                <label className="block text-[12.5px] font-semibold text-white mb-1.5">
-                  6 位配对码 (或粘贴配对字符串)
-                </label>
+                <div className="flex items-center justify-between mb-1.5">
+                  <label className="text-[12.5px] font-semibold text-white">
+                    6 位配对码 (或粘贴配对字符串)
+                  </label>
+                  <button
+                    type="button"
+                    onClick={() => setScannerOpen(true)}
+                    className="flex items-center gap-1 text-[11.5px] text-[#38bdf8] hover:text-[#60a5fa] font-medium transition-colors studio-tap cursor-pointer"
+                  >
+                    <ScanLine size={13} />
+                    <span>扫码填入</span>
+                  </button>
+                </div>
                 <div className="flex justify-between gap-1.5 my-2">
                   {pinDigits.map((d, i) => (
                     <input
@@ -280,6 +359,13 @@ export const PairScreen: React.FC<Props> = ({
           </p>
         </div>
       </div>
+
+      {/* QR Scanner Modal */}
+      <QrScannerModal
+        isOpen={scannerOpen}
+        onClose={() => setScannerOpen(false)}
+        onScanSuccess={handleScanResult}
+      />
     </div>
   );
 };

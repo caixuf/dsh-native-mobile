@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Plus, RefreshCw, Trash2, Edit2, Monitor, ArrowRight, Laptop, Sparkles } from 'lucide-react';
+import { Plus, RefreshCw, Trash2, Edit2, Monitor, ArrowRight, Laptop, Sparkles, ScanLine, QrCode } from 'lucide-react';
 import { HostRecord, LinkState } from '../../types';
 import { ConnectionDot } from '../common/ConnectionDot';
 import { DeepSeekLogo } from '../common/DeepSeekLogo';
@@ -52,14 +52,24 @@ export const HostsScreen: React.FC<Props> = ({
               <p className="text-[11px] text-[#94a3b8]">已配对的远程工作站与守护进程</p>
             </div>
           </div>
-          <button
-            onClick={onReconnect}
-            type="button"
-            title="重新连接"
-            className="w-9 h-9 rounded-xl bg-white/[0.06] hover:bg-white/[0.12] border border-white/[0.08] text-[#94a3b8] hover:text-white flex items-center justify-center transition-colors cursor-pointer studio-tap"
-          >
-            <RefreshCw size={16} />
-          </button>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={onAdd}
+              type="button"
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-gradient-to-r from-[#3b82f6]/20 to-[#6366f1]/20 hover:from-[#3b82f6]/30 hover:to-[#6366f1]/30 border border-[#3b82f6]/40 text-[#60a5fa] text-[12px] font-semibold transition-colors cursor-pointer studio-tap"
+            >
+              <ScanLine size={14} />
+              <span>扫码配对</span>
+            </button>
+            <button
+              onClick={onReconnect}
+              type="button"
+              title="重新连接"
+              className="w-9 h-9 rounded-xl bg-white/[0.06] hover:bg-white/[0.12] border border-white/[0.08] text-[#94a3b8] hover:text-white flex items-center justify-center transition-colors cursor-pointer studio-tap"
+            >
+              <RefreshCw size={16} />
+            </button>
+          </div>
         </div>
       </header>
 
@@ -195,8 +205,8 @@ export const HostsScreen: React.FC<Props> = ({
           type="button"
           className="flex items-center gap-2 px-5 py-3.5 rounded-full bg-gradient-to-r from-[#3b82f6] to-[#2563eb] text-white text-[14px] font-semibold shadow-[0_0_25px_rgba(59,130,246,0.5)] hover:scale-105 transition-all cursor-pointer studio-tap"
         >
-          <Sparkles size={17} className="text-white animate-pulse" />
-          <span>配对新电脑</span>
+          <QrCode size={18} className="text-white" />
+          <span>扫码 / 配对新电脑</span>
         </button>
       </div>
 
