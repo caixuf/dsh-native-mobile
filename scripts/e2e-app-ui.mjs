@@ -537,6 +537,8 @@ async function attach({ fresh = false } = {}) {
     oldPid = adb(['shell', 'pidof', APP_ID], { allowFail: true }).out.trim().split(/\s+/)[0] || '';
     adb(['shell', 'am', 'force-stop', APP_ID]);
     await sleep(600);
+    adb(['reverse', 'tcp:19387', 'tcp:19387'], { allowFail: true });
+    adb(['reverse', 'tcp:19400', 'tcp:19400'], { allowFail: true });
     adb(['shell', 'am', 'start', '-n', ACTIVITY]);
   } else {
     const { out } = adb(['shell', 'pidof', APP_ID], { allowFail: true });
@@ -552,6 +554,7 @@ async function attach({ fresh = false } = {}) {
   }
   expect(pid, 'app 没有在运行（pidof 为空）—— 检查 am start 是否成功', { oldPid, pid });
   adb(['forward', `tcp:${CDP_PORT}`, `localabstract:webview_devtools_remote_${pid}`]);
+  adb(['reverse', 'tcp:19387', 'tcp:19387'], { allowFail: true });
   note(`pid=${oldPid ? `${oldPid} → ` : ''}${pid}，已 forward tcp:${CDP_PORT}`);
   cdp = await Cdp.connect({ port: CDP_PORT });
   cdp.on('Runtime.consoleAPICalled', (p) => {
