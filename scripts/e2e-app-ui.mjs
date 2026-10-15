@@ -2124,6 +2124,38 @@ clickEl(b); return 'clicked';`);
     return bar.text;
   });
 
+  // 🔴 为什么必须单独查"宽度"：上面的断言读的是 innerText，而 `truncate`
+  // （overflow:hidden + text-overflow:ellipsis）只做**视觉裁剪**，innerText 仍是全文。
+  // 实测（2026-10-16，412px 视口）：三个读数段被 flex 压到 97/102/50px，
+  // 值 span 分别是 clientW 79 / scrollW 154、84 / 163、**0 / 33**（第三段整段塌成 0，
+  // 屏幕上只剩「上下文」两个字），而文本断言全绿 —— 视觉全废、测试全过。
+  // 判据：滚动容器内部**任何** ellipsis 元素都不允许 scrollWidth > clientWidth。
+  await step('读数不得被视觉截断（ellipsis 吞字 / 宽度塌成 0）', async () => {
+    const clip = await pageFn(`
+const bar = document.querySelector('[data-testid="session-stats"]');
+if (!bar) return { ok: false, bad: [{ text: '<找不到状态栏>', cw: -1, sw: -1 }] };
+const scroller = bar.querySelector('button > div');
+if (!scroller) return { ok: false, bad: [{ text: '<找不到读数滚动容器>', cw: -1, sw: -1 }] };
+const bad = [];
+for (const el of scroller.querySelectorAll('*')) {
+  if (getComputedStyle(el).textOverflow !== 'ellipsis') continue;
+  const text = (el.innerText || '').replace(/\\s+/g, ' ').trim();
+  if (!text) continue;
+  if (el.clientWidth === 0 || el.scrollWidth > el.clientWidth + 1) {
+    bad.push({ text: text, cw: el.clientWidth, sw: el.scrollWidth });
+  }
+}
+return { ok: bad.length === 0, bad: bad, overflowPx: scroller.scrollWidth - scroller.clientWidth };
+`);
+    evidence(clip);
+    expect(
+      clip.ok,
+      `状态栏有 ${clip.bad.length} 处读数被**视觉截断**（文本断言抓不到这个）：${JSON.stringify(clip.bad)}`,
+      clip,
+    );
+    return clip;
+  });
+
   await step('点开明细：模型耗时 / 工具耗时 / 首字延迟 / 缓存桶 / 上下文构成', async () => {
     await pageFn(`const b = qs('[data-testid="session-stats"] button'); if (!b) throw new Error('状态栏没有可点的按钮'); clickEl(b); return true;`);
     const detail = await until(
@@ -2303,14 +2335,20 @@ if (!b) throw new Error('找不到「打开会话」按钮'); clickEl(b); return
 
     const collapsed = await until(
       '聊天页出现折叠消息',
+      // 🔴 判据取**所有折叠元素里最大的** data-full-chars，不能取 els[0]。
+      // 实测（2026-10-16）：一个会话里同时有多条折叠消息（collapsedCount=3），
+      // els[0] 是另一条 **578 字但 >12 行**的消息 —— 折叠阈值是
+      // 「字数 > 600 **或** 行数 > 12」（message-queue.ts:289/291），两个判据不是一回事，
+      // 会话内容一变 els[0] 就可能不是我们要验的那条，于是**假红**（上一轮只是侥幸通过）。
       `(function(){ const els = qsa('[data-collapsed="true"]');
-        return { ok: els.length >= 1, info: chatInfo(), collapsedCount: els.length,
-          fullChars: els[0] ? Number(els[0].getAttribute('data-full-chars')) : null }; })()`,
+        const chars = els.map(function (e) { return Number(e.getAttribute('data-full-chars')); });
+        return { ok: els.length >= 1, info: chatInfo(), collapsedCount: els.length, chars: chars,
+          fullChars: chars.length ? Math.max.apply(null, chars) : null }; })()`,
       { timeout: 25000 },
     );
     expect(
       Number(collapsed.fullChars) > 600,
-      `折叠标记的中文长度不对（data-full-chars=${collapsed.fullChars}）`,
+      `折叠元素里没有一条超过 600 字（最大 data-full-chars=${collapsed.fullChars}；该会话宿主侧确有 ${target.chars} 字的助手消息）`,
       collapsed,
     );
     // 🔴 折叠的意义是**正文只占 6 行左右**，不是"全文没进 DOM"：
@@ -2318,12 +2356,18 @@ if (!b) throw new Error('找不到「打开会话」按钮'); clickEl(b); return
     // 而且被测元素是**整张卡**（含标题行、复制条、页脚），高度里混了固定 chrome。
     // 真机实测踩过两个坑：① 用 innerText 量长度 → 裁剪后仍报 2300+ 字，假红；
     // ② 量整卡高度 → 279px 超阈值，又一次假红。正确做法：量**正文容器**的高度。
-    const box = await pageFn(`const el = qs('[data-collapsed="true"]');
-if (!el) return { h: -1, bodyH: -1 };
+    // 被测元素与上面同一判据：取字数最多的那条折叠消息（最坏情况）。
+    const box = await pageFn(`const els = qsa('[data-collapsed="true"]');
+if (!els.length) return { h: -1, bodyH: -1 };
+let el = els[0], best = Number(el.getAttribute('data-full-chars')) || 0;
+for (let i = 1; i < els.length; i += 1) {
+  const c = Number(els[i].getAttribute('data-full-chars')) || 0;
+  if (c > best) { best = c; el = els[i]; }
+}
 var body = el.querySelector('[data-collapsed-body]') || el;
 var r = body.getBoundingClientRect();
 return { cardH: Math.round(el.getBoundingClientRect().height), bodyH: Math.round(r.height),
-  lines: Math.round(r.height / 22) };`);
+  lines: Math.round(r.height / 22), fullChars: best };`);
     expect(
       box.bodyH > 0 && box.bodyH <= 200,
       `折叠后正文仍占 ${box.bodyH}px（≈${box.lines} 行）—— 一屏会被它淹没`,
