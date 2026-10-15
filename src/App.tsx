@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import type { HostRecord, LinkState, SessionRow, ChatLine, PendingPrompt } from './types';
+import type { HostRecord, LinkState, SessionRow, ChatLine, PendingPrompt, ModelCatalog, PromptQuestion } from './types';
 import { HostStore } from './services/store';
 import { DshConnection } from './services/connection';
 import type { HostRequestItem } from './services/connection';
@@ -119,6 +119,8 @@ export const App: React.FC = () => {
   // Chat state
   const [chatLines, setChatLines] = useState<ChatLine[]>([]);
   const [pendingPrompt, setPendingPrompt] = useState<PendingPrompt | null>(null);
+  const [modelCatalog, setModelCatalog] = useState<ModelCatalog | null>(null);
+  const [selectedModel, setSelectedModel] = useState<{ provider?: string; model?: string } | null>(null);
   const [running, setRunning] = useState(false);
   const [sending, setSending] = useState(false);
   const [preparing, setPreparing] = useState(false);
@@ -216,6 +218,7 @@ export const App: React.FC = () => {
       setLinkState(state);
       if (state.type === 'ready') {
         loadSessions(conn);
+        loadModelCatalog(conn);
       }
     });
 
@@ -249,15 +252,61 @@ export const App: React.FC = () => {
     conn.start();
   };
 
+  const loadModelCatalog = async (conn = connRef.current) => {
+    if (!conn) return;
+    try {
+      const res = (await conn.call('session/modelCatalog', {})) as ModelCatalog;
+      if (res && res.groups) {
+        setModelCatalog(res);
+        if (res.default) {
+          setSelectedModel(res.default);
+        }
+      }
+    } catch (err) {
+      console.warn('Failed to load model catalog', err);
+    }
+  };
+
+  const handleSelectModel = async (provider: string, model: string) => {
+    if (!currentSession || !connRef.current) return;
+    try {
+      await connRef.current.call('session/selectModel', {
+        request: {
+          sessionId: currentSession.sessionId,
+          provider,
+          model,
+        },
+      });
+      setSelectedModel({ provider, model });
+    } catch (err) {
+      console.warn('Failed to select model', err);
+      setError(`切换模型失败: ${(err as Error)?.message || '未知错误'}`);
+    }
+  };
+
   const handleHostRequest = (req: HostRequestItem) => {
     if (!req.answerable) return;
     const isApproval = req.method.includes('approval');
-    const questions = req.payload.questions as Array<{
+    const rawQuestions = req.payload.questions as Array<{
       id?: string;
       header?: string;
       question?: string;
-      options?: Array<{ label?: string }>;
+      detail?: string;
+      multiSelect?: boolean;
+      options?: Array<{ label?: string; description?: string } | string>;
     }> | undefined;
+    const questions: PromptQuestion[] | undefined = rawQuestions?.map((q, idx) => ({
+      id: q.id || `q-${idx}`,
+      question: q.question || '',
+      header: q.header,
+      detail: q.detail,
+      multiSelect: q.multiSelect,
+      options: (q.options || [])
+        .map((o) =>
+          typeof o === 'string' ? { label: o } : { label: o.label || '', description: o.description },
+        )
+        .filter((o) => Boolean(o.label)),
+    }));
     const qFirst = questions?.[0];
 
     const title = isApproval
@@ -291,6 +340,8 @@ export const App: React.FC = () => {
       options,
       questionId: qFirst?.id,
       approval: isApproval,
+      questions,
+      multiSelect: qFirst?.multiSelect,
     });
     setPromptSessionId(sessionId);
 
@@ -867,7 +918,10 @@ export const App: React.FC = () => {
    *
    * @returns true=主机已接收；**false=没送到，调用方必须保留用户输入**。
    */
-  const sendPromptNow = async (text: string): Promise<boolean> => {
+  const sendPromptNow = async (
+    text: string,
+    image?: { data: string; mediaType: string },
+  ): Promise<boolean> => {
     if (!currentSession || !connRef.current) return false;
     const sid = currentSession.sessionId;
 
@@ -888,6 +942,18 @@ export const App: React.FC = () => {
     }, 700);
 
     try {
+      const contentParts: Array<{ type: string; text?: string; data?: string; mediaType?: string }> = [];
+      if (image && image.data) {
+        contentParts.push({
+          type: 'image',
+          mediaType: image.mediaType || 'image/png',
+          data: image.data,
+        });
+      }
+      if (text) {
+        contentParts.push({ type: 'text', text });
+      }
+
       // 走 sendOrQueue：在线=直接发；离线/网络故障=**落盘排队**，重连后自动 flush。
       // 旧实现在断线时直接抛错 → 用户丢字（现在至少不会丢，且能看到待发条数）。
       const res = await connRef.current.sendOrQueue('session.prompt', {
@@ -895,7 +961,7 @@ export const App: React.FC = () => {
           requestId: 'req-' + Date.now(),
           sessionId: sid,
           mode: 'queue',
-          content: [{ type: 'text', text }],
+          content: contentParts,
         },
       });
 
@@ -935,9 +1001,12 @@ export const App: React.FC = () => {
    * 任务运行中时**不再禁用输入框**，而是排队 —— 这是 Kotlin 版修过、
    * 迁移到 Web 后丢掉的能力（见 docs/v0.2-handover.md §3）。
    */
-  const handleSendPrompt = async (text: string): Promise<boolean> => {
+  const handleSendPrompt = async (
+    text: string,
+    image?: { data: string; mediaType: string },
+  ): Promise<boolean> => {
     const trimmed = text.trim();
-    if (!trimmed) return true; // 空消息不算失败，不该卡住草稿
+    if (!trimmed && !image) return true; // 空消息不算失败，不该卡住草稿
     if (!currentSession || !connRef.current) return false;
 
     if (running) {
@@ -952,7 +1021,7 @@ export const App: React.FC = () => {
       return true;
     }
 
-    return sendPromptNow(trimmed);
+    return sendPromptNow(trimmed, image);
   };
 
   /** 上一轮跑完就自动把队首发出去；失败退回队首并计数，绝不静默丢弃。 */
@@ -1037,9 +1106,14 @@ export const App: React.FC = () => {
     setPendingPrompt(null);
   };
 
-  const handleAnswerOption = async (text: string) => {
+  const handleAnswerOption = async (selected: string[] | string, customText?: string) => {
     if (!pendingPrompt || !connRef.current) return;
-    const outcome = Envelopes.questionOutcome(pendingPrompt.questionId || 'q1', [text]);
+    const selectedArr = Array.isArray(selected) ? selected : [selected];
+    const outcome = Envelopes.questionOutcome(
+      pendingPrompt.questionId || 'q1',
+      selectedArr,
+      customText,
+    );
     const ok = await connRef.current.respond(pendingPrompt.rpcId, outcome);
     if (!ok) {
       setError('回答未送达电脑，请重试');
@@ -1391,6 +1465,9 @@ export const App: React.FC = () => {
             onApprove={handleApprove}
             onAnswerOption={handleAnswerOption}
             onOpenDrawer={() => setDrawerOpen(true)}
+            modelCatalog={modelCatalog}
+            selectedModel={selectedModel}
+            onSelectModel={handleSelectModel}
           />
         )}
       </main>

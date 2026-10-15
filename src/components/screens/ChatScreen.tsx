@@ -15,8 +15,11 @@ import {
   ChevronDown,
   ChevronRight,
   X,
+  Paperclip,
+  CheckSquare,
+  Cpu,
 } from 'lucide-react';
-import { ChatLine, PendingPrompt, TaskStep } from '../../types';
+import { ChatLine, PendingPrompt, TaskStep, ModelCatalog } from '../../types';
 import { MarkdownView } from '../common/MarkdownView';
 import { DisclosureToolCard } from '../chat/DisclosureToolCard';
 import { TaskProgressCard } from '../chat/TaskProgressCard';
@@ -24,6 +27,11 @@ import { VoiceRecordingOverlay } from '../chat/VoiceRecordingOverlay';
 import { QueuedMessagesBar } from '../chat/QueuedMessagesBar';
 import { SessionStatsBar } from '../chat/SessionStatsBar';
 import { CollapsibleMessage } from '../chat/CollapsibleMessage';
+import { QuestionCard } from '../chat/QuestionCard';
+import { ModelPicker } from '../chat/ModelPicker';
+import { CommandPalette } from '../chat/CommandPalette';
+import { ChangedFilesCard } from '../chat/ChangedFilesCard';
+import { AttachmentBar, ImageAttachment } from '../chat/AttachmentBar';
 import { clearDraft, loadDraft, loadExpandedKeys, saveDraft, saveExpandedKeys } from '../chat/draft-store';
 import { ConnectionDot } from '../common/ConnectionDot';
 import { DeepSeekLogo } from '../common/DeepSeekLogo';
@@ -66,11 +74,14 @@ interface Props {
    * 返回 `false` = **上层未接收**（发送失败）→ ChatScreen 必须保留草稿原文。
    * `true` / `void` 视为已接收（向后兼容旧实现）。
    */
-  onSend: (text: string) => Promise<boolean> | boolean | void;
+  onSend: (text: string, image?: { data: string; mediaType: string }) => Promise<boolean> | boolean | void;
   onCancel: () => void;
   onApprove: (allow: boolean) => void;
-  onAnswerOption: (text: string) => void;
+  onAnswerOption: (selected: string[] | string, customText?: string) => void;
   onOpenDrawer: () => void;
+  modelCatalog?: ModelCatalog | null;
+  selectedModel?: { provider?: string; model?: string } | null;
+  onSelectModel?: (provider: string, model: string) => Promise<boolean | void> | void;
 }
 
 export const ChatScreen: React.FC<Props> = ({
@@ -96,11 +107,25 @@ export const ChatScreen: React.FC<Props> = ({
   onApprove,
   onAnswerOption,
   onOpenDrawer,
+  modelCatalog,
+  selectedModel,
+  onSelectModel,
 }) => {
   const [inputText, setInputText] = useState('');
   const [voiceOpen, setVoiceOpen] = useState(false);
+  const [modelPickerOpen, setModelPickerOpen] = useState(false);
+  const [commandPaletteOpen, setCommandPaletteOpen] = useState(false);
+  const [attachment, setAttachment] = useState<ImageAttachment | null>(null);
+  const [planMode, setPlanMode] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const [sendError, setSendError] = useState<string | null>(null);
   const [draftNotice, setDraftNotice] = useState<string | null>(null);
+
+  const activeModelDisplayName =
+    selectedModel?.model ||
+    (activity && activity.model) ||
+    modelCatalog?.default?.model ||
+    'MiniMax-M3.1';
   /** 被手动展开过的消息 key（按会话持久化；默认折叠是大多数）。 */
   const [expandedKeys, setExpandedKeys] = useState<Set<string>>(() => new Set(loadExpandedKeys(sessionId)));
   /** 长按激活的消息 key（移动端没有 hover，用长按唤出操作条）。 */
@@ -197,14 +222,15 @@ export const ChatScreen: React.FC<Props> = ({
    */
   const handleSendText = async (raw: string) => {
     const text = raw.trim();
-    if (!text) return;
+    if (!text && !attachment) return;
     const targetSession = sessionId;
     setSendError(null);
     setDraftNotice(null);
 
     let accepted: boolean | void = true;
     try {
-      accepted = await Promise.resolve(onSend(text));
+      const imagePayload = attachment ? { data: attachment.data, mediaType: attachment.mediaType } : undefined;
+      accepted = imagePayload ? await Promise.resolve(onSend(text, imagePayload)) : await Promise.resolve(onSend(text));
     } catch (error) {
       accepted = false;
       setSendError(`发送异常：${error instanceof Error ? error.message : String(error)}`);
@@ -223,6 +249,7 @@ export const ChatScreen: React.FC<Props> = ({
       return;
     }
 
+    setAttachment(null);
     // 已接收：清空。若期间切了会话，只清那条会话的持久化草稿，不动新会话输入框。
     if (activeSessionRef.current !== targetSession) {
       clearDraft(targetSession);
@@ -231,6 +258,12 @@ export const ChatScreen: React.FC<Props> = ({
     inputRef.current = '';
     setInputText('');
     clearDraft(targetSession);
+  };
+
+  const togglePlanMode = () => {
+    const next = !planMode;
+    setPlanMode(next);
+    void handleSendText(next ? '/plan' : '/plan off');
   };
 
   const handleSend = () => {
@@ -375,10 +408,36 @@ export const ChatScreen: React.FC<Props> = ({
                   <ConnectionDot status="online" size={6} />
                   <span>{hostName || '远程工作站'}</span>
                 </span>
+                <span>·</span>
+                <button
+                  type="button"
+                  onClick={() => setModelPickerOpen(true)}
+                  aria-label={`切换模型：当前 ${activeModelDisplayName}`}
+                  className="flex items-center gap-1 px-2.5 py-1 min-h-[44px] rounded-full bg-white/[0.06] hover:bg-white/[0.12] border border-white/10 text-[10.5px] font-mono text-[#7dd3fc] transition-colors cursor-pointer studio-tap truncate max-w-[130px]"
+                  title="点击切换模型"
+                >
+                  <Cpu size={10} className="text-[#38bdf8] shrink-0" />
+                  <span className="truncate">{activeModelDisplayName}</span>
+                  <ChevronDown size={10} className="text-[#64748b] shrink-0" />
+                </button>
+                <button
+                  type="button"
+                  onClick={togglePlanMode}
+                  aria-label={`计划模式：${planMode ? '已开启' : '已关闭'}`}
+                  className={`flex items-center gap-1 px-2 py-1 min-h-[44px] rounded-full border text-[10.5px] font-mono transition-colors cursor-pointer studio-tap shrink-0 ${
+                    planMode
+                      ? 'bg-purple-500/20 text-purple-300 border-purple-500/40 shadow-[0_0_10px_rgba(168,85,247,0.3)]'
+                      : 'bg-white/[0.06] text-[#94a3b8] hover:bg-white/[0.12] border-white/10'
+                  }`}
+                  title={planMode ? '点击退出计划模式' : '点击开启计划模式'}
+                >
+                  <CheckSquare size={10} className={planMode ? 'text-purple-400' : 'text-[#64748b]'} />
+                  <span>{planMode ? 'Plan 开启' : 'Plan'}</span>
+                </button>
                 {workspace && (
                   <>
                     <span>·</span>
-                    <span className="flex items-center gap-1 font-mono text-[#94a3b8] truncate max-w-[180px]">
+                    <span className="flex items-center gap-1 font-mono text-[#94a3b8] truncate max-w-[130px]">
                       <Folder size={11} className="text-[#3b82f6]" />
                       <span className="truncate">{workspace}</span>
                     </span>
@@ -629,20 +688,15 @@ export const ChatScreen: React.FC<Props> = ({
 
         {/* Pending Approval or Question Card */}
         {pending && (
-          <div className="p-5 rounded-3xl specular-card border-2 border-[#3b82f6] shadow-[0_0_30px_rgba(59,130,246,0.25)] animate-in zoom-in-95 duration-200">
-            <div className="flex items-center gap-2 text-[14px] font-bold text-white">
-              {pending.approval ? (
+          pending.approval ? (
+            <div className="p-5 rounded-3xl specular-card border-2 border-[#3b82f6] shadow-[0_0_30px_rgba(59,130,246,0.25)] animate-in zoom-in-95 duration-200">
+              <div className="flex items-center gap-2 text-[14px] font-bold text-white">
                 <AlertTriangle size={18} className="text-[#f59e0b]" />
-              ) : (
-                <HelpCircle size={18} className="text-[#38bdf8]" />
-              )}
-              <span>{pending.title}</span>
-            </div>
-            <p className="text-[13px] text-[#cbd5e1] mt-2.5 leading-relaxed whitespace-pre-wrap">
-              {pending.body}
-            </p>
-
-            {pending.approval ? (
+                <span>{pending.title}</span>
+              </div>
+              <p className="text-[13px] text-[#cbd5e1] mt-2.5 leading-relaxed whitespace-pre-wrap">
+                {pending.body}
+              </p>
               <div className="flex items-center justify-end gap-2.5 mt-5 pt-3 border-t border-white/10">
                 <button
                   type="button"
@@ -661,21 +715,13 @@ export const ChatScreen: React.FC<Props> = ({
                   允许一次 (Allow Once)
                 </button>
               </div>
-            ) : (
-              <div className="flex flex-wrap gap-2 mt-4 pt-3 border-t border-white/10">
-                {pending.options.map((opt, i) => (
-                  <button
-                    key={i}
-                    type="button"
-                    onClick={() => onAnswerOption(opt)}
-                    className="min-h-[44px] px-3.5 py-2 rounded-xl bg-[#141824] hover:bg-[#3b82f6] hover:text-white text-[13px] font-medium text-[#cbd5e1] transition-all cursor-pointer border border-white/10 studio-tap"
-                  >
-                    {opt}
-                  </button>
-                ))}
-              </div>
-            )}
-          </div>
+            </div>
+          ) : (
+            <QuestionCard
+              prompt={pending}
+              onSubmit={(selected, customText) => onAnswerOption(selected, customText)}
+            />
+          )
         )}
 
         {/* 只有工具卡时才需要独立的流式光标（消息类行自己会带） */}
@@ -685,6 +731,9 @@ export const ChatScreen: React.FC<Props> = ({
             <span className="text-[11.5px] text-[#64748b]">正在输出…</span>
           </div>
         )}
+
+        {/* 本轮改动文件卡片（审阅修改/新增的文件及差异） */}
+        <ChangedFilesCard lines={lines} />
 
         <div ref={messagesEndRef} />
       </div>
@@ -797,7 +846,62 @@ export const ChatScreen: React.FC<Props> = ({
             </div>
           )}
 
+          {/* Quick Command Palette */}
+          <CommandPalette
+            isOpen={commandPaletteOpen}
+            onClose={() => setCommandPaletteOpen(false)}
+            onSelect={(cmd) => {
+              setInputText(cmd + ' ');
+              setCommandPaletteOpen(false);
+            }}
+            filterText={inputText}
+          />
+
+          {/* Attachment Bar (Photo / Image Preview & Path Insertion) */}
+          <AttachmentBar
+            attachment={attachment}
+            onRemove={() => setAttachment(null)}
+            onAttach={(att) => setAttachment(att)}
+            onInsertPath={(p) => setInputText((prev) => prev + p)}
+            workspace={workspace}
+          />
+
           <div className="flex items-end gap-2.5 studio-glass-dock p-2 rounded-3xl transition-all focus-within:border-[#3b82f6]/50 focus-within:ring-2 focus-within:ring-[#3b82f6]/30">
+            {/* Hidden File Input for Image Chooser */}
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept="image/*"
+              className="hidden"
+              onChange={(e) => {
+                const file = e.target.files?.[0];
+                if (!file) return;
+                const reader = new FileReader();
+                reader.onload = () => {
+                  const result = reader.result as string;
+                  const base64Data = result.split(',')[1] || result;
+                  setAttachment({
+                    data: base64Data,
+                    mediaType: file.type || 'image/png',
+                    name: file.name,
+                  });
+                };
+                reader.readAsDataURL(file);
+                e.target.value = '';
+              }}
+            />
+
+            {/* Paperclip Button for Attachments */}
+            <button
+              type="button"
+              onClick={() => fileInputRef.current?.click()}
+              aria-label="添加图片附件"
+              className="w-11 h-11 rounded-xl bg-white/[0.06] text-[#94a3b8] hover:text-[#38bdf8] hover:bg-white/[0.1] border border-white/[0.08] flex items-center justify-center transition-colors cursor-pointer studio-tap shrink-0"
+              title="添加图片附件"
+            >
+              <Paperclip size={17} />
+            </button>
+
             {/* 🔴 运行中/发送中**都不禁用**：继续输入即入队（历史缺陷：Composer(enabled = !running)） */}
             <textarea
               rows={1}
@@ -816,6 +920,21 @@ export const ChatScreen: React.FC<Props> = ({
               className="flex-1 max-h-32 min-h-[44px] py-2 px-3 text-[14px] leading-relaxed resize-none focus:outline-hidden bg-transparent text-white placeholder:text-[#64748b]"
             />
 
+            {/* Slash Command Palette Toggle */}
+            <button
+              type="button"
+              onClick={() => setCommandPaletteOpen((prev) => !prev)}
+              aria-label="快捷指令"
+              className={`w-11 h-11 rounded-xl border flex items-center justify-center transition-colors cursor-pointer studio-tap shrink-0 ${
+                commandPaletteOpen
+                  ? 'bg-[#3b82f6]/20 text-[#38bdf8] border-[#3b82f6]'
+                  : 'bg-white/[0.06] text-[#94a3b8] hover:text-[#38bdf8] hover:bg-white/[0.1] border-white/[0.08]'
+              }`}
+              title="快捷指令"
+            >
+              <Terminal size={17} />
+            </button>
+
             {/* Voice Dictation Button */}
             <button
               type="button"
@@ -830,7 +949,7 @@ export const ChatScreen: React.FC<Props> = ({
             {/* Send Arrow Button：只按"有没有内容"禁用，不再看 sending/running */}
             <button
               type="button"
-              disabled={!inputText.trim()}
+              disabled={!inputText.trim() && !attachment}
               onClick={handleSend}
               aria-label={running || sending ? '加入待发队列' : '发送'}
               className="w-11 h-11 rounded-xl bg-gradient-to-r from-[#3b82f6] to-[#2563eb] text-white disabled:opacity-30 flex items-center justify-center transition-all shadow-[0_0_15px_rgba(59,130,246,0.5)] cursor-pointer studio-tap shrink-0"
@@ -857,6 +976,19 @@ export const ChatScreen: React.FC<Props> = ({
           void handleSendText(text);
         }}
         onCancel={() => setVoiceOpen(false)}
+      />
+
+      {/* Model Selection Sheet */}
+      <ModelPicker
+        isOpen={modelPickerOpen}
+        onClose={() => setModelPickerOpen(false)}
+        catalog={modelCatalog || null}
+        currentModel={selectedModel}
+        onSelectModel={async (provider, model) => {
+          if (onSelectModel) {
+            await onSelectModel(provider, model);
+          }
+        }}
       />
     </div>
   );

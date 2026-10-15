@@ -34,3 +34,4 @@ apps/android/keystore.properties
 
 # 构建产物交付目录（二进制不进版本库，用 Release 附件分发）
 dist-apk/
+.temp

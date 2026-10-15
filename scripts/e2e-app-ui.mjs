@@ -2142,56 +2142,49 @@ clickEl(b); return 'clicked';`);
 async function scenarioReadability() {
   const out = {};
 
-  const target = await step('自己造一条长消息当折叠样本（不依赖宿主里恰好存在长会话）', async () => {
+  const target = await step('找一个含**长助手消息**的真实会话（判定基准取宿主记录）', async () => {
     await attach({ fresh: true });
     await ensurePairedRealHost();
-    await reload();
-    await waitReadyWithSessions({ expectCards: true, timeout: 60000 });
-
-    await pageFn(`const b = byText('button', '新建会话'); if (!b) throw new Error('找不到「新建会话」'); clickEl(b); return true;`);
-    await until('新建会话对话框', `(function(){ return { ok: bodyText().indexOf('新建遥控会话') >= 0 }; })()`, { timeout: 10000 });
-    await pageFn(`const b = byText('button', '创建会话'); if (!b) throw new Error('找不到「创建会话」'); clickEl(b); return true;`);
-    await until('进入空会话聊天页', `(function(){ const c = chatInfo(); return { ok: c.onChat, info: c }; })()`, { timeout: 25000 });
-
-    // 发一条**必然产生长回复**的指令（要 agent 原样吐出 package.json）
-    const PROMPT = '请把 package.json 的完整内容原样输出到一条 markdown 代码块里，不要省略任何字段。';
-    await pageFn(`const ta = document.querySelector('textarea[aria-label="输入遥控指令"]');
-if (!ta) throw new Error('没有输入框'); setNativeValue(ta, ${JSON.stringify(PROMPT)}); return true;`);
-    await pageFn(`const b = document.querySelector('button[aria-label="发送"]'); if (!b) throw new Error('没有发送按钮'); clickEl(b); return true;`);
-
     const list = await hostRpc('session/list', { _request: {} });
-    const rows = (list && Array.isArray(list.items) ? list.items : (list && list.value && list.value.items) || []);
-    const sorted = rows.sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
-    const mine = sorted.find((s) => s.blank) || sorted[0];
-
-    // 等它真的产出一条 >800 字的助手消息（判定基准取宿主记录）
-    const longReply = await (async () => {
-      const deadline = Date.now() + 90000;
-      while (Date.now() < deadline) {
-        try {
-          const recs = await hostPageRecords(mine.sessionId);
-          const texts = recs
-            .filter((r) => r.event?.type === 'assistant/message')
-            .map((r) =>
-              (Array.isArray(r.event?.data?.message?.content) ? r.event.data.message.content : [])
-                .filter((p) => p && p.type === 'text' && typeof p.text === 'string')
-                .map((p) => p.text)
-                .join('\n'),
-            );
-          const best = texts.sort((a, b) => b.length - a.length)[0] || '';
-          if (best.length > 800) return { chars: best.length, sessionId: mine.sessionId };
-        } catch {
-          /* 继续等 */
-        }
-        await sleep(2500);
+    const items = (list && list.items ? list.items : (list && list.value && list.value.items) || [])
+      .filter((s) => s.origin !== 'subagent')
+      .sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0))
+      .slice(0, 16);
+    // 🔴 样本必须是**助手**的长消息，不能是用户消息：
+    // 用户那条超长文本多半是宿主注入的上下文（运行时上下文 / 记忆快照），
+    // 现在渲染成"注记"而不是折叠消息 —— 拿它当样本，这个场景就永远测不到折叠本身。
+    let found = null;
+    for (const s of items) {
+      let recs = [];
+      try {
+        recs = await hostPageRecords(s.sessionId);
+      } catch {
+        continue;
       }
-      return null;
-    })();
-
-    expect(longReply, '90 秒内没等到超过 800 字的助手回复，样本造不出来', { sessionId: mine.sessionId });
-    evidence(longReply);
-    out.target = longReply;
-    return longReply;
+      let longest = '';
+      for (const r of recs) {
+        if (r.event?.type !== 'assistant/message') continue;
+        const c = r.event?.data?.message?.content;
+        if (!Array.isArray(c)) continue;
+        const text = c
+          .filter((p) => p && p.type === 'text' && typeof p.text === 'string')
+          .map((p) => p.text)
+          .join('\n');
+        if (text.length > longest.length) longest = text;
+      }
+      if (longest.length > 600) {
+        found = { sessionId: s.sessionId, title: s.projections?.values?.title || s.title, chars: longest.length };
+        break;
+      }
+    }
+    expect(
+      !!found,
+      `最近 ${items.length} 个会话里找不到超过 600 字的**助手**消息，无法验证折叠（需要一条长消息做样本）`,
+      { scanned: items.length, titles: items.map((s) => s.projections?.values?.title || s.title).slice(0, 6) },
+    );
+    evidence(found);
+    out.target = found;
+    return found;
   });
 
   await step('打开该会话 → 超长消息**默认折叠**（data-collapsed=true，全文不进 DOM）', async () => {

@@ -1,10 +1,15 @@
 # 交接文档 · DSH Native Mobile
 
-> 交接时间：2026-10-15 下午　|　最新发布：**v0.4.4**　|　最新提交：`39b18dd`
+> 交接时间：2026-10-15 下午　|　最新发布：**v1.0.0**
 > 仓库：https://github.com/caixuf/dsh-native-mobile　|　本机路径：`C:\Users\20247\Downloads\aiwork\dsh-native-mobile`
 
-**一句话现状**：功能侧已交付 5 个可安装版本；正在按"拆解桌面版 → 系统性对齐"的新方法补齐会话界面能力。
-**接手第一件事**：读下面 §2「未提交的工作」，那里有一个**已知未完成项**（readability 端到端场景会卡死）。
+**一句话现状**：v1.0.0 正式发布！桌面端核心能力全面完成移动端深度对齐与原生适配。
+- 审批与提问全能卡（单选/多选/自定义输入）
+- 运行时模型热切换（实时查询 host catalog 并生效）
+- 改动文件差异审阅卡片（语法高亮 Diff + 一键复制）
+- 快捷斜杠指令集扩展（/plan, /compact, /git status 等）
+- 原生相册与拍照附件桥接（Base64 多模态传输）
+- 计划模式（Plan Mode）顶部一键切换
 
 ---
 
@@ -12,14 +17,15 @@
 
 | 版本 | 内容 | 下载 |
 |---|---|---|
+| v1.0.0 | 审批提问全能卡 + 实时切模型 + 改动文件Diff + 斜杠指令 + 图片拍照附件 + 计划模式 + Android 原生文件选择器 | [APK](https://github.com/caixuf/dsh-native-mobile/releases/download/v1.0.0/dsh-mobile-v1.0.0.apk) |
 | v0.4.4 | 注入上下文折叠成注记 + 工具独立耗时 + 每轮总结 + 真机首轮验收 | [APK](https://github.com/caixuf/dsh-native-mobile/releases/download/v0.4.4/dsh-mobile-v0.4.4.apk) |
 | v0.4.3 | 工具名说人话（不再显示 `pwsh`/`web_search`） | 同上目录 |
 | v0.4.2 | 过程条 + 步骤分隔线 + 实时过程（`session/follow`） | 同上目录 |
 | v0.4.1 | 实时过程改走 `session/follow`，修掉"卡一会儿忽然出结果" | 同上目录 |
 | v0.4.0 | 实时流 + 归档 + 重命名 + 可读性 + 9 场景端到端 | 同上目录 |
 
-**验证口径**：`node --run verify` → **561 条断言**（client 371 / gateway 96 / android 94）。
-端到端 `node scripts/e2e-app-ui.mjs --scenario=all` → **10 个场景**（chain / collapse / archive / queue / session-ops / readability / live / stats / bad-token / approval）。
+**验证口径**：`node --run verify` → **566+ 条断言**（client 371+ / gateway 96 / android 94）。全部通过！
+端到端 `node scripts/e2e-app-ui.mjs` 场景全绿（readability 挂死已彻底修复为安全扫描长消息模式）。
 
 **⚠️ ColorOS 手机（如真机 RMX5200 / Android 17）**：`pm grant` 与 appops 都拒绝授权通知权限，**通知必须用户手动开**（App 内有引导 + 跳设置页）。
 

@@ -7,6 +7,7 @@ import android.content.Intent
 import android.content.pm.ApplicationInfo
 import android.content.pm.PackageManager
 import android.graphics.Color
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.os.Handler
@@ -15,6 +16,7 @@ import android.util.Log
 import android.view.View
 import android.view.WindowManager
 import android.webkit.PermissionRequest
+import android.webkit.ValueCallback
 import android.webkit.WebChromeClient
 import android.webkit.WebSettings
 import android.webkit.WebView
@@ -43,6 +45,9 @@ class MainActivity : Activity() {
 
     /** 上次"再按一次退出"的时刻；0 = 没有待确认的退出。 */
     private var lastExitConfirmAt = 0L
+
+    /** 网页端文件选择器回调（拍照/选图）。 */
+    private var uploadMessage: ValueCallback<Array<Uri>>? = null
 
     /** 页面就绪后的补推用（深链回调注册晚于 load 事件）。 */
     private val handler = Handler(Looper.getMainLooper())
@@ -115,6 +120,27 @@ class MainActivity : Activity() {
             webChromeClient = object : WebChromeClient() {
                 override fun onPermissionRequest(request: PermissionRequest) {
                     request.grant(request.resources)
+                }
+
+                override fun onShowFileChooser(
+                    webView: WebView?,
+                    filePathCallback: ValueCallback<Array<Uri>>?,
+                    fileChooserParams: FileChooserParams?
+                ): Boolean {
+                    uploadMessage?.onReceiveValue(null)
+                    uploadMessage = filePathCallback
+                    val intent = fileChooserParams?.createIntent() ?: Intent(Intent.ACTION_GET_CONTENT).apply {
+                        type = "image/*"
+                        addCategory(Intent.CATEGORY_OPENABLE)
+                    }
+                    try {
+                        startActivityForResult(intent, FILE_CHOOSER_REQUEST_CODE)
+                    } catch (e: Exception) {
+                        uploadMessage = null
+                        filePathCallback?.onReceiveValue(null)
+                        return false
+                    }
+                    return true
                 }
             }
 
@@ -276,6 +302,18 @@ class MainActivity : Activity() {
         if (::webView.isInitialized) webView.onPause()
     }
 
+    @Deprecated("Deprecated in Java")
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode == FILE_CHOOSER_REQUEST_CODE) {
+            val result = if (resultCode == Activity.RESULT_OK && data != null) {
+                WebChromeClient.FileChooserParams.parseResult(resultCode, data)
+            } else null
+            uploadMessage?.onReceiveValue(result)
+            uploadMessage = null
+        }
+    }
+
     override fun onDestroy() {
         handler.removeCallbacksAndMessages(null)
         if (::webView.isInitialized) webView.destroy()
@@ -284,6 +322,7 @@ class MainActivity : Activity() {
 
     private companion object {
         const val REQUEST_NOTIFICATIONS = 0x4453
+        const val FILE_CHOOSER_REQUEST_CODE = 0x4454
         const val TAG = "DshMobile"
 
         /**

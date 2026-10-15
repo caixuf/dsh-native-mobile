@@ -45,6 +45,20 @@ export interface ChatLine {
   isError?: boolean;
 }
 
+export interface PromptQuestionOption {
+  label: string;
+  description?: string;
+}
+
+export interface PromptQuestion {
+  id: string;
+  question: string;
+  detail?: string;
+  header?: string;
+  options: PromptQuestionOption[];
+  multiSelect?: boolean;
+}
+
 export interface PendingPrompt {
   rpcId: string;
   method: string;
@@ -53,6 +67,26 @@ export interface PendingPrompt {
   options: string[];
   questionId?: string | null;
   approval: boolean;
+  questions?: PromptQuestion[];
+  multiSelect?: boolean;
+}
+
+export interface ModelInfo {
+  id: string;
+  name: string;
+  reasoning?: { efforts: string[] };
+}
+
+export interface ModelGroup {
+  id: string;
+  name: string;
+  models: ModelInfo[];
+}
+
+export interface ModelCatalog {
+  default?: { provider: string; model: string };
+  routableProviders?: string[];
+  groups: ModelGroup[];
 }
 
 export type StepStatus = 'COMPLETED' | 'RUNNING' | 'PENDING';
@@ -62,3 +96,4 @@ export interface TaskStep {
   status: StepStatus;
   detail?: string | null;
 }
+

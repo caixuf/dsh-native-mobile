@@ -28,16 +28,20 @@ export const Envelopes = {
     };
   },
 
-  questionOutcome(questionId: string, selected: string[]) {
+  questionOutcome(questionId: string, selected: string[], text?: string) {
     return {
       kind: 'result',
       value: {
-        answers: [
-          {
-            id: questionId,
-            selected,
-          },
-        ],
+        answers: [{ id: questionId, selected, ...(text && text.trim() ? { text: text.trim() } : {}) }],
+      },
+    };
+  },
+
+  multiQuestionOutcome(answers: Array<{ id: string; selected: string[]; text?: string }>) {
+    return {
+      kind: 'result',
+      value: {
+        answers,
       },
     };
   },
