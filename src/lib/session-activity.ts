@@ -21,6 +21,8 @@
  */
 
 /** 过程阶段。 */
+import { toolActionLabel } from './tool-labels';
+
 export type ActivityPhase =
   | 'idle' // 没有正在跑的轮次
   | 'thinking' // 模型在推理（assistant/message 里有 reasoning，或 request/context 刚到）
@@ -218,7 +220,7 @@ export function elapsedMs(state: ActivityState, nowMsNow: number): number {
 }
 
 /**
- * 过程条的文案。对齐 GUI 的措辞：分析中 / 调用工具 / 第 N 步 / 深度搜索中，用时 …
+ * 过程条的文案。对齐 GUI 的措辞：分析中 / 执行命令 / 第 N 步 / 深度搜索中，用时 …
  */
 export function phaseLabel(state: ActivityState, nowMsNow: number): string {
   if (state.phase === 'idle') return '';
@@ -228,7 +230,8 @@ export function phaseLabel(state: ActivityState, nowMsNow: number): string {
       parts.push(state.thinking ? `分析中 · ${state.thinking}` : '分析中');
       break;
     case 'tool':
-      parts.push(state.toolName ? `正在调用 ${state.toolName}` : '正在调用工具');
+      // 说人话（"执行命令"），不要甩英文工具名（"正在调用 pwsh"）——对齐 GUI 的「执行了命令」
+      parts.push(state.toolName ? toolActionLabel(state.toolName, 'running') : '正在调用工具');
       break;
     case 'step':
       parts.push(state.step ? `第 ${state.step} 步` : '准备中');

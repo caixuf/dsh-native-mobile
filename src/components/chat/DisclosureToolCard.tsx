@@ -7,10 +7,12 @@ import {
   ChevronRight,
   Copy,
   FileText,
+  Globe,
   Terminal,
   Wrench,
 } from 'lucide-react';
 import { copyToClipboard } from './clipboard';
+import { toolActionLabel, toolKind } from '../../lib/tool-labels';
 
 interface Props {
   toolName?: string | null;
@@ -180,35 +182,25 @@ export const DisclosureToolCard: React.FC<Props> = ({
   const argEntries = parseObject(toolArgs) ? Object.entries(parseObject(toolArgs) as Record<string, unknown>) : null;
 
   const getToolIcon = () => {
-    switch (toolName) {
-      case 'run_command':
-      case 'bash':
-      case 'terminal':
+    // 以前这里只认旧 Kotlin App 的 run_command/bash/…，DSH 现在的 pwsh/read/web_search
+    // 全部落到 default —— 现在按工具语义类别选图标。
+    switch (toolKind(toolName)) {
+      case 'shell':
         return <Terminal size={14} className="text-[#c084fc]" />;
-      case 'read_file':
-      case 'edit_file':
-      case 'write_file':
+      case 'file':
+      case 'search':
         return <FileText size={14} className="text-[#38bdf8]" />;
+      case 'web':
+        return <Globe size={14} className="text-[#34d399]" />;
       default:
         return <Wrench size={14} className="text-[#a78bfa]" />;
     }
   };
 
   const getFriendlyName = () => {
-    switch (toolName) {
-      case 'run_command':
-        return '执行命令';
-      case 'read_file':
-        return '读取文件';
-      case 'edit_file':
-        return '修改文件';
-      case 'write_file':
-        return '写入文件';
-      case 'list_dir':
-        return '列出目录';
-      default:
-        return toolName || '工具调用';
-    }
+    // 有结果 = 已完成，没结果 = 正在做（对齐 GUI 的「执行了命令」/「深度搜索中」）
+    const mode = hasResult ? 'done' : 'running';
+    return toolActionLabel(toolName, mode);
   };
 
   // 头部一行摘要：优先结构化字段，其次截断原始文本

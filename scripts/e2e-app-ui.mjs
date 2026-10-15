@@ -1918,6 +1918,20 @@ if (!b) throw new Error('没有发送按钮'); clickEl(b); return true;`);
       `过程条从没出现过耗时：${JSON.stringify((seen.labels || []).slice(0, 6))}`,
       { labels: (seen.labels || []).slice(0, 6) },
     );
+    // 🔴 过程条/工具卡必须说人话，不能直接甩英文工具名（"正在调用 pwsh"）。
+    // 旧实现的 getFriendlyName 只认 run_command/read_file 这类**已不存在的**旧工具名，
+    // 于是 DSH 现在的 pwsh/read/web_search 全部原样显示 —— 读起来像日志。
+    const all = seen.labels || [];
+    expect(
+      !all.some((l) => /正在调用\s+[A-Za-z_]+/.test(l)),
+      `过程条仍在甩原始工具名：${JSON.stringify(all.filter((l) => /正在调用\s+[A-Za-z_]+/.test(l)).slice(0, 3))}`,
+      { labels: all.slice(0, 6) },
+    );
+    expect(
+      all.some((l) => /执行命令|深度搜索|抓取网页|读取文件|搜索代码|浏览目录|查看图片|更新任务板|检查运行时/.test(l)),
+      `过程条全程没有出现人话动作：${JSON.stringify(all.slice(0, 6))}`,
+      { labels: all.slice(0, 6) },
+    );
     return { markers: seen.markers, phases: seen.phases };
   });
 

@@ -121,7 +121,8 @@ check('文案对齐 GUI 措辞：分析中 / 正在调用 pwsh / 第 2 步 / 已
   // 停在 tool/call 上
   let s = buildActivity(EVENTS.slice(0, 7));
   const label = phaseLabel(s, T0 + 10000);
-  ok(label.includes('正在调用 pwsh'), `tool 阶段文案=${label}`);
+  ok(label.includes('执行命令'), `tool 阶段要说人话，实际=${label}`);
+  ok(!label.includes('pwsh'), `过程条不该甩英文工具名：${label}`);
   ok(label.includes('第 1 步'), `应带步骤号：${label}`);
   ok(label.includes('用时'), `应带耗时：${label}`);
   // 走到第 2 步开头
@@ -136,6 +137,16 @@ check('文案对齐 GUI 措辞：分析中 / 正在调用 pwsh / 第 2 步 / 已
     data: { turn: 1, step: 1 },
   });
   ok(phaseLabel(s3, T0 + 9000).startsWith('分析中'), `thinking 文案=${phaseLabel(s3, T0 + 9000)}`);
+  // 未知工具也要说人话，不能把原始 id 当文案
+  const unknownTool = applyActivityEvent(buildActivity(EVENTS.slice(0, 7)), {
+    type: 'tool/call',
+    time: T0 + 9000,
+    data: { name: 'brand_new_plugin_tool' },
+  });
+  ok(
+    phaseLabel(unknownTool, T0 + 9000).includes('调用 brand_new_plugin_tool'),
+    `未知工具应优雅降级：${phaseLabel(unknownTool, T0 + 9000)}`,
+  );
   eq(phaseLabel(emptyActivity(), T0), '', '没有轮次就不该有文案');
 });
 
