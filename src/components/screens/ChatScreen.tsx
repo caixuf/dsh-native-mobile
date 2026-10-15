@@ -26,6 +26,8 @@ import { clearDraft, loadDraft, loadExpandedKeys, saveDraft, saveExpandedKeys } 
 import { ConnectionDot } from '../common/ConnectionDot';
 import { DeepSeekLogo } from '../common/DeepSeekLogo';
 import type { QueuedMessage } from '../../lib/message-queue';
+import { elapsedMs, formatDuration, modelLabel, phaseLabel } from '../../lib/session-activity';
+import type { ActivityState } from '../../lib/session-activity';
 
 interface Props {
   sessionId: string;
@@ -45,6 +47,13 @@ interface Props {
   onRetryQueued?: (id: string) => void;
   /** 实时事件流是否连着（断开时提示"会入队、结果可能延迟"）。 */
   liveConnected?: boolean;
+  /**
+   * 过程状态（App 从 `session/follow` 归约出来）。
+   * 让界面能说出"现在到底在干什么"——对齐 GUI 的
+   * 「已完成分析 / 正在分析请求 / 深度搜索中，用时 1分56秒」。
+   * 缺省时 ChatScreen 只显示原有的"执行中"，不报错。
+   */
+  activity?: ActivityState | null;
   onBack: () => void;
   /**
    * 返回 `false` = **上层未接收**（发送失败）→ ChatScreen 必须保留草稿原文。
@@ -72,6 +81,7 @@ export const ChatScreen: React.FC<Props> = ({
   onRemoveQueued,
   onRetryQueued,
   liveConnected,
+  activity,
   onBack,
   onSend,
   onCancel,
@@ -280,13 +290,27 @@ export const ChatScreen: React.FC<Props> = ({
   let lastMessageKey: string | null = null;
   for (let i = lines.length - 1; i >= 0; i -= 1) {
     const kind = lines[i].kind;
-    if (kind === 'tool/call' || kind === 'tool/result') continue;
+    if (kind === 'tool/call' || kind === 'tool/result' || kind === 'step/start') continue;
     lastMessageKey = lineKeyOf(lines[i], i);
     break;
   }
 
   /** 流式光标：仅"实时链路健康 + 任务在跑"时显示（链路断了不假装还在输出）。 */
   const showStreamCursor = running && liveConnected === true;
+
+  // 「用时 1分56秒」必须**自己走**，不能等下一条事件才刷新 ——
+  // 工具跑一分钟时事件可能一直不来，只靠事件驱动会让计时停在原地。
+  const [clockTick, setClockTick] = useState(() => Date.now());
+  useEffect(() => {
+    if (!running) return undefined;
+    const t = window.setInterval(() => setClockTick(Date.now()), 1000);
+    return () => window.clearInterval(t);
+  }, [running]);
+
+  const activityOn = running && !!activity && activity.phase !== 'idle';
+  const activityText = activityOn ? phaseLabel(activity as ActivityState, clockTick) : '';
+  const activityModel = activityOn ? modelLabel(activity as ActivityState) : '';
+  const activityElapsed = activityOn ? formatDuration(elapsedMs(activity as ActivityState, clockTick)) : '';
 
   const preparingStages = [
     '唤醒远程守护进程…',
@@ -343,9 +367,17 @@ export const ChatScreen: React.FC<Props> = ({
 
           <div className="flex items-center gap-2 shrink-0">
             {running && (
-              <span className="flex items-center gap-1.5 text-[11px] font-semibold text-[#38bdf8] bg-[#38bdf8]/15 border border-[#38bdf8]/30 px-2.5 py-1 rounded-full">
-                <Loader2 size={11} className="animate-spin" />
-                <span>执行中</span>
+              // 有过程状态就说出"到底在干什么 + 干了多久"，没有就退回原来的"执行中"。
+              // 对齐 GUI 的「正在分析请求」「深度搜索中，用时 1分56秒」。
+              <span
+                className="flex items-center gap-1.5 text-[11px] font-semibold text-[#38bdf8] bg-[#38bdf8]/15 border border-[#38bdf8]/30 px-2.5 py-1 rounded-full max-w-[46vw]"
+                data-testid="activity-badge"
+                data-phase={activityOn ? (activity as ActivityState).phase : 'unknown'}
+                title={activityModel ? `模型：${activityModel}` : undefined}
+              >
+                <Loader2 size={11} className="animate-spin shrink-0" />
+                <span className="truncate">{activityText || '执行中'}</span>
+                {activityElapsed && <span className="font-mono text-[#7dd3fc] shrink-0">· {activityElapsed}</span>}
               </span>
             )}
             <button
@@ -373,6 +405,24 @@ export const ChatScreen: React.FC<Props> = ({
         {lines.map((line, idx) => {
           const key = lineKeyOf(line, idx);
           const isLastMessage = showStreamCursor && key === lastMessageKey;
+
+          // 步骤分隔线：`step/start` 事件渲染成"── 第 N 步 ──"（GUI 里也是这么分的）。
+          // 它不是消息，所以必须在下面的消息分支之前拦掉。
+          if (line.kind === 'step/start') {
+            return (
+              <div
+                key={key}
+                data-testid="step-marker"
+                className="flex items-center gap-3 py-2.5 select-none"
+              >
+                <span className="h-px flex-1 bg-gradient-to-r from-transparent via-white/12 to-white/12" />
+                <span className="text-[11px] font-semibold tracking-wide text-[#64748b] shrink-0">
+                  {line.text}
+                </span>
+                <span className="h-px flex-1 bg-gradient-to-r from-white/12 via-white/12 to-transparent" />
+              </div>
+            );
+          }
 
           if (line.kind === 'tool/call') {
             // 结果可能在后续的 tool/result 事件里（App 按 seq 逐条映射），这里配对回来

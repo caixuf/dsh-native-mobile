@@ -153,6 +153,8 @@ export interface SessionAddressSource {
  *   - follow 快照     → `records: [{ type, seq, time, data }]`（裸事件）
  *   - follow 事件帧   → `value.event = {type, seq, time, data}`
  */
+import { stepMarkerLine } from './session-activity';
+
 export interface RawSessionEvent {
   type?: string;
   seq?: number;
@@ -210,24 +212,41 @@ export function eventToLine(
   };
 }
 
-/** `session/page` 的 records（每条包着 `event`）→ 聊天行。 */
+/**
+ * `session/page` 的 records（每条包着 `event`）→ 聊天行。
+ *
+ * ⚠️ 必须和 [eventsToLines] 走**同一个** eventToLines —— 否则跑完一轮后，
+ * 收尾刷新会用本函数整页替换掉实时流渲染的内容，`step/start` 的步骤分隔线
+ * 会被悄悄抹掉（真机端到端抓到过：过程条消失、分隔线归零）。
+ */
 export function recordsToLines(
   records: ReadonlyArray<{ seq?: number; event?: RawSessionEvent }> | null | undefined,
 ): ChatLineLike[] {
   const out: ChatLineLike[] = [];
   (records || []).forEach((rec, idx) => {
-    const line = eventToLine(rec?.event, rec?.seq ?? idx);
-    if (line) out.push(line);
+    out.push(...eventToLines(rec?.event, rec?.seq ?? idx));
   });
   return out;
 }
 
-/** `session/follow` 的裸事件数组（快照里的 records）→ 聊天行。 */
+/** 单个事件 → 可能的 0..2 行：`step/start` 会先产出一条**步骤分隔线**（GUI 的"第 N 步"）。 */
+export function eventToLines(
+  event: RawSessionEvent | null | undefined,
+  fallbackKey?: number | string,
+): ChatLineLike[] {
+  const marker = stepMarkerLine(event);
+  const line = eventToLine(event, fallbackKey);
+  const out: ChatLineLike[] = [];
+  if (marker) out.push(marker as unknown as ChatLineLike);
+  if (line) out.push(line);
+  return out;
+}
+
+/** `session/follow` 的裸事件数组（快照里的 records）→ 聊天行（含步骤分隔线）。 */
 export function eventsToLines(events: ReadonlyArray<RawSessionEvent> | null | undefined): ChatLineLike[] {
   const out: ChatLineLike[] = [];
   (events || []).forEach((ev, idx) => {
-    const line = eventToLine(ev, idx);
-    if (line) out.push(line);
+    out.push(...eventToLines(ev, idx));
   });
   return out;
 }

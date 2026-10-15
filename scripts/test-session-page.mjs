@@ -279,21 +279,34 @@ check('follow 的 event 帧与快照映射完全一致', () => {
   eq(JSON.stringify(fromEvent), JSON.stringify(fromSnapshot), '两条路必须产出完全相同的一行');
 });
 
-check('session/page 的 records（{seq,event}）映射与快照一致', () => {
-  const wrapped = [{ seq: 7, event: { type: 'tool/result', seq: 7, data: { result: 'ok' } } }];
-  const raw = [{ type: 'tool/result', seq: 7, data: { result: 'ok' } }];
-  eq(JSON.stringify(recordsToLines(wrapped)), JSON.stringify(eventsToLines(raw)));
+check('session/page 的 records（{seq,event}）映射与快照一致，且都含步骤分隔线', () => {
+  const wrapped = [
+    { seq: 2, event: { type: 'step/start', seq: 2, data: { step: 1 } } },
+    { seq: 7, event: { type: 'tool/result', seq: 7, data: { result: 'ok' } } },
+  ];
+  const raw = [
+    { type: 'step/start', seq: 2, data: { step: 1 } },
+    { type: 'tool/result', seq: 7, data: { result: 'ok' } },
+  ];
+  const fromPage = recordsToLines(wrapped);
+  eq(JSON.stringify(fromPage), JSON.stringify(eventsToLines(raw)));
+  eq(fromPage.length, 2, '分隔线 + 结果行');
+  eq(fromPage[0].kind, 'step/start', '历史翻页也必须保留步骤分隔线');
 });
 
-check('实时流同样过滤系统提示词与空事件', () => {
+check('实时流同样过滤系统提示词与空事件（但 step/start 产出分隔线）', () => {
   const lines = eventsToLines([
     { type: 'system/message', seq: 1, data: { message: { content: [{ type: 'text', text: '整段系统提示词' }] } } },
-    { type: 'step/start', seq: 2, data: {} },
+    { type: 'step/start', seq: 2, data: { step: 1 } },
     { type: 'assistant/message', seq: 3, data: { message: { content: [] } } },
     { type: 'assistant/message', seq: 4, data: { message: { content: [{ type: 'text', text: '真正的回答' }] } } },
   ]);
-  eq(lines.length, 1, '只有真正的回答该留下');
-  eq(lines[0].text, '真正的回答');
+  // 系统提示词与空消息被过滤；step/start 保留为分隔线；真正的回答也在
+  eq(lines.length, 2, `实际 kind=${JSON.stringify(lines.map((l) => l.kind))}`);
+  eq(lines[0].kind, 'step/start', 'step/start 应产出分隔线');
+  eq(lines[0].text, '第 1 步');
+  eq(lines[1].text, '真正的回答');
+  ok(!lines.some((l) => l.kind === 'system/message'), '系统提示词绝不能进时间线');
 });
 
 check('空/畸形输入不炸', () => {

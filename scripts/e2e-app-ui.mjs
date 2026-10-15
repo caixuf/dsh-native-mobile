@@ -1824,10 +1824,24 @@ if (!ta) throw new Error('没有输入框'); setNativeValue(ta, ${JSON.stringify
 if (!b) throw new Error('没有发送按钮'); clickEl(b); return true;`);
 
     const samples = [];
+    const seen = { markers: 0, phases: new Set(), labels: new Set(), elapsedSeen: false };
     const deadline = Date.now() + 75000;
     while (Date.now() < deadline) {
-      const s = await page(`(function(){ const c = chatInfo(); return { running: c.hasRunningBadge, children: c.timelineChildren, assistant: c.assistantCards, user: c.userBubbles }; })()`);
+      // ⚠️ 过程细节必须**在运行中**采样：轮次结束后过程条本来就不该显示，
+      // 放到后面单独采样会永远扑空（第一版就栽在这）。
+      const s = await page(`(function(){
+        const badge = document.querySelector('[data-testid="activity-badge"]');
+        const c = chatInfo();
+        return { running: c.hasRunningBadge, children: c.timelineChildren, assistant: c.assistantCards, user: c.userBubbles,
+          markers: document.querySelectorAll('[data-testid="step-marker"]').length,
+          phase: badge ? badge.getAttribute('data-phase') : null,
+          label: badge ? (badge.innerText || '').replace(/\\s+/g, ' ').trim() : null };
+      })()`);
       samples.push(s);
+      seen.markers = Math.max(seen.markers, s.markers);
+      if (s.phase) seen.phases.add(s.phase);
+      if (s.label) seen.labels.add(s.label);
+      if (/\d+秒|\d+分\d+秒/.test(s.label || '')) seen.elapsedSeen = true;
       if (!s.running && samples.length > 3) break;
       if (samples.length > 90) break;
       await sleep(800);
@@ -1845,6 +1859,10 @@ if (!b) throw new Error('没有发送按钮'); clickEl(b); return true;`);
       minWhileRunning,
       maxWhileRunning,
       last,
+      markers: seen.markers,
+      phases: [...seen.phases],
+      labels: [...seen.labels].slice(0, 6),
+      elapsedSeen: seen.elapsedSeen,
       first5: samples.slice(0, 5),
       last3: samples.slice(-3),
     });
@@ -1861,7 +1879,46 @@ if (!b) throw new Error('没有发送按钮'); clickEl(b); return true;`);
       { minWhileRunning, maxWhileRunning },
     );
     out.live = { grewWhileRunning, minWhileRunning, maxWhileRunning };
+    out.process = {
+      markers: seen.markers,
+      phases: [...seen.phases],
+      labels: [...seen.labels],
+      elapsedSeen: seen.elapsedSeen,
+    };
     return out.live;
+  });
+
+  await step('过程细节：步骤分隔线 + 「在干什么 + 干了多久」的过程条（运行中采到的）', async () => {
+    const seen = out.process || { markers: 0, phases: [], labels: [], elapsedSeen: false };
+    evidence({
+      markers: seen.markers,
+      phases: seen.phases,
+      labels: (seen.labels || []).slice(0, 6),
+      elapsedSeen: seen.elapsedSeen,
+    });
+
+    expect(seen.markers >= 2, `只出现了 ${seen.markers} 条步骤分隔线（step/start 没渲染成"第 N 步"）`, { markers: seen.markers });
+    expect(
+      (seen.phases || []).some((p) => p && p !== 'unknown'),
+      '过程条一直处于 unknown —— 没有把 follow 流归约成过程状态',
+      { phases: seen.phases },
+    );
+    expect(
+      (seen.labels || []).some((l) => /分析中|正在调用|第 \d+ 步|准备中/.test(l)),
+      `过程条文案里没有"在干什么"：${JSON.stringify((seen.labels || []).slice(0, 4))}`,
+      { labels: (seen.labels || []).slice(0, 6) },
+    );
+    expect(
+      (seen.labels || []).some((l) => l !== '执行中'),
+      '过程条只显示"执行中"，没有阶段信息 —— 退回旧行为了',
+      { labels: (seen.labels || []).slice(0, 4) },
+    );
+    expect(
+      seen.elapsedSeen,
+      `过程条从没出现过耗时：${JSON.stringify((seen.labels || []).slice(0, 6))}`,
+      { labels: (seen.labels || []).slice(0, 6) },
+    );
+    return { markers: seen.markers, phases: seen.phases };
   });
 
   await step('实时流不会把历史吃掉：用户与助手内容都还在', async () => {

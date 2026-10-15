@@ -8,13 +8,15 @@ import { Envelopes } from './services/envelopes';
 import { NativeBridge } from './services/native-bridge';
 import type { NativeRelayStatus } from './services/native-bridge';
 import {
-  eventToLine,
+  eventToLines,
   eventsToLines,
   fetchChatPage,
   recordsToLines,
   sessionAddress,
 } from './lib/session-page';
 import type { RawSessionEvent } from './lib/session-page';
+import { applyActivityEvent, buildActivity, emptyActivity } from './lib/session-activity';
+import type { ActivityState } from './lib/session-activity';
 import {
   applySessionRename,
   buildForkedSession,
@@ -533,6 +535,14 @@ export const App: React.FC = () => {
    */
   const followRef = useRef<{ streamId: string; close: () => void } | null>(null);
   const lineKeysRef = useRef<Set<string>>(new Set());
+  /**
+   * 过程状态（"在干什么 + 干了多久"）。
+   * 用 ref 保存真值 + 一个 tick 强制重渲染：事件到达很频繁，
+   * 每次都 setState 一个新对象会让整棵时间线跟着重画，所以只推 tick。
+   */
+  const activityRef = useRef<ActivityState>(emptyActivity());
+  const [activityTick, setActivityTick] = useState(0);
+  const activity = activityTick >= 0 ? activityRef.current : emptyActivity();
 
   const closeFollow = () => {
     followRef.current?.close();
@@ -544,6 +554,9 @@ export const App: React.FC = () => {
     if (!conn) return;
     closeFollow();
     lineKeysRef.current = new Set();
+    // 换会话要把过程状态清空，否则会显示上一轮残留的"第 N 步 / 分析中"
+    activityRef.current = emptyActivity();
+    setActivityTick((n) => n + 1);
     followRef.current = conn.openStream(
       'session/follow',
       { request: { address: sessionAddress(session) } },
@@ -553,19 +566,32 @@ export const App: React.FC = () => {
           if (currentSessionRef.current?.sessionId !== session.sessionId) return;
           const type = String(value.type || '');
           if (type === 'snapshot') {
-            const lines = eventsToLines((value.records as RawSessionEvent[]) || []) as ChatLine[];
+            const records = (value.records as RawSessionEvent[]) || [];
+            const lines = eventsToLines(records) as ChatLine[];
             lineKeysRef.current = new Set(lines.map((l) => l.key));
             setChatLines(lines);
             setChatError(null);
+            // 快照里也可能含正在跑的轮次 → 过程状态要从快照重建
+            activityRef.current = buildActivity(records);
+            setActivityTick((n) => n + 1);
             return;
           }
           if (type === 'event') {
-            const line = eventToLine(value.event as RawSessionEvent) as ChatLine | null;
-            if (!line) return;
-            // 快照与随后的事件帧可能重叠，按 key 去重
-            if (lineKeysRef.current.has(line.key)) return;
-            lineKeysRef.current.add(line.key);
-            setChatLines((prev) => [...prev, line]);
+            const event = value.event as RawSessionEvent;
+            // 过程状态：每条事件都归约一次（分析中/调用工具/第 N 步…）
+            activityRef.current = applyActivityEvent(activityRef.current, event);
+            setActivityTick((n) => n + 1);
+
+            // 一次事件可能产出多行（step/start → 步骤分隔线 + 该步的内容）
+            const produced = eventToLines(event) as ChatLine[];
+            if (produced.length === 0) return;
+            setChatLines((prev) => {
+              const seen = lineKeysRef.current;
+              const fresh = produced.filter((l) => !seen.has(l.key));
+              if (fresh.length === 0) return prev;
+              for (const l of fresh) seen.add(l.key);
+              return [...prev, ...fresh];
+            });
           }
         },
         onError: (error) => {
@@ -1292,6 +1318,7 @@ export const App: React.FC = () => {
             onRemoveQueued={handleRemoveQueued}
             onRetryQueued={handleRetryQueued}
             liveConnected={linkState.type === 'ready'}
+            activity={activity}
             onBack={() => setRoute('sessions')}
             onSend={handleSendPrompt}
             onCancel={handleCancelPrompt}
