@@ -3,6 +3,7 @@ import { X, Plus, Settings, MessageSquare, Folder, ChevronRight, Monitor, Sparkl
 import { SessionRow } from '../../types';
 import { ConnectionDot } from '../common/ConnectionDot';
 import { DeepSeekLogo } from '../common/DeepSeekLogo';
+import { triggerHaptic } from '../../utils/haptics';
 
 interface Props {
   isOpen: boolean;
@@ -143,6 +144,7 @@ export const AppDrawer: React.FC<Props> = ({
           <button
             type="button"
             onClick={() => {
+              triggerHaptic('light');
               onNewSession();
               onClose();
             }}
@@ -155,6 +157,7 @@ export const AppDrawer: React.FC<Props> = ({
           <button
             type="button"
             onClick={() => {
+              triggerHaptic('selection');
               onManageHosts();
               onClose();
             }}

@@ -490,7 +490,7 @@ export const ChatScreen: React.FC<Props> = ({
       <div
         ref={timelineRef}
         onScroll={handleTimelineScroll}
-        className="flex-1 overflow-y-auto px-4 py-4 space-y-4 max-w-2xl w-full mx-auto pb-[calc(10rem+var(--sab))]"
+        className="flex-1 overflow-y-auto px-4 py-4 space-y-4 max-w-2xl w-full mx-auto pb-[calc(10rem+var(--sab)+var(--keyboard-inset-bottom,0px))]"
       >
         {/* Task Progress Summary if steps exist */}
         {steps.length > 0 && <TaskProgressCard steps={steps} running={running} />}
@@ -746,7 +746,7 @@ export const ChatScreen: React.FC<Props> = ({
       </div>
 
       {/* 3. Floating Composer Dock */}
-      <div className="fixed bottom-0 left-0 right-0 z-20 bg-gradient-to-t from-[#090a0f] via-[#090a0f]/95 to-transparent pt-6 pb-[calc(1.25rem+var(--sab))] px-4">
+      <div className="fixed bottom-0 left-0 right-0 z-20 bg-gradient-to-t from-[#090a0f] via-[#090a0f]/95 to-transparent pt-6 pb-[calc(1.25rem+var(--sab)+var(--keyboard-inset-bottom,0px))] px-4 transition-all duration-150">
         <div className="max-w-2xl mx-auto">
           {/* 上滑看历史时才出现；点了回底部并恢复自动跟随 */}
           {showJumpToLatest && (

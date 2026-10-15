@@ -182,6 +182,23 @@ export const App: React.FC = () => {
     routeRef.current = route;
   }, [route]);
 
+  // Mobile Soft Keyboard visualViewport dynamics
+  useEffect(() => {
+    if (typeof window === 'undefined' || !window.visualViewport) return;
+    const vv = window.visualViewport;
+    const updateViewport = () => {
+      const keyboardHeight = Math.max(0, window.innerHeight - vv.height);
+      document.documentElement.style.setProperty('--keyboard-inset-bottom', `${keyboardHeight}px`);
+    };
+    vv.addEventListener('resize', updateViewport);
+    vv.addEventListener('scroll', updateViewport);
+    updateViewport();
+    return () => {
+      vv.removeEventListener('resize', updateViewport);
+      vv.removeEventListener('scroll', updateViewport);
+    };
+  }, []);
+
   // Load hosts on initial mount
   useEffect(() => {
     const loaded = HostStore.all();

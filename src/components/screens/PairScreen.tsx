@@ -188,7 +188,10 @@ export const PairScreen: React.FC<Props> = ({
         <div className="flex p-1 bg-[#141824] border border-white/[0.08] rounded-2xl mb-4">
           <button
             type="button"
-            onClick={() => setTab('login')}
+            onClick={() => {
+              triggerHaptic('selection');
+              setTab('login');
+            }}
             className={`flex-1 py-1.5 text-[12.5px] font-semibold rounded-xl transition-all cursor-pointer studio-tap ${
               tab === 'login'
                 ? 'bg-[#1e2538] text-white border border-white/10 shadow-xs'
@@ -199,7 +202,10 @@ export const PairScreen: React.FC<Props> = ({
           </button>
           <button
             type="button"
-            onClick={() => setTab('pair')}
+            onClick={() => {
+              triggerHaptic('selection');
+              setTab('pair');
+            }}
             className={`flex-1 py-1.5 text-[12.5px] font-semibold rounded-xl transition-all cursor-pointer studio-tap ${
               tab === 'pair'
                 ? 'bg-[#1e2538] text-white border border-white/10 shadow-xs'
