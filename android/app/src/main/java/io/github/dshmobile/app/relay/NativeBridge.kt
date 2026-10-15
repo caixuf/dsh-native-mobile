@@ -1,7 +1,9 @@
 package io.github.dshmobile.app.relay
 
+import android.Manifest
 import android.app.Activity
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.net.Uri
 import android.provider.Settings
 import android.webkit.JavascriptInterface
@@ -152,6 +154,34 @@ class NativeBridge(
                     )
                 )
             }
+        }
+    }
+
+    /**
+     * 打开**应用详情页**（相机等权限都在这里）。
+     *
+     * 🔴 ColorOS / MIUI 等 ROM 一旦拒绝过某权限就**不再弹窗**（"不再询问"），
+     * 网页侧 getUserMedia 只会拿到 NotAllowedError，光给文案让用户"去系统设置"
+     * 等于没给入口 —— 必须有一个能点的按钮。
+     */
+    @JavascriptInterface
+    fun openAppSettings(): String {
+        val cameraGranted = try {
+            activity.checkSelfPermission(Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED
+        } catch (e: Exception) {
+            false
+        }
+        return try {
+            activity.startActivity(
+                Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS)
+                    .setData(Uri.fromParts("package", activity.packageName, null))
+                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            )
+            MiniJson.write(mapOf("ok" to true, "cameraGranted" to cameraGranted))
+        } catch (e: Exception) {
+            MiniJson.write(
+                mapOf("ok" to false, "error" to (e.message ?: "无法打开应用设置"), "cameraGranted" to cameraGranted)
+            )
         }
     }
 

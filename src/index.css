@@ -2,6 +2,15 @@
 
 @layer base {
   :root {
+    /* 🔴 安全区：刘海/挖孔屏适配。
+       Android 15+（targetSdk 35）对全屏应用**强制边到边**，内容会画到状态栏与
+       刘海底下 —— 真机（RMX5200 / Android 17）实测：标题栏被刘海压住、时间栏压住内容。
+       配合 index.html 里的 `viewport-fit=cover`，用 env(safe-area-inset-*) 让出边距。
+       桌面浏览器/无刘海设备上这些值恒为 0，不会留空白。 */
+    --sat: env(safe-area-inset-top, 0px);
+    --sar: env(safe-area-inset-right, 0px);
+    --sab: env(safe-area-inset-bottom, 0px);
+    --sal: env(safe-area-inset-left, 0px);
     --bg-canvas: #090a0f;
     --bg-surface: #0e1118;
     --bg-surface-elevated: #151822;
@@ -36,6 +45,10 @@
     color: #f8fafc;
     overscroll-behavior-y: none;
     -webkit-overflow-scrolling: touch;
+    /* 整页四边让出安全区：横屏时左右（刘海在侧）、竖屏时上下都能生效。
+       各页面若有自己的吸顶/吸底栏，用 var(--sat)/var(--sab) 叠加即可。 */
+    padding-left: var(--sal);
+    padding-right: var(--sar);
   }
 
   /* Sleek modern dark scrollbar */

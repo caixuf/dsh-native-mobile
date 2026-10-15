@@ -1314,7 +1314,12 @@ export const App: React.FC = () => {
   }, []);
 
   return (
-    <div className="flex h-screen w-screen overflow-hidden bg-[#090a0f] text-[#f8fafc] font-sans">
+    <div
+      // 🔴 刘海/挖孔屏：targetSdk 35 在 Android 15+ 强制边到边，整页需让出上下安全区，
+      // 否则标题栏被刘海压住、输入区被手势条压住（真机 RMX5200 / Android 17 实测）。
+      className="flex h-screen w-screen overflow-hidden bg-[#090a0f] text-[#f8fafc] font-sans pt-[var(--sat)] pb-[var(--sab)]"
+      data-safe-area="top-bottom"
+    >
       {/* App Drawer */}
       <AppDrawer
         isOpen={drawerOpen}

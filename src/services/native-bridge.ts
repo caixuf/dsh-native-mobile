@@ -76,6 +76,8 @@ interface AndroidBridge {
   takePendingDeepLink(): string;
   /** 打开系统通知设置页。 */
   openNotificationSettings(): string;
+  /** 打开本应用的系统设置页（相机等权限被永久拒绝时的唯一出路）。 */
+  openAppSettings(): string;
 }
 
 /** 壳会调用的两个 window 钩子（由网页安装）。 */
@@ -359,6 +361,24 @@ export const NativeBridge = {
     if (!bridge || typeof bridge.openNotificationSettings !== 'function') return false;
     try {
       const raw = bridge.openNotificationSettings() || '{}';
+      return JSON.parse(raw)?.ok !== false;
+    } catch {
+      return false;
+    }
+  },
+
+  /**
+   * 打开**应用详情页**（所有权限都在这里）。
+   *
+   * 🔴 为什么需要：ColorOS 等国产 ROM 一旦拒绝过某权限，就**不再弹窗**了
+   * （"不再询问"），此时网页侧 getUserMedia 只会拿到 NotAllowedError，
+   * 光靠文案让用户"去系统设置"是找不到入口的 —— 必须给一个按钮。
+   */
+  openAppSettings(): boolean {
+    const bridge = androidBridge();
+    if (!bridge || typeof bridge.openAppSettings !== 'function') return false;
+    try {
+      const raw = bridge.openAppSettings() || '{}';
       return JSON.parse(raw)?.ok !== false;
     } catch {
       return false;

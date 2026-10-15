@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState, useCallback } from 'react';
-import { Camera, Image as ImageIcon, X, RefreshCw, AlertCircle, Sparkles, Clipboard, CheckCircle2 } from 'lucide-react';
+import { Camera, Image as ImageIcon, X, RefreshCw, AlertCircle, Sparkles, Clipboard, CheckCircle2, Settings } from 'lucide-react';
 import { decodeQrFromImageData, decodeQrFromImageFile } from '../../utils/qrScanner';
+import { NativeBridge } from '../../services/native-bridge';
 
 interface Props {
   isOpen: boolean;
@@ -58,9 +59,11 @@ export const QrScannerModal: React.FC<Props> = ({ isOpen, onClose, onScanSuccess
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
       if (msg.includes('NotAllowedError') || msg.includes('Permission')) {
-        setCameraError('相机权限已被拒绝，请在系统设置中允许相机权限，或直接从相册选取二维码。');
+        setCameraError('相机权限未开启。点下面的按钮直接跳到系统设置里打开；也可以从相册选二维码图片。');
+      } else if (msg.includes('NotFoundError') || msg.includes('DevicesNotFound')) {
+        setCameraError('这台设备上没有找到可用相机。可以从相册选二维码图片。');
       } else {
-        setCameraError('未能启动相机硬件，可直接选取相册中的二维码截图扫码。');
+        setCameraError('未能启动相机：' + msg + '。可以先从相册选二维码图片。');
       }
     }
   }, [facingMode, stopCamera]);
@@ -254,14 +257,29 @@ export const QrScannerModal: React.FC<Props> = ({ isOpen, onClose, onScanSuccess
               </div>
               <div className="text-[13.5px] font-semibold text-white mb-1.5">相机取景暂不可用</div>
               <p className="text-[11.5px] text-[#94a3b8] leading-relaxed mb-4">{cameraError}</p>
-              <button
-                type="button"
-                onClick={startCamera}
-                className="px-3.5 py-1.5 rounded-xl bg-white/[0.08] hover:bg-white/[0.14] text-white text-[12px] font-medium flex items-center gap-1.5 transition-colors studio-tap"
-              >
-                <RefreshCw size={13} />
-                <span>重试启动相机</span>
-              </button>
+              <div className="flex items-center gap-2 flex-wrap justify-center">
+                <button
+                  type="button"
+                  onClick={startCamera}
+                  className="px-3.5 py-1.5 rounded-xl bg-white/[0.08] hover:bg-white/[0.14] text-white text-[12px] font-medium flex items-center gap-1.5 transition-colors studio-tap"
+                >
+                  <RefreshCw size={13} />
+                  <span>重试启动相机</span>
+                </button>
+                {/* 🔴 权限被"不再询问"永久拒绝时，网页侧只会拿到 NotAllowedError，
+                    没有重试的意义 —— 必须给一个能跳系统设置的入口。 */}
+                <button
+                  type="button"
+                  data-testid="qr-open-app-settings"
+                  onClick={() => {
+                    NativeBridge.openAppSettings();
+                  }}
+                  className="px-3.5 py-1.5 rounded-xl bg-blue-500/15 hover:bg-blue-500/25 text-blue-300 text-[12px] font-medium flex items-center gap-1.5 transition-colors studio-tap"
+                >
+                  <Settings size={13} />
+                  <span>打开应用设置</span>
+                </button>
+              </div>
             </div>
           )}
         </div>
