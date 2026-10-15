@@ -15,10 +15,13 @@ import {
   collectMessageText,
   collectReasoningText,
   cursorFromError,
+  eventToLine,
+  eventsToLines,
   fetchChatPage,
   isDialogEvent,
   isToolEvent,
   pageRequest,
+  recordsToLines,
   sessionAddress,
 } from '../src/lib/session-page.ts';
 
@@ -240,6 +243,65 @@ check('工具事件判定', () => {
   eq(isToolEvent('tool/call'), true);
   eq(isToolEvent('tool/result'), true);
   eq(isToolEvent('assistant/message'), false);
+});
+
+// ── §5 实时流（session/follow）与历史翻页共用同一套映射 ─────────────────────
+
+check('follow 快照里的裸事件能映射成聊天行', () => {
+  // 真主机 session/follow 的 snapshot.records 是**裸事件**（没有 {event:...} 包装）
+  const records = [
+    { type: 'user/message', seq: 2, data: { content: [{ type: 'text', text: '跑一下 node -v' }] } },
+    { type: 'tool/call', seq: 5, data: { name: 'pwsh', callId: 'c1', arguments: '{"command":"node -v"}' } },
+    { type: 'tool/result', seq: 6, data: { callId: 'c1', result: 'v24.21.0' } },
+    { type: 'assistant/message', seq: 9, data: { message: { content: [{ type: 'text', text: 'v24.21.0' }] } } },
+  ];
+  const lines = eventsToLines(records);
+  eq(lines.length, 4, '四条都该渲染');
+  eq(lines[0].role, 'user');
+  eq(lines[0].text, '跑一下 node -v');
+  eq(lines[1].kind, 'tool/call');
+  eq(lines[1].toolName, 'pwsh');
+  eq(lines[2].toolResult, 'v24.21.0');
+  eq(lines[3].text, 'v24.21.0');
+  eq(lines.map((l) => l.key), ['line-2', 'line-5', 'line-6', 'line-9'], 'key 必须按 seq 稳定（去重要靠它）');
+});
+
+check('follow 的 event 帧与快照映射完全一致', () => {
+  const raw = {
+    type: 'assistant/message',
+    seq: 42,
+    data: { message: { content: [{ type: 'reasoning', text: '想' }, { type: 'text', text: '答案' }] } },
+  };
+  const fromEvent = eventToLine(raw);
+  const fromSnapshot = eventsToLines([raw])[0];
+  eq(fromEvent.text, '答案', 'reasoning 必须跳过');
+  eq(fromEvent.key, 'line-42');
+  eq(JSON.stringify(fromEvent), JSON.stringify(fromSnapshot), '两条路必须产出完全相同的一行');
+});
+
+check('session/page 的 records（{seq,event}）映射与快照一致', () => {
+  const wrapped = [{ seq: 7, event: { type: 'tool/result', seq: 7, data: { result: 'ok' } } }];
+  const raw = [{ type: 'tool/result', seq: 7, data: { result: 'ok' } }];
+  eq(JSON.stringify(recordsToLines(wrapped)), JSON.stringify(eventsToLines(raw)));
+});
+
+check('实时流同样过滤系统提示词与空事件', () => {
+  const lines = eventsToLines([
+    { type: 'system/message', seq: 1, data: { message: { content: [{ type: 'text', text: '整段系统提示词' }] } } },
+    { type: 'step/start', seq: 2, data: {} },
+    { type: 'assistant/message', seq: 3, data: { message: { content: [] } } },
+    { type: 'assistant/message', seq: 4, data: { message: { content: [{ type: 'text', text: '真正的回答' }] } } },
+  ]);
+  eq(lines.length, 1, '只有真正的回答该留下');
+  eq(lines[0].text, '真正的回答');
+});
+
+check('空/畸形输入不炸', () => {
+  eq(eventsToLines(null), []);
+  eq(eventsToLines(undefined), []);
+  eq(recordsToLines([]), []);
+  eq(eventToLine(null), null);
+  eq(eventsToLines([{}]).length, 0);
 });
 
 // ── 汇总 ────────────────────────────────────────────────────────────────────

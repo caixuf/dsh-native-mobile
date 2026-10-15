@@ -140,6 +140,98 @@ export interface SessionAddressSource {
   parentSessionId?: string | null;
 }
 
+// ── 事件 → 聊天行（实时流与历史翻页共用同一套映射）──────────────────────────
+
+/**
+ * 🔴 实时进度的**唯一来源**是 `session/follow` 流（2026-10-15 真主机实测）：
+ *   - 订阅后先来 `snapshot`（带 cursor 与已有 records），随后**逐条**推 `event`；
+ *   - 全局 `$events` 只有 `api-session/status` / `api-session/activity` 两类粗粒度 emit，
+ *     **不含任何内容事件** —— App 此前只订阅它，所以「看不到过程」。
+ *
+ * 三种载荷形状最终都归一到 [eventToLine]：
+ *   - `session/page`  → `records: [{ seq, event: {type,seq,time,data} }]`
+ *   - follow 快照     → `records: [{ type, seq, time, data }]`（裸事件）
+ *   - follow 事件帧   → `value.event = {type, seq, time, data}`
+ */
+export interface RawSessionEvent {
+  type?: string;
+  seq?: number;
+  time?: number;
+  data?: {
+    name?: string;
+    callId?: string;
+    arguments?: string;
+    result?: string;
+    isError?: boolean;
+    message?: { content?: Array<{ text?: string }> };
+    content?: unknown;
+  };
+}
+
+export interface ChatLineLike {
+  key: string;
+  role: 'user' | 'assistant';
+  text: string;
+  kind: string;
+  toolName?: string;
+  toolArgs?: string;
+  toolResult?: string;
+  toolCallId?: string;
+  isError?: boolean;
+}
+
+/** 单个事件 → 一行；不该渲染的返回 null。 */
+export function eventToLine(
+  event: RawSessionEvent | null | undefined,
+  fallbackKey?: number | string,
+): ChatLineLike | null {
+  if (!event) return null;
+  const kind = event.type || '';
+  if (!isDialogEvent(kind)) return null;
+
+  const data = event.data;
+  const role: 'user' | 'assistant' = kind.startsWith('user') ? 'user' : 'assistant';
+  const text =
+    collectMessageText(data?.message?.content ?? data?.content) ||
+    (data?.result ? String(data.result) : '') ||
+    '';
+  if (!isToolEvent(kind) && !text) return null;
+
+  return {
+    key: `line-${event.seq ?? fallbackKey ?? 0}`,
+    role,
+    text,
+    kind,
+    toolName: data?.name,
+    toolArgs: data?.arguments,
+    toolResult: data?.result,
+    toolCallId: data?.callId,
+    isError: data?.isError,
+  };
+}
+
+/** `session/page` 的 records（每条包着 `event`）→ 聊天行。 */
+export function recordsToLines(
+  records: ReadonlyArray<{ seq?: number; event?: RawSessionEvent }> | null | undefined,
+): ChatLineLike[] {
+  const out: ChatLineLike[] = [];
+  (records || []).forEach((rec, idx) => {
+    const line = eventToLine(rec?.event, rec?.seq ?? idx);
+    if (line) out.push(line);
+  });
+  return out;
+}
+
+/** `session/follow` 的裸事件数组（快照里的 records）→ 聊天行。 */
+export function eventsToLines(events: ReadonlyArray<RawSessionEvent> | null | undefined): ChatLineLike[] {
+  const out: ChatLineLike[] = [];
+  (events || []).forEach((ev, idx) => {
+    const line = eventToLine(ev, idx);
+    if (line) out.push(line);
+  });
+  return out;
+}
+
 /**
  * 由会话行构造 `session.page` 的 address。
  *

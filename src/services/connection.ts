@@ -401,6 +401,23 @@ export class DshConnection {
   private phaseListeners: Set<(phase: LinkPhase) => void> = new Set();
   /** 【新增】待发队列订阅者。 */
   private outboxListeners: Set<(snapshot: OutboxSnapshot) => void> = new Set();
+
+  /**
+   * 按 `streamId` 路由的**子流**订阅者。
+   *
+   * 🔴 只有 `$events` 一条流时，App 是"盲"的：真主机实测（2026-10-15）
+   * `$events` 只推 `api-session/status` / `api-session/activity` 这类粗粒度 emit，
+   * **不含任何内容事件** —— 所以界面上只有"执行中"然后忽然出结果。
+   * 会话的逐事件进度在 `session/follow` 这条**按会话的流**上。
+   */
+  private streamSubscribers: Map<
+    string,
+    {
+      onItem?: (value: Record<string, unknown>) => void;
+      onEnd?: () => void;
+      onError?: (error: { message?: string }) => void;
+    }
+  > = new Map();
   /** 【新增】当前连接阶段（初值 offline）。 */
   private phase: LinkPhase = 'offline';
   private isStopped = false;
@@ -838,6 +855,61 @@ export class DshConnection {
     clearTimeout(handle as ReturnType<typeof setTimeout>);
   }
 
+  /**
+   * 打开一条**按 streamId 路由**的子流（同一条 mux WS 上）。
+   *
+   * 用途：订阅 `session/follow` 拿会话的逐事件进度。
+   * 真主机实测的帧序列：先 `item:{type:'snapshot', cursor, records}`，
+   * 随后每次变更 `item:{type:'event', event:{type,seq,time,data}}`。
+   *
+   * ⚠️ 与 `call()` 不同，这里**不等待应答**：open 帧发出去后帧会自己来；
+   * 出错时收到 `{type:'error', streamId}`，交给 `onError`（不会影响整体连接状态）。
+   */
+  public openStream(
+    endpoint: string,
+    args: Record<string, unknown>,
+    handlers: {
+      onItem?: (value: Record<string, unknown>) => void;
+      onEnd?: () => void;
+      onError?: (error: { message?: string }) => void;
+    } = {},
+  ): { streamId: string; close: () => void } {
+    const streamId = `stream-${Math.random().toString(36).slice(2, 10)}`;
+    this.streamSubscribers.set(streamId, handlers);
+
+    const send = () => {
+      const socket = this.socket;
+      if (!socket) return false;
+      try {
+        socket.send(JSON.stringify({ type: 'open', streamId, endpoint, payload: { args } }));
+        return true;
+      } catch {
+        return false;
+      }
+    };
+
+    if (!send()) {
+      // socket 还没就绪：短暂重试，避免"打开会话时刚好在重连"导致订阅静默失败
+      let tries = 0;
+      const timer = setInterval(() => {
+        tries += 1;
+        if (send() || tries > 20 || !this.streamSubscribers.has(streamId)) clearInterval(timer);
+      }, 250);
+    }
+
+    return {
+      streamId,
+      close: () => {
+        this.streamSubscribers.delete(streamId);
+        try {
+          this.socket?.send(JSON.stringify({ type: 'end', streamId }));
+        } catch {
+          /* 关流失败不影响调用方 */
+        }
+      },
+    };
+  }
+
   private createSocket(url: string): WebSocketLike {
     if (this.deps.WebSocket) return this.deps.WebSocket(url);
     return new WebSocket(url) as unknown as WebSocketLike;
@@ -1163,9 +1235,29 @@ export class DshConnection {
           // `String(...)` 是类型收敛：DOM 的 MessageEvent.data 在不同 lib 配置下
           // 可能是 unknown（T3 交付时未跑 tsc，这里由 Lead 集成时修正）。
           const frame = JSON.parse(String(event.data));
+          const streamId = typeof frame.streamId === 'string' ? frame.streamId : '';
           if (frame.type === 'item' && frame.value) {
-            this.handleStreamItem(frame.value);
-          } else if (frame.type === 'end' || frame.type === 'error') {
+            // **按 streamId 路由**：`$events` 之外还有按会话的流（`session/follow`），
+            // 它们的 item 语义完全不同，不能都当全局事件处理。
+            const subscriber = this.streamSubscribers.get(streamId);
+            if (subscriber) subscriber.onItem?.(frame.value as Record<string, unknown>);
+            else this.handleStreamItem(frame.value);
+            return;
+          }
+          if (frame.type === 'end' || frame.type === 'error') {
+            const subscriber = this.streamSubscribers.get(streamId);
+            if (subscriber) {
+              if (frame.type === 'error') {
+                subscriber.onError?.(
+                  (frame.error as { message?: string } | undefined) ?? { message: '流错误' },
+                );
+              } else {
+                subscriber.onEnd?.();
+              }
+              this.streamSubscribers.delete(streamId);
+              return;
+            }
+            // 只有**全局**流被关才降级；子流被关不该影响整体连接状态
             this.notifyState({
               type: 'degraded',
               reason: frame.error?.message || '事件流被关闭',

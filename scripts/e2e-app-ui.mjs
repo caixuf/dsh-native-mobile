@@ -1221,7 +1221,18 @@ return setNativeValue(el, ${JSON.stringify(cwd)});`);
       const truth = await findReplyTruth(prompt);
       note(`宿主真值：content 分块=[${truth.partTypes.join(',')}] 正文=${JSON.stringify(truncate(truth.replyText, 60))}`);
       if (truth.reasoningText) note(`同一记录的 reasoning=${JSON.stringify(truncate(truth.reasoningText, 80))}`);
-      await sleep(1500); // 给 UI 反应时间
+      // 🔴 别用固定 sleep 当判据：宿主记录已写入 ≠ 界面已渲染完（实测偶发假红）。
+      // 改成"等界面对齐宿主真值"；真超时了再走下面的详细诊断。
+      try {
+        await until(
+          '界面对齐宿主真值（用户气泡 + 助手正文都出现）',
+          `(function(){ const b = userBubbleTexts(); const bodies = assistantBodies();
+            return { ok: b.indexOf(${JSON.stringify(prompt)}) >= 0 && bodies.indexOf(${JSON.stringify(truth.replyText)}) >= 0 }; })()`,
+          { timeout: 25000, interval: 600 },
+        );
+      } catch (err) {
+        note(`等待界面对齐超时（${(err && err.message) || err}），按当前状态继续判定`);
+      }
       const obsRaw = await pageFn(`return { bubbles: userBubbleTexts(), bodies: assistantBodies(), info: chatInfo() };`);
       // 只留前 160 字做证据：助手卡片正文里可能整段系统提示词（那本身也是一个发现）
       const obs = {
@@ -1788,6 +1799,88 @@ async function scenarioApproval() {
   return out;
 }
 
+// ── 场景：实时过程（用户抱怨的"卡一会儿忽然出结果"）────────────────────────
+async function scenarioLive() {
+  const out = {};
+
+  await step('准备：真网关主机 + 新建一个空会话（保证过程中出现的内容只可能来自实时流）', async () => {
+    await attach({ fresh: true });
+    await ensurePairedRealHost();
+    await reload();
+    await waitReadyWithSessions({ expectCards: true, timeout: 60000 });
+    await pageFn(`const b = byText('button', '新建会话'); if (!b) throw new Error('找不到「新建会话」'); clickEl(b); return true;`);
+    await until('新建会话对话框', `(function(){ return { ok: bodyText().indexOf('新建遥控会话') >= 0 }; })()`, { timeout: 10000 });
+    await pageFn(`const b = byText('button', '创建会话'); if (!b) throw new Error('找不到「创建会话」'); clickEl(b); return true;`);
+    const info = await until('进入空会话聊天页', `(function(){ const c = chatInfo(); return { ok: c.onChat && c.timelineChildren <= 3, info: c }; })()`, { timeout: 25000 });
+    evidence(info.info);
+    return info.info;
+  });
+
+  await step('发多步指令 → **运行中**界面必须持续出现中间内容（不是等结束才出结果）', async () => {
+    const prompt = '请分两步执行：1) 用工具运行 node -v；2) 再用工具运行 npm -v。每步执行完先说一句"第N步完成"。';
+    await pageFn(`const ta = document.querySelector('textarea[aria-label="输入遥控指令"]');
+if (!ta) throw new Error('没有输入框'); setNativeValue(ta, ${JSON.stringify(prompt)}); return true;`);
+    await pageFn(`const b = document.querySelector('button[aria-label="发送"]') || document.querySelector('button[aria-label="加入待发队列"]');
+if (!b) throw new Error('没有发送按钮'); clickEl(b); return true;`);
+
+    const samples = [];
+    const deadline = Date.now() + 75000;
+    while (Date.now() < deadline) {
+      const s = await page(`(function(){ const c = chatInfo(); return { running: c.hasRunningBadge, children: c.timelineChildren, assistant: c.assistantCards, user: c.userBubbles }; })()`);
+      samples.push(s);
+      if (!s.running && samples.length > 3) break;
+      if (samples.length > 90) break;
+      await sleep(800);
+    }
+
+    const runningSamples = samples.filter((s) => s.running);
+    const grewWhileRunning = samples.filter((s, i) => i > 0 && s.running && s.children > samples[i - 1].children).length;
+    const maxWhileRunning = runningSamples.length ? Math.max(...runningSamples.map((s) => s.children)) : 0;
+    const minWhileRunning = runningSamples.length ? Math.min(...runningSamples.map((s) => s.children)) : 0;
+    const last = samples[samples.length - 1];
+
+    evidence({
+      sampleCount: samples.length,
+      grewWhileRunning,
+      minWhileRunning,
+      maxWhileRunning,
+      last,
+      first5: samples.slice(0, 5),
+      last3: samples.slice(-3),
+    });
+
+    // 🔴 这就是用户抱怨的那条：整个过程界面一动不动，最后忽然出结果。
+    expect(
+      grewWhileRunning >= 1,
+      `运行期间界面一次都没变过（running 时 timelineChildren 恒为 ${minWhileRunning}）—— 用户只会看到"卡住"`,
+      { grewWhileRunning, minWhileRunning, maxWhileRunning, samples: samples.slice(0, 12) },
+    );
+    expect(
+      maxWhileRunning > minWhileRunning,
+      `running 期间时间线没有增长（min=${minWhileRunning} max=${maxWhileRunning}）`,
+      { minWhileRunning, maxWhileRunning },
+    );
+    out.live = { grewWhileRunning, minWhileRunning, maxWhileRunning };
+    return out.live;
+  });
+
+  await step('实时流不会把历史吃掉：用户与助手内容都还在', async () => {
+    // ⚠️ 不要断言「节点数 ≥ 运行期间的峰值」：流式过程中会先出现"执行中…"占位卡，
+    // 结果回来后占位卡被真正的结果卡替换，节点数**可能变少**——那是正常的，不是丢历史。
+    // 这里断言真正的不变量：过程结束后，已经出现过的用户与助手内容都还在。
+    const final = await until(
+      '历史仍在（至少一条用户内容 + 一条助手内容）',
+      `(function(){ const c = chatInfo(); return { ok: c.userBubbles >= 1 && c.assistantCards >= 1, info: c }; })()`,
+      { timeout: 60000, interval: 800 },
+    );
+    const peak = (out.live && out.live.maxWhileRunning) || 0;
+    evidence({ peakWhileRunning: peak, final: final.info });
+    return final.info;
+  });
+
+  return out;
+}
+
 // ── 场景：T7 聊天可读性（超长消息折叠）──────────────────────────────────────
 async function scenarioReadability() {
   const out = {};
@@ -2058,6 +2151,8 @@ async function runScenario(name, ctx) {
       return scenarioSessionOps();
     case 'readability':
       return scenarioReadability();
+    case 'live':
+      return scenarioLive();
     case 'bad-token':
       return scenarioBadToken();
     case 'approval':
@@ -2076,7 +2171,7 @@ async function main() {
   ADB = adbInfo.bin;
   note(`adb = ${ADB} (${adbInfo.version})`);
 
-  const list = SCENARIO === 'all' ? ['chain', 'collapse', 'archive', 'queue', 'session-ops', 'readability', 'bad-token', 'approval'] : [SCENARIO];
+  const list = SCENARIO === 'all' ? ['chain', 'collapse', 'archive', 'queue', 'session-ops', 'readability', 'live', 'bad-token', 'approval'] : [SCENARIO];
   const results = [];
   let failed = null;
 

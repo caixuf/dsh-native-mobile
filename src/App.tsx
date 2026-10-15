@@ -7,8 +7,14 @@ import { PairingClient } from './services/pairing';
 import { Envelopes } from './services/envelopes';
 import { NativeBridge } from './services/native-bridge';
 import type { NativeRelayStatus } from './services/native-bridge';
-import { fetchChatPage } from './lib/session-page';
-import { collectMessageText, isDialogEvent, isToolEvent } from './lib/session-page';
+import {
+  eventToLine,
+  eventsToLines,
+  fetchChatPage,
+  recordsToLines,
+  sessionAddress,
+} from './lib/session-page';
+import type { RawSessionEvent } from './lib/session-page';
 import {
   applySessionRename,
   buildForkedSession,
@@ -193,6 +199,9 @@ export const App: React.FC = () => {
     const conn = new DshConnection(record.baseUrl, record.token, record.label);
     connRef.current = conn;
 
+    // 换主机/重连：旧的实时流属于旧连接，必须显式关掉
+    closeFollow();
+
     // 把凭据交给原生壳：Android 由前台服务在后台守着审批通道（WebView 一旦切后台
     // 就会被挂起，靠网页自己守不住）；普通浏览器里这是安全的空操作。
     const published = NativeBridge.publishConnection(record.baseUrl, record.token, record.label);
@@ -210,8 +219,8 @@ export const App: React.FC = () => {
         handleHostRequest(req);
         return;
       }
-      // 非应答事件 = 主机在推流（emit）。长任务的实时进度就靠它。
-      handleStreamTick();
+      // 非应答事件 = 主机推来的 emit（运行态 / 活动时间戳）
+      handleStreamTick(req);
     });
 
     // 401/403 与"网络抖动"必须分开：前者重试一万次也不会成功。
@@ -293,12 +302,33 @@ export const App: React.FC = () => {
   };
 
   /**
-   * 主机推来的**非应答**事件（`emit`）=「还在干活」的唯一实时信号。
+   * `$events` 上的推送（emit）。
    *
-   * 旧实现只在上屏后轮询 3 次（0 / 1.5s / 3s）就停 —— 超过 3 秒的活儿
-   * 界面**永远不再更新**，用户只能退出重进。这里改成：事件到达即防抖重取当前会话。
+   * 两条用途：
+   *   1. **权威运行态**：`api-session/status` 的 args 是 `[sessionId, running]` ——
+   *      真主机主动推的运行标记，比轮询 `session.list` 准也省。
+   *   2. 没有实时流时（follow 失败/未订阅）退回**防抖重取会话**。
    */
-  const handleStreamTick = () => {
+  const handleStreamTick = (req?: HostRequestItem) => {
+    const payload = req?.payload as { event?: string; args?: unknown[] } | undefined;
+    const eventName = payload?.event || req?.method || '';
+
+    if (eventName === 'api-session/status' && Array.isArray(payload?.args)) {
+      const [sid, runningNow] = payload.args as [unknown, unknown];
+      if (typeof sid === 'string' && sid === currentSessionRef.current?.sessionId) {
+        const next = runningNow === true;
+        setRunning(next);
+        if (!next) {
+          // 收尾：流里可能还有没到的尾部事件，补一次全量
+          const current = currentSessionRef.current;
+          if (current) void loadChatPage(current);
+        }
+      }
+    }
+
+    // 已经订阅了实时流就不必再轮询刷新（省 RPC，也避免和流抢渲染）
+    if (followRef.current) return;
+
     if (streamReloadRef.current !== null) return; // 已在防抖窗口内
     streamReloadRef.current = window.setTimeout(() => {
       streamReloadRef.current = null;
@@ -380,48 +410,9 @@ export const App: React.FC = () => {
       if (currentSessionRef.current?.sessionId !== session.sessionId) return;
 
       const records = res?.records || [];
-      const lines: ChatLine[] = [];
-
-      records.forEach((rec, idx) => {
-        const ev = rec.event;
-        if (!ev) return;
-        const kind = ev.type || '';
-
-        // 🔴 P0：只渲染真正的对话事件。旧实现把所有记录都当气泡，
-        // 于是**整段系统提示词**（含内部工具说明）被渲染成助手消息。
-        if (!isDialogEvent(kind)) return;
-
-        const data = ev.data;
-        const role = kind.startsWith('user') ? 'user' : 'assistant';
-
-        // 🔴 P0：取**所有** text 段并跳过 reasoning。
-        // 旧实现写死 `content[0].text`，模型先输出思考时就把**私有推理当回答显示**，
-        // 真正的正文被吞掉 —— 表现为间歇性"答非所问"。
-        //
-        // 而且两种事件的载荷形状**不一样**（真主机实测）：
-        //   assistant/message → { message: { content: [...] } }
-        //   user/message      → { content: [...] }        ← 没有 message 包装！
-        // 只读 `data.message.content` 会让**用户自己发的指令渲染成空气泡**。
-        const text =
-          collectMessageText(data?.message?.content ?? data?.content) ||
-          (data?.result ? String(data.result) : '') ||
-          '';
-
-        // 工具事件即使正文为空也要渲染；普通消息为空则不入列表（避免空卡）
-        if (!isToolEvent(kind) && !text) return;
-
-        lines.push({
-          key: `line-${rec.seq || idx}`,
-          role,
-          text,
-          kind,
-          toolName: data?.name,
-          toolArgs: data?.arguments,
-          toolResult: data?.result,
-          toolCallId: data?.callId,
-          isError: data?.isError,
-        });
-      });
+      // 映射规则（只渲染对话事件 / 跳过 reasoning / user 走 data.content）统一在
+      // lib/session-page.ts 里，实时流与历史翻页**共用同一套**，避免两条路漂移。
+      const lines = recordsToLines(records) as ChatLine[];
 
       setChatLines(lines);
       setChatError(null);
@@ -523,10 +514,70 @@ export const App: React.FC = () => {
     // 先清空：否则上一会话的消息会短暂串台（真机实测 2–3 秒，F5）
     setChatLines([]);
     setChatError(null);
-    loadChatPage(session);
+    openFollow(session); // 实时流先行：它推的 snapshot 会把历史铺上
+    loadChatPage(session); // 兜底：流没起来时至少还有历史
   };
 
   useEffect(() => stopTurnWatch, []);
+  // 卸载时关掉实时流，别把订阅留在连接上
+  useEffect(() => closeFollow, []);
+
+  /**
+   * 当前会话的**实时流**（`session/follow`）。
+   *
+   * 🔴 为什么必须有它（2026-10-15 真主机实测）：全局 `$events` **不含内容事件** ——
+   * 它只推 `api-session/status`（sessionId, running）与 `api-session/activity` 这类粗粒度 emit。
+   * 会话的逐事件进度只在按会话的 `session/follow` 上：
+   *   先 `item:{type:'snapshot', cursor, records}`，之后每次变更推 `item:{type:'event', event}`。
+   * 此前 App 只订阅 `$events`，所以界面必然表现为「卡一会儿 → 忽然出结果」。
+   */
+  const followRef = useRef<{ streamId: string; close: () => void } | null>(null);
+  const lineKeysRef = useRef<Set<string>>(new Set());
+
+  const closeFollow = () => {
+    followRef.current?.close();
+    followRef.current = null;
+  };
+
+  const openFollow = (session: SessionRow) => {
+    const conn = connRef.current;
+    if (!conn) return;
+    closeFollow();
+    lineKeysRef.current = new Set();
+    followRef.current = conn.openStream(
+      'session/follow',
+      { request: { address: sessionAddress(session) } },
+      {
+        onItem: (value) => {
+          // 切走之后到达的旧流帧必须丢弃
+          if (currentSessionRef.current?.sessionId !== session.sessionId) return;
+          const type = String(value.type || '');
+          if (type === 'snapshot') {
+            const lines = eventsToLines((value.records as RawSessionEvent[]) || []) as ChatLine[];
+            lineKeysRef.current = new Set(lines.map((l) => l.key));
+            setChatLines(lines);
+            setChatError(null);
+            return;
+          }
+          if (type === 'event') {
+            const line = eventToLine(value.event as RawSessionEvent) as ChatLine | null;
+            if (!line) return;
+            // 快照与随后的事件帧可能重叠，按 key 去重
+            if (lineKeysRef.current.has(line.key)) return;
+            lineKeysRef.current.add(line.key);
+            setChatLines((prev) => [...prev, line]);
+          }
+        },
+        onError: (error) => {
+          // 子流挂了不能让页面空白：退回历史翻页 + 轮询兜底
+          console.warn('[follow] session/follow 失败，退回轮询：', error);
+          closeFollow();
+          void loadChatPage(session);
+          startTurnWatch(session);
+        },
+      },
+    );
+  };
 
   /** 本机归档（真主机无 archive 端点；仅隐藏并持久化在设备上）。 */
   const applyArchive = (session: SessionRow, archived: boolean) => {
@@ -659,8 +710,12 @@ export const App: React.FC = () => {
    * 🔴 为什么不能只靠事件流刷新：实测（验证者的整 app 端到端第 9 步）
    * 新建会话里主机已经写了回复，**App 界面却一直不更新** ——
    * 只靠 emit 事件 + 发送后两次固定轮询（0/1.5s）根本覆盖不了真实生成耗时。
-   * 这里改成：边转边刷（2.5s），并用 `session/list` 的 `running` 标记作为**权威终止信号**
-   * （主机会如实告诉你这个会话还在不在跑），有上限兜底，切换会话即停。
+   *
+   * 🔴 也不能因为有了 `session/follow` 就把它关掉：真机实测假主机不推
+   * `api-session/status`，此时运行态只能靠轮询兜底，否则界面**永久卡在"执行中"**
+   * （发送按钮变成"加入待发队列"，用户再也发不出去）。所以：
+   *   - **运行态**：始终轮询（廉价、自愈，不依赖主机实现）
+   *   - **内容**：follow 流在场时由流负责，没有流时才轮询翻页
    */
   const startTurnWatch = (session: SessionRow) => {
     stopTurnWatch();
@@ -678,7 +733,8 @@ export const App: React.FC = () => {
         stopTurnWatch();
         return;
       }
-      void loadChatPage(session);
+      // 内容：实时流在场就别重复翻页（省 RPC，也避免和流抢渲染）
+      if (!followRef.current) void loadChatPage(session);
 
       // 每两拍查一次主机的 running 标记（2s 一次；太慢会让"执行中"多挂十几秒）
       if (ticks % 2 === 0) {
