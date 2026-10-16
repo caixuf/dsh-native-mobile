@@ -248,7 +248,7 @@ export const SessionCard: React.FC<Props> = ({
                 <span>·</span>
               </>
             )}
-            <span>{formatSessionTime(session.updatedAt)}</span>
+            <span className="shrink-0 whitespace-nowrap">{formatSessionTime(session.updatedAt)}</span>
           </div>
         </button>
 

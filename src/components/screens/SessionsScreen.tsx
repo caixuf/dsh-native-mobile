@@ -398,7 +398,7 @@ export const SessionsScreen: React.FC<Props> = ({
         {/* 分组概览 + 全展开/全折叠 */}
         {hasContent && (
           <div className="flex items-center justify-between gap-2 px-1">
-            <p className="min-w-0 truncate text-[12px] text-[#52525b]">
+            <p className="min-w-0 flex-1 text-[12px] text-[#52525b] whitespace-nowrap overflow-hidden text-ellipsis">
               <span className="font-semibold text-gray-800">{grouping.workspaceCount}</span> 个工作区 ·{' '}
               <span className="font-semibold text-gray-800">{grouping.visibleCount}</span> 个会话
               {grouping.runningCount > 0 && (
