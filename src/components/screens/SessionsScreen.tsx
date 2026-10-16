@@ -372,10 +372,16 @@ export const SessionsScreen: React.FC<Props> = ({
         {createNotice && (
           <div
             data-testid="create-notice"
-            className={`flex items-start gap-2.5 p-3 rounded-2xl border text-[12.5px] leading-relaxed ${
+            /* 🔴 浅色主题下这两条曾是「浅色字 + 浅色底」：
+               info  #bfdbfe on #ebf3fe = 1.27:1、error #fda4af on #feecef = 1.66:1
+               （正文门槛 4.5:1）—— 屏幕上几乎是空白，肉眼只能看到一团糊蓝。
+               实测换算后的达标值：info 6.16:1、error 5.91:1；
+               左强调条 info 4.75:1 / error 4.41:1（非文字门槛 3:1）。
+               半透明边框到不了 3:1（alpha 0.70 也只有 2.40:1），所以容器边界改用实心强调条。 */
+            className={`flex items-start gap-2.5 p-3 rounded-2xl border border-l-[3px] text-[12.5px] leading-relaxed ${
               createNotice.kind === 'error'
-                ? 'bg-[#f43f5e]/10 border-[#f43f5e]/25 text-[#fda4af]'
-                : 'bg-[#3b82f6]/10 border-[#3b82f6]/25 text-[#bfdbfe]'
+                ? 'bg-[#fef2f2] border-[#fee2e2] border-l-[#dc2626] text-[#b91c1c]'
+                : 'bg-[#eff6ff] border-[#dbeafe] border-l-[#2563eb] text-[#1d4ed8]'
             }`}
           >
             <Sparkles size={15} className="shrink-0 mt-0.5" />
@@ -420,8 +426,13 @@ export const SessionsScreen: React.FC<Props> = ({
 
         {/* 分组概览 + 全展开/全折叠 */}
         {hasContent && (
-          <div className="flex items-center justify-between gap-2 px-1">
-            <p className="min-w-0 flex-1 text-[12px] text-[#52525b] whitespace-nowrap overflow-hidden text-ellipsis">
+          <div className="flex items-start justify-between gap-2 px-1">
+            {/* 🔴 这里原本是 `whitespace-nowrap overflow-hidden text-ellipsis`：
+               真机实测「8 个工作区 · 270 个会话 · 2 个执行中」放不下一行，
+               被截成「… 2 个执...」—— 计数信息直接消失。
+               文案格式有 e2e 契约（/(\d+) 个工作区 · (\d+) 个会话/），不能改字，
+               所以改布局：允许换行，不再吞字。 */}
+            <p className="min-w-0 flex-1 text-[12px] leading-[18px] text-[#52525b]">
               {selectedWorkspaceKey && currentWorkspaceGroup ? (
                 <>
                   已筛选：<span className="font-semibold text-gray-800">{currentWorkspaceGroup.label}</span> ·{' '}

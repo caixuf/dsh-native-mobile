@@ -161,7 +161,12 @@ export const SessionActionMenu: React.FC<Props> = ({
                   void submitRename();
                 }
               }}
-              className="w-full px-3.5 py-2.5 text-[13.5px] bg-[#141824] border border-black/[0.08] rounded-xl focus:outline-hidden focus:border-[#3b82f6] focus:ring-1 focus:ring-[#3b82f6]/40 text-white placeholder:text-[#52525b] disabled:opacity-60"
+              /* 🔴 深色主题残留（全仓库最后一处 #141824）：弹层是白卡（specular-card +
+                 深色标题 + black/[0.08] 边框），里面却塞了个深蓝黑输入框配白字 ——
+                 浅色主题下像坏掉的控件；占位符 #52525b 在 #141824 上只有 2.29:1。
+                 改回浅色面：正文 #18181b = 16.13:1、占位 #52525b on #f4f4f6 = 7.04:1
+                 （#71717a 只有 4.40:1，不达 4.5，所以占位符取 #52525b）。 */
+              className="w-full px-3.5 py-2.5 text-[13.5px] bg-[#f4f4f6] border border-black/[0.08] rounded-xl focus:outline-hidden focus:border-[#3b82f6] focus:ring-1 focus:ring-[#3b82f6]/40 text-[#18181b] placeholder:text-[#52525b] disabled:opacity-60"
             />
             {error && <p className="mt-2 text-[12px] text-[#f87171]">{error}</p>}
             <div className="flex items-center justify-end gap-2 mt-4">

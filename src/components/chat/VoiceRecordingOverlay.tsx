@@ -95,7 +95,10 @@ export const VoiceRecordingOverlay: React.FC<Props> = ({ isOpen, onSend, onCance
         <div className="w-10 h-1 bg-black/10 rounded-full mb-4" />
 
         <div className="text-center mb-5">
-          <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-[#3b82f6]/15 border border-[#3b82f6]/30 text-[#60a5fa] text-[12px] font-semibold">
+          {/* 🔴 深色主题残留：`text-[#60a5fa]` 在 `bg-[#3b82f6]/15`（合成 #e2ecfe）
+              上只有 2.14:1 —— 12px 正文门槛 4.5:1，胶囊里的「语音遥控 · Ns」读不出来。
+              换 #1d4ed8 = 5.64:1（仓库浅底可读蓝的既有取值）。 */}
+          <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-[#3b82f6]/15 border border-[#3b82f6]/30 text-[#1d4ed8] text-[12px] font-semibold">
             <DeepSeekLogo size={14} variant="brand" />
             <span>DeepSeek 语音遥控 · {seconds}s</span>
           </div>

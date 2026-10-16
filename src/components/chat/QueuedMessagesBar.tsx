@@ -102,7 +102,10 @@ export const QueuedMessagesBar: React.FC<Props> = ({ queued, running = false, on
                     type="button"
                     onClick={() => onRetry(item.id)}
                     aria-label={`重试第 ${item.seq} 条待发消息`}
-                    className="w-11 h-11 rounded-xl flex items-center justify-center text-[#fb7185] bg-[#f43f5e]/10 hover:bg-[#f43f5e]/20 border border-[#f43f5e]/30 cursor-pointer studio-tap"
+                    /* 🔴 深色主题残留：`text-[#fb7185]` 在 `bg-[#f43f5e]/10`（合成 #feecef）
+                       上只有 2.37:1，连「图标 3:1」都不到，重试按钮几乎看不见。
+                       换 #b91c1c = 5.69:1（与提示条错误色同一支）。 */
+                    className="w-11 h-11 rounded-xl flex items-center justify-center text-[#b91c1c] bg-[#f43f5e]/10 hover:bg-[#f43f5e]/20 border border-[#f43f5e]/30 cursor-pointer studio-tap"
                   >
                     <RefreshCw size={15} />
                   </button>

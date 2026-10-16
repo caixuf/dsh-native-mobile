@@ -119,7 +119,10 @@ export const SessionGroupSection: React.FC<Props> = ({
           )}
           <span className="truncate">{group.label}</span>
           {isSearch && (
-            <span className="shrink-0 text-[10.5px] font-medium px-1.5 py-0.5 rounded-md bg-[#a855f7]/15 text-[#c084fc] border border-[#a855f7]/25">
+            /* 🔴 深色主题残留：`text-[#c084fc]` 在 `bg-[#a855f7]/15`（合成 #f2e6fe）
+               上只有 2.21:1 —— 10.5px 徽标门槛 4.5:1，「远端」两个字糊在紫底里。
+               换 #6d28d9 = 5.93:1。 */
+            <span className="shrink-0 text-[10.5px] font-medium px-1.5 py-0.5 rounded-md bg-[#a855f7]/15 text-[#6d28d9] border border-[#a855f7]/25">
               远端
             </span>
           )}
