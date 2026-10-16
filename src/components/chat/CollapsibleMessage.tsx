@@ -27,6 +27,8 @@ interface Props {
   onActivate?: (key: string | null) => void;
   /** 折叠态最大高度（≈6 行，正文行高 22–23px；markdown 用）。 */
   collapsedMaxHeightPx?: number;
+  /** 稳定 DOM 契约：渲染成 data-message-role，e2e 按它选（别再绑样式类）。 */
+  messageRole?: 'user' | 'assistant' | 'system';
 }
 
 /** ≈6 行正文（14.5px / leading-[22px]）；仅供 markdown 高度裁剪使用。 */
@@ -58,6 +60,7 @@ export const CollapsibleMessage: React.FC<Props> = ({
   active = false,
   onActivate,
   collapsedMaxHeightPx = COLLAPSED_MAX_HEIGHT_PX,
+  messageRole,
 }) => {
   const [copied, setCopied] = useState(false);
   const [copyFailed, setCopyFailed] = useState(false);
@@ -96,6 +99,8 @@ export const CollapsibleMessage: React.FC<Props> = ({
           className="whitespace-pre-wrap break-words"
           // E2E 量"正文到底占多高"用（真机断言：折叠时正文 ≈6 行）
           data-collapsed-body={clamped && !expanded ? 'true' : undefined}
+          // 稳定契约：e2e 取"正文"靠它，不要绑样式类
+          data-message-body
         >
           {expanded ? text : result.preview}
         </span>
@@ -121,6 +126,7 @@ export const CollapsibleMessage: React.FC<Props> = ({
       role="group"
       aria-label={`消息 ${messageKey}`}
       data-message-key={messageKey}
+      data-message-role={messageRole}
       data-collapsed={result.collapsed ? 'true' : 'false'}
       data-expanded={expanded ? 'true' : 'false'}
       data-full-chars={result.totalChars}

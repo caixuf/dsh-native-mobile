@@ -609,6 +609,7 @@ export const ChatScreen: React.FC<Props> = ({
                 text={line.text}
                 mode="plain"
                 align="end"
+                messageRole="user"
                 expanded={expandedKeys.has(key)}
                 onToggleExpand={toggleExpanded}
                 active={activeMessageKey === key}
@@ -637,6 +638,7 @@ export const ChatScreen: React.FC<Props> = ({
               text={line.text}
               mode="markdown"
               align="start"
+              messageRole="assistant"
               expanded={expandedKeys.has(key)}
               onToggleExpand={toggleExpanded}
               active={activeMessageKey === key}
@@ -645,7 +647,10 @@ export const ChatScreen: React.FC<Props> = ({
               bodyClassName="my-2.5 w-full text-[#18181b]"
             >
               <div className="space-y-2">
-                <div className="text-[#18181b] leading-relaxed text-[15px]">
+                <div
+                  className="text-[#18181b] leading-relaxed text-[15px]"
+                  data-message-body
+                >
                   <MarkdownView content={line.text} streaming={isLastMessage && running} />
                 </div>
                 <div className="flex items-center gap-1 pt-1 text-[#52525b]">

@@ -369,8 +369,8 @@ function timelineEl() {
 }
 function chatInfo() {
   const ta = document.querySelector('textarea[aria-label="输入遥控指令"]');
-  const cards = qsa('.specular-card');
-  const assistant = cards.filter(function (c) { return txtOf(c).indexOf('DeepSeek 远程执行响应') >= 0; });
+  const cards = qsa('[data-message-role="assistant"]');
+  const assistant = cards;
   const tl = timelineEl();
   const sendBtn = document.querySelector('button[aria-label="发送"], button[aria-label="加入待发队列"]');
   const alertEl = document.querySelector('[role="alert"]');
@@ -378,7 +378,7 @@ function chatInfo() {
     onChat: !!ta,
     inputDisabled: ta ? !!ta.disabled : null,
     inputValue: ta ? ta.value : null,
-    userBubbles: qsa('[class*="rounded-br-xs"]').length,
+    userBubbles: qsa('[data-message-role="user"]').length,
     assistantCards: assistant.length,
     specularCards: cards.length,
     timelineChildren: tl ? tl.children.length : -1,
@@ -388,7 +388,7 @@ function chatInfo() {
   };
 }
 function hasAssistantText(t) {
-  return qsa('.specular-card').some(function (c) { return txtOf(c).indexOf(t) >= 0; });
+  return qsa('[data-message-role="assistant"]').some(function (c) { return txtOf(c).indexOf(t) >= 0; });
 }
 /**
  * 每张助手卡片的**正文**（去掉固定标题）。
@@ -399,16 +399,18 @@ function hasAssistantText(t) {
  * 所以判定"正文有没有渲染出来"必须用 assistantBodies() 做**相等**比较。
  */
 function assistantBodies() {
-  const header = 'DeepSeek 远程执行响应';
-  return qsa('.specular-card').filter(function (c) {
-    return txtOf(c).indexOf(header) >= 0;
-  }).map(function (c) {
-    const t = txtOf(c);
-    return flat(t.slice(t.indexOf(header) + header.length));
+  // 按 data-message-role 契约取助手卡；正文取 [data-message-body]，避免把
+  // 「复制回答」这类操作条文字混进来（相等比较才不被它骗过）。
+  return qsa('[data-message-role="assistant"]').map(function (c) {
+    var body = c.querySelector('[data-message-body]') || c;
+    return flat(txtOf(body));
   }).filter(function (t) { return t; });
 }
 function userBubbleTexts() {
-  return qsa('[class*="rounded-br-xs"]').map(function (e) { return flat(txtOf(e)); });
+  return qsa('[data-message-role="user"]').map(function (e) {
+    var body = e.querySelector('[data-message-body]') || e;
+    return flat(txtOf(body));
+  });
 }
 function queueInfo() {
   const bar = document.querySelector('section[aria-label="待发消息队列"]');
@@ -827,8 +829,10 @@ async function ensurePairedRealHost() {
  */
 async function waitReadyWithSessions({ expectCards = false, timeout = 45000 } = {}) {
   await until(
-    '链路就绪（会话列表页要显示「双向流就绪」）',
-    `(function(){ const t = bodyText(); return { ok: t.indexOf('双向流就绪') >= 0 && (/(\\d+) 个工作区/.test(flat(bodyText())) || qsa('button[aria-label^="打开会话 "]').length > 0), pill: flat(txtOf(qs('header'))).slice(0, 80) }; })()`,
+    '会话列表已加载（出现工作区分组或会话卡）',
+    // ⚠️ 旧判据是 `t.indexOf('双向流就绪')`：新界面顶栏改成「连接电脑」+ 主机胶囊，
+    // 那行字已不存在（源码 0 命中），于是每次都 60s 超时。改为"数据真的加载出来"。
+    `(function(){ const t = bodyText(); return { ok: /(\\d+) 个工作区/.test(flat(t)) || qsa('button[aria-label^="打开会话 "]').length > 0 || qsa('button[aria-expanded]').length > 0, pill: flat(txtOf(qs('header'))).slice(0, 80) }; })()`,
     { timeout, interval: 400 },
   );
   if (expectCards) {
@@ -1497,11 +1501,13 @@ async function scenarioArchive() {
     const info = await pageFn(`const b = qs('button[aria-label^="归档会话 "]');
 if (!b) throw new Error('找不到归档按钮');
 const archiveLabel = b.getAttribute('aria-label');
-const card = b.closest('.specular-card-interactive');
+const card = b.closest('[data-session-id]');
 const openBtn = card ? card.querySelector('button[aria-label^="打开会话 "]') : null;
 const openLabel = openBtn ? openBtn.getAttribute('aria-label') : null;
+const sidEl = card ? card.closest('[data-session-id]') : null;
+const sessionId = sidEl ? sidEl.getAttribute('data-session-id') : null;
 clickEl(b);
-return { archiveLabel: archiveLabel, openLabel: openLabel };`);
+return { archiveLabel: archiveLabel, openLabel: openLabel, sessionId: sessionId };`);
     await sleep(700);
     const state = await pageFn(`const openLabels = sessionCards().map(function (c) { return c.label; });
 return { archived: localStorage.getItem('dsh.sessions.archived.v1'),
@@ -1513,12 +1519,12 @@ return { archived: localStorage.getItem('dsh.sessions.archived.v1'),
     // ⚠️ 不能用 `sessionCards()` 判断"是否还留在工作区分组"：归档区**也**渲染会话卡片
     // （同样带「打开会话」按钮），所以那样判会永远为真（真机实测踩到）。
     // 正确的判据是：这张卡片是否已经落进「已归档」面板里。
-    const moved = await pageFn(`const b = qsa('button[aria-label^="打开会话 "]').filter(function (x) {
-  return x.getAttribute('aria-label') === ${JSON.stringify(info.openLabel)}; })[0];
-if (!b) return { found: false, inArchived: false };
-let n = b, depth = 0, inArchived = false;
+    const moved = await pageFn(`const sid = ${JSON.stringify(info.sessionId)};
+const cardEl = sid ? qs('[data-session-id="' + sid + '"]') : null;
+if (!cardEl) return { found: false, inArchived: false, by: 'sessionId' };
+let n = cardEl, depth = 0, inArchived = false;
 while (n && depth < 12) { const t = flat(txtOf(n)); if (/^已归档/.test(t)) { inArchived = true; break; } n = n.parentElement; depth++; }
-return { found: true, inArchived: inArchived };`);
+return { found: true, inArchived: inArchived, by: 'sessionId' };`);
     expect(
       moved.found && moved.inArchived,
       '归档后卡片没有移动到「已归档」区（可能仍留在工作区分组里）',
@@ -1638,7 +1644,7 @@ return { value: ta.value, disabled: ta.disabled, sendLabel: sendBtn ? sendBtn.ge
       const gone = await until('队列条消失', `(function(){ const q = queueInfo(); return { ok: !q.present, q: q }; })()`, { timeout: 5000, interval: 120 });
       await sleep(3500); // 越过队列自动补发的 1.5s 窗口
       const after = await pageFn(`return { queue: queueInfo(),
-  misSent: qsa('[class*="rounded-br-xs"]').some(function (el) { return txtOf(el).indexOf('E2E-QUEUED-002') >= 0; }) };`);
+  misSent: qsa('[data-message-role="user"]').some(function (el) { return txtOf(el).indexOf('E2E-QUEUED-002') >= 0; }) };`);
       expect(after.misSent === false, '删掉的队列项还是被发出去了（删除没生效）', after);
       evidence({ queued: queued.q, deleteLabel, gone: gone.q, after: after });
       out.queue = { queued: queued.q, gone: gone.q, after };
@@ -1648,10 +1654,14 @@ return { value: ta.value, disabled: ta.disabled, sendLabel: sendBtn ? sendBtn.ge
     await step('发送失败（session/prompt 这一跳被断连）→ 草稿真的保留 + 明确告警 + 落盘', async () => {
       // ⚠️ 必须先等 app 退出 running：running 时按钮语义是「加入待发队列」，
       // 点它只会入队、不会走 session/prompt，也就测不到失败路径。
-      // （脚本原来直接找 `aria-label="发送"`，在 running 态必然拿不到 → 报 "元素不存在"。）
+      // ⚠️ v1.1.0 新界面：发送键**按输入切换** —— 无输入渲染麦克风、有输入才渲染发送键
+      //（ChatScreen.tsx:1016 `!inputText.trim() && !attachment ? <Mic/> : <Send/>`）。
+      // 所以不能靠"找得到 aria-label=发送 的按钮"来判空闲，它在空闲时恒为 null → 30s 超时。
+      // 改判活动徽章（data-testid=activity-badge）是否消失。
       const idle = await until(
-        'app 退出执行中，发送按钮回到「发送」',
-        `(function(){ const b = qs('button[aria-label="发送"]'); return { ok: !!b, label: b ? b.getAttribute('aria-label') : null, info: chatInfo() }; })()`,
+        'app 退出执行中（活动徽章消失；空闲时发送键渲染为麦克风，不能靠它判断）',
+        `(function(){ const badge = qs('[data-testid="activity-badge"]');
+return { ok: !badge, label: badge ? 'running' : 'idle', info: chatInfo() }; })()`,
         { timeout: 30000, interval: 300 },
       );
       evidence({ idleBeforeFailure: { label: idle.label, running: idle.info.hasRunningBadge } });
