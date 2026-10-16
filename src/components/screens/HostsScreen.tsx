@@ -43,7 +43,7 @@ export const HostsScreen: React.FC<Props> = ({
   };
 
   return (
-    <div className="flex flex-col h-full bg-white text-[#18181b] select-none">
+    <div className="flex flex-col h-full bg-white/88 text-[#18181b] select-none">
       {/* Studio Top Navigation Bar */}
       <header className="sticky top-0 z-30 bg-white/95 backdrop-blur-md border-b border-gray-100 px-4 py-3">
         <div className="flex items-center justify-between max-w-2xl mx-auto w-full gap-2">

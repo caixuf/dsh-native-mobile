@@ -417,7 +417,7 @@ export const ChatScreen: React.FC<Props> = ({
   ];
 
   return (
-    <div className="flex flex-col h-full bg-white text-[#18181b] select-none">
+    <div className="flex flex-col h-full bg-white/88 text-[#18181b] select-none">
       {/* 1. MiniMax Light Header (对齐 MiniMax 主界面：左侧汉堡菜单，右侧新会话与更多) */}
       <header
         className="sticky top-0 z-30 px-4 py-2 bg-white/95 backdrop-blur-md border-b border-gray-100 transition-all"

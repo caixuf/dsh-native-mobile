@@ -119,11 +119,11 @@ export class ThemeStore {
     }
     const data = localStorage.getItem(WALLPAPER_DATA_KEY);
     const blur = Number(localStorage.getItem(WALLPAPER_BLUR_KEY) || '0');
-    const opacity = Number(localStorage.getItem(WALLPAPER_OPACITY_KEY) || '15');
+    const opacity = Number(localStorage.getItem(WALLPAPER_OPACITY_KEY) || '25');
     return { data, blur, opacity };
   }
 
-  public static setCustomWallpaper(data: string | null, blur = 0, opacity = 15) {
+  public static setCustomWallpaper(data: string | null, blur = 0, opacity = 25) {
     if (typeof window === 'undefined' || !window.localStorage) return;
     if (data) {
       localStorage.setItem(WALLPAPER_DATA_KEY, data);
@@ -136,7 +136,7 @@ export class ThemeStore {
   }
 
   public static clearCustomWallpaper() {
-    this.setCustomWallpaper(null, 0, 15);
+    this.setCustomWallpaper(null, 0, 25);
   }
 
   /**

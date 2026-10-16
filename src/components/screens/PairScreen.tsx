@@ -153,7 +153,7 @@ export const PairScreen: React.FC<Props> = ({
   };
 
   return (
-    <div className="flex flex-col h-full bg-white text-[#18181b] select-none" onPaste={handleQrPaste}>
+    <div className="flex flex-col h-full bg-white/88 text-[#18181b] select-none" onPaste={handleQrPaste}>
       {/* Top Header */}
       <header className="sticky top-0 z-30 bg-white/95 backdrop-blur-md border-b border-gray-100 px-4 py-3">
         <div className="flex items-center max-w-lg mx-auto w-full">
