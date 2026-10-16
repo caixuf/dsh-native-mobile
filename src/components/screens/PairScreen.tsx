@@ -11,7 +11,7 @@ import {
 } from 'lucide-react';
 import { QrScannerModal } from '../pairing/QrScannerModal';
 import { triggerHaptic } from '../../utils/haptics';
-import { MiniMaxMascot } from '../common/MiniMaxMascot';
+import { DeepSeekMascot } from '../common/DeepSeekMascot';
 
 interface Props {
   initialBaseUrl?: string;
@@ -167,7 +167,7 @@ export const PairScreen: React.FC<Props> = ({
             </button>
           )}
           <div className="flex items-center gap-2.5 min-w-0 flex-1">
-            <MiniMaxMascot size={32} />
+            <DeepSeekMascot size={32} />
             <div className="min-w-0">
               <h1 className="text-[16px] font-bold tracking-tight text-[#18181b] truncate whitespace-nowrap">连接工作电脑</h1>
               <p className="text-[11px] text-[#52525b] truncate">局域网直连或内网穿透加密隧道</p>

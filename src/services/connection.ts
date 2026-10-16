@@ -915,6 +915,14 @@ export class DshConnection {
     return new WebSocket(url) as unknown as WebSocketLike;
   }
 
+  private isDemo(): boolean {
+    return (
+      DEMO_MODE ||
+      this.baseUrl.includes('demo') ||
+      this.token.includes('demo')
+    );
+  }
+
   public start() {
     // 令牌已失效：不得自动重连（要等用户重新配对 → clearAuthFailure()）。
     if (this.authFailed) {
@@ -935,7 +943,7 @@ export class DshConnection {
     this.notifyState({ type: 'connecting', attempt: this.attempt });
 
     // If demo token or local demo host, activate robust simulated mode
-    if (DEMO_MODE) {
+    if (this.isDemo()) {
       setTimeout(() => {
         if (!this.isStopped) {
           this.eventClientId = 'mock-client-' + Math.random().toString(36).slice(2, 8);
@@ -943,12 +951,12 @@ export class DshConnection {
           this.setPhase('online');
           this.notifyState({
             type: 'ready',
-            hostName: this.instanceName || 'MacBook Pro (Demo 实例)',
+            hostName: this.instanceName || 'MacBook Pro (演练主机)',
           });
           // 演习模式也要把离线期间攒下的指令送出去
           void this.flushOutbox();
         }
-      }, 500);
+      }, 300);
       return;
     }
 
@@ -1332,7 +1340,7 @@ export class DshConnection {
 
   public async call(method: string, args: Record<string, unknown> = {}): Promise<unknown> {
     // If running in demo mode or offline simulated fallback
-    if (DEMO_MODE) {
+    if (this.isDemo()) {
       return this.handleMockCall(method, args);
     }
 
@@ -1371,7 +1379,7 @@ export class DshConnection {
    * 不会因为一次失败的应答而永久吞掉用户的审批。
    */
   public async respond(eventId: string, outcome: Record<string, unknown>): Promise<boolean> {
-    if (DEMO_MODE) {
+    if (this.isDemo()) {
       this.answered.remember(eventId);
       this.inflightEventIds.delete(eventId);
       return true;

@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import { Plus, RefreshCw, Trash2, Edit2, Monitor, ArrowRight, ArrowLeft, Laptop, ScanLine, QrCode } from 'lucide-react';
 import { HostRecord, LinkState } from '../../types';
 import { ConnectionDot } from '../common/ConnectionDot';
-import { MiniMaxMascot } from '../common/MiniMaxMascot';
+import { DeepSeekMascot } from '../common/DeepSeekMascot';
 
 interface Props {
   hosts: HostRecord[];
@@ -13,6 +13,7 @@ interface Props {
   onRename: (id: string, name: string) => void;
   onReconnect: () => void;
   onAdd: () => void;
+  onAddDemo?: () => void;
   onBack?: () => void;
 }
 
@@ -25,6 +26,7 @@ export const HostsScreen: React.FC<Props> = ({
   onRename,
   onReconnect,
   onAdd,
+  onAddDemo,
   onBack,
 }) => {
   const [forgetTarget, setForgetTarget] = useState<string | null>(null);
@@ -56,7 +58,7 @@ export const HostsScreen: React.FC<Props> = ({
                 <ArrowLeft size={18} />
               </button>
             )}
-            <MiniMaxMascot size={32} />
+            <DeepSeekMascot size={32} />
             <div className="min-w-0">
               <h1 className="text-[16px] font-bold tracking-tight text-[#18181b] whitespace-nowrap truncate">连接电脑</h1>
               <p className="text-[11px] text-[#52525b] whitespace-nowrap truncate">已配对的远程工作站与守护进程</p>
@@ -124,13 +126,24 @@ export const HostsScreen: React.FC<Props> = ({
             <p className="text-[13px] text-[#52525b] mt-1.5 max-w-sm leading-relaxed">
               在电脑端打开 DSH 移动网关管理面板，刷新配对码，或使用账号密码完成快速绑定。
             </p>
-            <button
-              onClick={onAdd}
-              type="button"
-              className="mt-5 px-6 py-2.5 bg-black text-white hover:bg-neutral-800 rounded-full text-[13px] font-medium shadow-sm transition-transform cursor-pointer min-h-[44px]"
-            >
-              立即配对工作电脑
-            </button>
+            <div className="flex items-center gap-2.5 mt-5">
+              <button
+                onClick={onAdd}
+                type="button"
+                className="px-5 py-2.5 bg-black text-white hover:bg-neutral-800 rounded-full text-[13px] font-medium shadow-sm transition-transform cursor-pointer min-h-[44px]"
+              >
+                立即配对工作电脑
+              </button>
+              {onAddDemo && (
+                <button
+                  onClick={onAddDemo}
+                  type="button"
+                  className="px-4 py-2.5 bg-white border border-gray-300 text-gray-800 hover:bg-gray-50 rounded-full text-[13px] font-medium shadow-2xs transition-transform cursor-pointer min-h-[44px]"
+                >
+                  体验演练环境
+                </button>
+              )}
+            </div>
           </div>
         ) : (
           <div className="space-y-3">
@@ -204,6 +217,25 @@ export const HostsScreen: React.FC<Props> = ({
                 </div>
               );
             })}
+
+            {onAddDemo && !hosts.some((h) => h.id === 'demo-local-host') && (
+              <button
+                type="button"
+                onClick={onAddDemo}
+                className="w-full p-3.5 rounded-2xl bg-gradient-to-r from-blue-50/60 to-purple-50/60 border border-blue-200/60 text-left flex items-center justify-between cursor-pointer hover:border-blue-300 transition-colors"
+              >
+                <div className="flex items-center gap-3">
+                  <div className="w-9 h-9 rounded-xl bg-white flex items-center justify-center text-blue-600 shadow-2xs">
+                    <Laptop size={18} />
+                  </div>
+                  <div>
+                    <h4 className="text-[13.5px] font-bold text-gray-900">演练工作站环境</h4>
+                    <p className="text-[11.5px] text-[#52525b]">体验多工作区分组、子代理与全套遥控功能</p>
+                  </div>
+                </div>
+                <ArrowRight size={16} className="text-gray-400" />
+              </button>
+            )}
           </div>
         )}
       </div>

@@ -3,7 +3,7 @@ import { Menu, Search, X, RefreshCw, Plus, Monitor, Cpu, Sparkles, ChevronsDownU
 import { SessionRow, LinkState } from '../../types';
 import { StatusPill } from '../common/StatusPill';
 import { DeepSeekLogo } from '../common/DeepSeekLogo';
-import { MiniMaxMascot } from '../common/MiniMaxMascot';
+import { DeepSeekMascot } from '../common/DeepSeekMascot';
 import { ConnectionDot } from '../common/ConnectionDot';
 import { triggerHaptic } from '../../utils/haptics';
 import { SessionGroupSection } from '../sessions/SessionGroupSection';
@@ -477,7 +477,7 @@ export const SessionsScreen: React.FC<Props> = ({
         {/* Empty State matching MiniMax Screenshot 1 */}
         {showEmptyState && (
           <div className="flex flex-col items-center justify-center p-8 mt-12 text-center">
-            <MiniMaxMascot size={110} />
+            <DeepSeekMascot size={110} />
             <h2 className="text-[22px] font-bold text-gray-900 mt-4 tracking-tight">
               有什么可以帮忙的
             </h2>
@@ -562,7 +562,7 @@ export const SessionsScreen: React.FC<Props> = ({
           <div className="w-full max-w-sm rounded-3xl bg-white p-6 shadow-2xl border border-gray-200 text-gray-900 animate-in zoom-in-95 duration-200">
             <div className="flex items-center gap-2.5 mb-2">
               <div className="w-9 h-9 rounded-full bg-blue-50 border border-blue-100 flex items-center justify-center p-1 shadow-2xs">
-                <MiniMaxMascot size={26} />
+                <DeepSeekMascot size={26} />
               </div>
               <h3 className="text-[16px] font-bold text-gray-900">新建遥控会话</h3>
             </div>
@@ -658,7 +658,7 @@ export const SessionsScreen: React.FC<Props> = ({
             <div className="flex items-center justify-between pb-3 border-b border-gray-100">
               <div className="flex items-center gap-2">
                 <div className="w-8 h-8 rounded-full bg-blue-50 border border-blue-100 flex items-center justify-center p-1">
-                  <MiniMaxMascot size={22} />
+                  <DeepSeekMascot size={22} />
                 </div>
                 <h3 className="text-[15px] font-bold text-gray-900">选择工作区</h3>
               </div>

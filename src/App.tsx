@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import type { HostRecord, LinkState, SessionRow, ChatLine, PendingPrompt, ModelCatalog, PromptQuestion } from './types';
 import { HostStore } from './services/store';
+import { ThemeStore } from './services/theme';
 import { DshConnection } from './services/connection';
 import type { HostRequestItem } from './services/connection';
 import { PairingClient } from './services/pairing';
@@ -203,6 +204,7 @@ export const App: React.FC = () => {
 
   // Load hosts on initial mount
   useEffect(() => {
+    ThemeStore.applyTheme();
     const loaded = HostStore.all();
     setHosts(loaded);
     const active = HostStore.getActiveId();
@@ -346,13 +348,27 @@ export const App: React.FC = () => {
 
     const options = qFirst?.options?.map((o) => o.label || '').filter(Boolean) || [];
 
-    // 审批载荷里带 sessionId（真主机字段：sessionId / approvalId / toolName / callId / reason），
-    // 有了它，用户不在聊天页时也能直接跳到**出事的那个会话**去处理。
+    // 审批/提问载荷里找 sessionId（真主机字段可能在顶层、request、address、params 等多处），
+    // 确保用户不在聊天页时点击"去处理"必定能跳到对应的会话。
+    const p = (req.payload || {}) as Record<string, unknown>;
+    const reqObj = ((p.request as Record<string, unknown> | undefined) || p) as Record<string, unknown>;
+    const addrObj = ((p.address as Record<string, unknown> | undefined) ||
+      (reqObj.address as Record<string, unknown> | undefined) ||
+      {}) as Record<string, unknown>;
+    const pParams = (p.params as Record<string, unknown> | undefined) || {};
+
     const sessionId =
-      (typeof req.payload.sessionId === 'string' && req.payload.sessionId) ||
-      (typeof (req.payload.address as { sessionId?: string } | undefined)?.sessionId === 'string'
-        ? (req.payload.address as { sessionId: string }).sessionId
-        : null);
+      (typeof p.sessionId === 'string' && p.sessionId.trim()) ||
+      (typeof reqObj.sessionId === 'string' && reqObj.sessionId.trim()) ||
+      (typeof addrObj.sessionId === 'string' && addrObj.sessionId.trim()) ||
+      (typeof p.session_id === 'string' && p.session_id.trim()) ||
+      (typeof reqObj.session_id === 'string' && reqObj.session_id.trim()) ||
+      (typeof p.targetSessionId === 'string' && p.targetSessionId.trim()) ||
+      (typeof pParams.sessionId === 'string' && (pParams.sessionId as string).trim()) ||
+      currentSessionRef.current?.sessionId ||
+      sessions.find((s) => s.running)?.sessionId ||
+      sessions[0]?.sessionId ||
+      null;
 
     setPendingPrompt({
       rpcId: req.rpcId,
@@ -518,6 +534,16 @@ export const App: React.FC = () => {
     setActiveHostId(hostId);
     HostStore.setActiveId(hostId);
     startHostConnection(hostId);
+    setRoute('sessions');
+  };
+
+  const handleAddDemo = () => {
+    const demo = HostStore.addDemoHost();
+    const updated = HostStore.all();
+    setHosts(updated);
+    setActiveHostId(demo.id);
+    HostStore.setActiveId(demo.id);
+    startHostConnection(demo.id);
     setRoute('sessions');
   };
 
@@ -1332,10 +1358,22 @@ export const App: React.FC = () => {
     deepLinkRef.current = (link) => {
       const sessionId = link?.sessionId;
       if (!sessionId) return false;
-      const target = [...sessions, ...subagentSessions].find((s) => s.sessionId === sessionId);
-      if (!target) return false;
+      let target = [...sessions, ...subagentSessions].find((s) => s.sessionId === sessionId);
+      if (!target) {
+        target = {
+          sessionId,
+          title: '待处理审批会话',
+          workspace: '',
+          preview: '',
+          isSubagent: false,
+          running: true,
+          updatedAt: Date.now(),
+        };
+      }
       setPendingPrompt(null);
-      handleOpenSession(target);
+      if (target) {
+        handleOpenSession(target);
+      }
       return true;
     };
   }, [sessions, subagentSessions]);
@@ -1405,15 +1443,36 @@ export const App: React.FC = () => {
               <button
                 type="button"
                 onClick={() => {
-                  const target = promptSessionId
-                    ? [...sessions, ...subagentSessions].find((s) => s.sessionId === promptSessionId)
+                  const targetId =
+                    promptSessionId ||
+                    sessions.find((s) => s.running)?.sessionId ||
+                    currentSession?.sessionId ||
+                    sessions[0]?.sessionId;
+
+                  let target = targetId
+                    ? [...sessions, ...subagentSessions].find((s) => s.sessionId === targetId)
                     : currentSession;
+
+                  if (!target && targetId) {
+                    target = {
+                      sessionId: targetId,
+                      title: pendingPrompt?.title || '待处理审批会话',
+                      workspace: '',
+                      preview: '',
+                      isSubagent: false,
+                      running: true,
+                      updatedAt: Date.now(),
+                    };
+                  }
+
+                  if (!target && sessions.length > 0) {
+                    target = sessions[0];
+                  }
+
                   if (target) {
                     handleOpenSession(target);
                   } else {
-                    // 找不到对应会话（比如它还没出现在列表里）：至少把列表打开，
-                    // 不要给一个点了没反应的横幅。
-                    setDrawerOpen(true);
+                    handleCreateSession();
                   }
                 }}
                 className="w-full flex items-center gap-2 px-3.5 py-2.5 text-left bg-violet-50 border-b border-violet-200 text-violet-950 active:bg-violet-100 transition-colors"
@@ -1466,6 +1525,7 @@ export const App: React.FC = () => {
               onRename={handleRenameHost}
               onReconnect={() => activeHostId && startHostConnection(activeHostId)}
               onAdd={() => setRoute('pair')}
+              onAddDemo={handleAddDemo}
               onBack={() => setRoute('sessions')}
             />
           )}

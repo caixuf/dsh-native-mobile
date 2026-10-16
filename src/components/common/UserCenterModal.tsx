@@ -1,8 +1,10 @@
-import React from 'react';
-import { X, ChevronRight, Monitor, Settings, ShieldCheck, HardDrive, Info, LogOut, Sparkles } from 'lucide-react';
-import { MiniMaxMascot } from './MiniMaxMascot';
+import React, { useState } from 'react';
+import { X, ChevronRight, Monitor, Settings, ShieldCheck, HardDrive, Info, LogOut, Sparkles, Palette } from 'lucide-react';
+import { DeepSeekMascot } from './DeepSeekMascot';
 import { ConnectionDot } from './ConnectionDot';
 import { triggerHaptic } from '../../utils/haptics';
+import { ThemeStore, THEME_PRESETS } from '../../services/theme';
+import { SkinCenterModal } from './SkinCenterModal';
 
 interface Props {
   isOpen: boolean;
@@ -23,7 +25,12 @@ export const UserCenterModal: React.FC<Props> = ({
   onManageHosts,
   onDisconnect,
 }) => {
+  const [skinModalOpen, setSkinModalOpen] = useState(false);
+  const [themeId, setThemeId] = useState(() => ThemeStore.getThemeId());
+
   if (!isOpen) return null;
+
+  const currentTheme = THEME_PRESETS.find((t) => t.id === themeId) || THEME_PRESETS[0];
 
   return (
     <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center">
@@ -54,7 +61,7 @@ export const UserCenterModal: React.FC<Props> = ({
           {/* Avatar & User Header */}
           <div className="flex flex-col items-center text-center">
             <div className="w-20 h-20 rounded-full bg-blue-50 border-2 border-blue-100 flex items-center justify-center shadow-xs mb-3 relative">
-              <MiniMaxMascot size={64} className="scale-110" />
+              <DeepSeekMascot size={64} className="scale-110" />
               <span className="absolute bottom-0 right-0 w-5 h-5 rounded-full bg-green-500 border-2 border-white shadow-xs" />
             </div>
             <h2 className="text-[20px] font-bold text-gray-900">{username}</h2>
@@ -94,6 +101,26 @@ export const UserCenterModal: React.FC<Props> = ({
 
           {/* Settings Section 1 */}
           <div className="rounded-2xl bg-[#f4f4f6] overflow-hidden divide-y divide-gray-200/60">
+            {/* 个性装扮 · 皮肤中心 (现代 QQ / DeepSeek 配色) */}
+            <div
+              onClick={() => {
+                triggerHaptic('light');
+                setSkinModalOpen(true);
+              }}
+              className="flex items-center justify-between px-4 py-3.5 hover:bg-gray-200/50 cursor-pointer transition-colors"
+            >
+              <div className="flex items-center gap-3">
+                <Palette size={18} className="text-[#0c7ff2]" />
+                <span className="text-[14px] font-medium text-gray-800">个性装扮 · 皮肤中心</span>
+              </div>
+              <div className="flex items-center gap-1.5">
+                <span className="text-[12px] font-medium px-2 py-0.5 rounded-md bg-blue-100/70 text-[#0c7ff2]">
+                  {currentTheme.name}
+                </span>
+                <ChevronRight size={16} className="text-[#52525b]" />
+              </div>
+            </div>
+
             <div
               onClick={() => {
                 triggerHaptic('light');
@@ -144,7 +171,7 @@ export const UserCenterModal: React.FC<Props> = ({
                 <Info size={18} className="text-gray-600" />
                 <span className="text-[14px] font-medium text-gray-800">关于 DSH Remote 移动遥控伴侣</span>
               </div>
-              <span className="text-[12px] text-[#52525b] font-mono">v1.1.0</span>
+              <span className="text-[12px] text-[#52525b] font-mono">v1.1.1</span>
             </div>
           </div>
 
@@ -164,6 +191,17 @@ export const UserCenterModal: React.FC<Props> = ({
             </button>
           )}
         </div>
+
+        {/* 皮肤选择弹窗 */}
+        <SkinCenterModal
+          isOpen={skinModalOpen}
+          onClose={() => setSkinModalOpen(false)}
+          currentThemeId={themeId}
+          onSelectTheme={(id) => {
+            ThemeStore.setTheme(id);
+            setThemeId(id);
+          }}
+        />
       </div>
     </div>
   );

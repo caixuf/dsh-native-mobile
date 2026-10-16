@@ -16,19 +16,21 @@
     --sab: env(safe-area-inset-bottom, 0px);
     --sal: env(safe-area-inset-left, 0px);
 
-    /* MiniMax 纯净现代色彩系统 */
+    /* 现代主流 (QQ 极光蓝 / DeepSeek 灵动色彩系统) */
     --bg-canvas: #ffffff;
-    --bg-surface: #f4f4f6;
+    --bg-surface: #f5f7fa;
     --bg-surface-elevated: #ffffff;
-    --bg-surface-card: #f8f8fa;
+    --bg-surface-card: #f8faff;
     --color-primary: #18181b;
-    --color-primary-blue: #2563eb;
-    --color-border-subtle: #e4e4e7;
+    --color-primary-accent: #0c7ff2;
+    --gradient-primary: linear-gradient(135deg, #12b7f5 0%, #0c7ff2 100%);
+    --color-primary-blue: #0c7ff2;
+    --color-border-subtle: #e5e9f0;
     --color-border-light: #e4e4e7;
     --color-text-main: #18181b;
     --color-text-muted: #71717a;
     --color-text-dim: #71717a;
-    --color-tool: #6366f1;
+    --color-tool: #0c7ff2;
     --color-success: #10b981;
     --color-danger: #ef4444;
     --color-warning: #f59e0b;

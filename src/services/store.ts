@@ -21,9 +21,9 @@ const ACTIVE_HOST_KEY = 'dsh_active_host_id';
  * 现在：**只有显式设了 `VITE_DEMO_MODE=true` 才回退到它**；
  * 否则如实返回空列表，让用户走正常的「配对电脑」流程。
  */
-const DEFAULT_DEMO_HOST: HostRecord = {
+export const DEFAULT_DEMO_HOST: HostRecord = {
   id: 'demo-local-host',
-  label: 'MacBook Pro (Demo 实例)',
+  label: 'MacBook Pro (演练主机)',
   baseUrl: 'http://127.0.0.1:4142',
   token: 'dsh_demo_token_3a7b9c1d2e',
   deviceId: 'web-companion-device-01',
@@ -110,6 +110,12 @@ export const HostStore = {
     } else {
       localStorage.removeItem(ACTIVE_HOST_KEY);
     }
+  },
+
+  addDemoHost(): HostRecord {
+    this.upsert(DEFAULT_DEMO_HOST);
+    this.setActiveId(DEFAULT_DEMO_HOST.id);
+    return DEFAULT_DEMO_HOST;
   },
 };
 

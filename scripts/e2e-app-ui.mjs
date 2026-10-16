@@ -890,7 +890,7 @@ async function backToSessions() {
 }
 
 // ── 假主机（审批 / 队列场景用）──────────────────────────────────────────────
-async function startFakeHost({ mode = 'ui', eventId = 'ev-e2e-fixed-1', emitDelayMs = 500 } = {}) {
+async function startFakeHost({ mode = 'ui', eventId = `ev-e2e-${Date.now().toString(36)}`, emitDelayMs = 500 } = {}) {
   const wsPath = path.join(ROOT, 'packages', 'dsh-mobile-gateway', 'node_modules', 'ws', 'index.js');
   if (!fs.existsSync(wsPath)) throw new Error(`找不到 ws 包：${wsPath}`);
   const mod = await import(pathToFileURL(wsPath).href);
@@ -1816,7 +1816,9 @@ async function scenarioBadToken() {
 // ── 场景：待审批横幅 + 应答 + 重启不再弹 ────────────────────────────────────
 async function scenarioApproval() {
   const out = {};
-  const EVENT_ID = 'ev-e2e-fixed-1';
+  // ⚠️ 不能用固定 eventId：app 把已应答的 id 持久化进 dsh_answered_events_v1，
+  // 第二遍跑同一台机器时 answered.has() 命中 → 事件永不投递 → 横幅不出现（实测踩到）。
+  const EVENT_ID = `ev-e2e-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
   const fake = await startFakeHost({ mode: 'approval', eventId: EVENT_ID, emitDelayMs: 500 });
   try {
     await step('启动假主机（审批模式）并把 app 指向它', async () => {

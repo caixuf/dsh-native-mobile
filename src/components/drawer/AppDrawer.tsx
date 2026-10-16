@@ -2,7 +2,7 @@ import React from 'react';
 import { X, Plus, Settings, MessageSquare, Folder, ChevronRight, Monitor, Search, Bell, MoreHorizontal, Laptop, Compass, Sparkles } from 'lucide-react';
 import { SessionRow } from '../../types';
 import { ConnectionDot } from '../common/ConnectionDot';
-import { MiniMaxMascot } from '../common/MiniMaxMascot';
+import { DeepSeekMascot } from '../common/DeepSeekMascot';
 import { triggerHaptic } from '../../utils/haptics';
 
 interface Props {
@@ -46,7 +46,7 @@ export const AppDrawer: React.FC<Props> = ({
         <div className="flex items-center justify-between px-4 pt-[calc(1rem+var(--sat))] pb-3 border-b border-gray-100">
           <div className="flex items-center gap-2.5">
             <div className="w-9 h-9 rounded-full bg-blue-50 border border-blue-100 flex items-center justify-center p-1 shadow-2xs">
-              <MiniMaxMascot size={28} />
+              <DeepSeekMascot size={28} />
             </div>
             <span className="text-[15px] font-bold tracking-tight text-gray-900">DSH Remote</span>
           </div>
@@ -170,7 +170,7 @@ export const AppDrawer: React.FC<Props> = ({
             className="flex items-center gap-2 hover:opacity-80 transition-opacity cursor-pointer text-left"
           >
             <div className="w-8 h-8 rounded-full bg-blue-50 border border-blue-100 flex items-center justify-center p-0.5 shadow-2xs">
-              <MiniMaxMascot size={26} />
+              <DeepSeekMascot size={26} />
             </div>
             <div className="flex flex-col">
               <span className="text-[13px] font-semibold text-gray-900 leading-tight">
