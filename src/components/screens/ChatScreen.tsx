@@ -25,7 +25,30 @@ import {
   Plus,
   MoreHorizontal,
   Lightbulb,
+  Shield,
+  Check,
+  Target,
+  FileText,
+  Minimize2,
+  Download,
+  Brain,
 } from 'lucide-react';
+
+/**
+ * 会话权限档位 —— 与桌面端**完全一致**（从 app.asar 里反查出来的）：
+ * 桌面端切换权限就是发 `live.command('/permission ' + preset)`，
+ * 取值同样是这三个 kebab-case。对真实主机实测三个都返回 accepted:true。
+ */
+const PERMISSION_PRESETS = [
+  { id: 'read-only', label: '仅可查看', hint: '只读，不改文件、不执行命令' },
+  { id: 'workspace-write', label: '工作区内修改', hint: '可在工作区内改文件' },
+  { id: 'full-access', label: '完全权限', hint: '减少确认，可执行敏感操作' },
+] as const;
+
+type PermissionPresetId = (typeof PERMISSION_PRESETS)[number]['id'];
+
+const PERMISSION_STORAGE_KEY = 'dsh_permission_preset_v1';
+
 import { copyToClipboard } from '../chat/clipboard';
 import { ChatLine, PendingPrompt, TaskStep, ModelCatalog } from '../../types';
 import { MarkdownView } from '../common/MarkdownView';
@@ -41,6 +64,15 @@ import { CommandPalette } from '../chat/CommandPalette';
 import { ChangedFilesCard } from '../chat/ChangedFilesCard';
 import { AttachmentBar, ImageAttachment } from '../chat/AttachmentBar';
 import { clearDraft, loadDraft, loadExpandedKeys, saveDraft, saveExpandedKeys } from '../chat/draft-store';
+
+export interface UniversalAttachment {
+  name: string;
+  size: number;
+  mediaType: string;
+  isImage: boolean;
+  data?: string; // base64 for images
+  textContent?: string; // raw text for code/text files
+}
 import { ConnectionDot } from '../common/ConnectionDot';
 import { DeepSeekLogo } from '../common/DeepSeekLogo';
 import { DeepSeekMascot } from '../common/DeepSeekMascot';
@@ -133,7 +165,14 @@ export const ChatScreen: React.FC<Props> = ({
   const [voiceOpen, setVoiceOpen] = useState(false);
   const [modelPickerOpen, setModelPickerOpen] = useState(false);
   const [commandPaletteOpen, setCommandPaletteOpen] = useState(false);
-  const [attachment, setAttachment] = useState<ImageAttachment | null>(null);
+  const [permissionMenuOpen, setPermissionMenuOpen] = useState(false);
+  const [addMenuOpen, setAddMenuOpen] = useState(false);
+  const [permissionPreset, setPermissionPreset] = useState<PermissionPresetId>(() => {
+    const saved = typeof localStorage !== 'undefined' ? localStorage.getItem(PERMISSION_STORAGE_KEY) : null;
+    const hit = PERMISSION_PRESETS.find((p) => p.id === saved);
+    return hit ? hit.id : 'workspace-write';
+  });
+  const [attachment, setAttachment] = useState<UniversalAttachment | null>(null);
   const [planMode, setPlanMode] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [sendError, setSendError] = useState<string | null>(null);
@@ -262,8 +301,26 @@ export const ChatScreen: React.FC<Props> = ({
 
     let accepted: boolean | void = true;
     try {
-      const imagePayload = attachment ? { data: attachment.data, mediaType: attachment.mediaType } : undefined;
-      accepted = imagePayload ? await Promise.resolve(onSend(text, imagePayload)) : await Promise.resolve(onSend(text));
+      let finalText = text;
+      let imagePayload: { data: string; mediaType: string } | undefined = undefined;
+
+      if (attachment) {
+        if (attachment.isImage && attachment.data) {
+          imagePayload = { data: attachment.data, mediaType: attachment.mediaType };
+        } else if (attachment.textContent) {
+          const fileSnippet = `[附加文件: ${attachment.name}]\n\`\`\`\n${attachment.textContent}\n\`\`\`\n\n`;
+          finalText = fileSnippet + (text || '请帮我查看并分析此文件。');
+        } else {
+          const fileRef = `[已引用文件: @${attachment.name} (${(attachment.size / 1024).toFixed(1)} KB)]\n\n`;
+          finalText = fileRef + (text || '请帮我处理该文件。');
+        }
+      }
+
+      accepted = imagePayload
+        ? await Promise.resolve(onSend(finalText, imagePayload))
+        : finalText !== text
+        ? await Promise.resolve(onSend(finalText))
+        : await Promise.resolve(onSend(text));
     } catch (error) {
       accepted = false;
       setSendError(`发送异常：${error instanceof Error ? error.message : String(error)}`);
@@ -298,6 +355,23 @@ export const ChatScreen: React.FC<Props> = ({
     const next = !planMode;
     setPlanMode(next);
     void handleSendText(next ? '/plan' : '/plan off');
+  };
+
+  /**
+   * 切权限 = 给会话发一条斜杠命令，和桌面端同一套机制
+   * （桌面端：live.command(`/permission ${preset}`)，已对真实主机实测可用）。
+   * 所以这里**不需要**新协议、也不需要网关配合。
+   */
+  const applyPermission = async (preset: PermissionPresetId) => {
+    setPermissionPreset(preset);
+    setPermissionMenuOpen(false);
+    if (typeof localStorage !== 'undefined') localStorage.setItem(PERMISSION_STORAGE_KEY, preset);
+    try {
+      await handleSendText('/permission ' + preset);
+      setDraftNotice('权限已切换为「' + (PERMISSION_PRESETS.find((p) => p.id === preset)?.label || preset) + '」');
+    } catch {
+      setDraftNotice('权限切换失败，电脑端没有确认收到');
+    }
   };
 
   const handleSend = () => {
@@ -1001,17 +1075,8 @@ export const ChatScreen: React.FC<Props> = ({
             filterText={inputText}
           />
 
-          {/* Attachment Bar */}
-          <AttachmentBar
-            attachment={attachment}
-            onRemove={() => setAttachment(null)}
-            onAttach={(att) => setAttachment(att)}
-            onInsertPath={(p) => setInputText((prev) => prev + p)}
-            workspace={workspace}
-          />
-
-          {/* MiniMax Host Status Pill (对应用户截图左下角 caixuf 电脑连接标识) */}
-          <div className="flex items-center justify-between mb-2 px-1">
+          {/* MiniMax Host & Model Pills Row (左侧连接电脑，右侧模型切换，置于对话框上方极简排布) */}
+          <div className="flex items-center justify-between mb-2 px-1 relative">
             <button
               type="button"
               onClick={() => {
@@ -1019,11 +1084,11 @@ export const ChatScreen: React.FC<Props> = ({
                 onManageHosts?.();
               }}
               aria-label="切换连接电脑"
-              className="min-h-[44px] flex items-center gap-2 px-3.5 py-1.5 rounded-xl bg-[#f4f4f6] hover:bg-gray-200/70 border border-transparent text-[13px] font-medium text-gray-800 transition-all cursor-pointer group active:scale-95"
+              className="min-h-[44px] flex items-center gap-2 px-3 py-1 rounded-full bg-[#f4f4f6] hover:bg-gray-200/70 border border-transparent text-[12.5px] font-medium text-gray-800 transition-all cursor-pointer group active:scale-95 shrink-0"
               title="点击查看或切换连接电脑"
             >
-              <Laptop size={15} className="text-gray-700 group-hover:text-blue-600 theme-text-accent transition-colors" />
-              <span className="font-medium text-gray-900">
+              <Laptop size={14} className="text-gray-700 group-hover:text-blue-600 theme-text-accent transition-colors" />
+              <span className="font-medium text-gray-900 max-w-[130px] truncate">
                 {hostName ? hostName.split('.')[0] : 'caixuf'}
               </span>
               <span
@@ -1041,33 +1106,274 @@ export const ChatScreen: React.FC<Props> = ({
                 </span>
               )}
             </button>
+
+            {/* 模型切换胶囊：置于对话框上方 */}
+            <button
+              type="button"
+              onClick={() => setModelPickerOpen(true)}
+              aria-label={`切换模型：当前 ${activeModelDisplayName}`}
+              className="min-h-[44px] px-3 py-1 rounded-full bg-[#f4f4f6] hover:bg-gray-200/70 border border-transparent text-[12px] font-medium text-gray-700 flex items-center gap-1.5 cursor-pointer shrink min-w-0 max-w-[175px] transition-all"
+              title="点击切换模型"
+            >
+              <span className="truncate">{activeModelDisplayName}</span>
+              <ChevronDown size={12} className="text-gray-500 shrink-0" />
+            </button>
           </div>
 
-          {/* MiniMax Iconic Rounded-3xl Input Capsule Dock (Screenshot 5) */}
-          <div className="p-3 rounded-3xl bg-[#f4f4f6] border border-gray-200/70 shadow-sm focus-within:border-gray-400 focus-within:bg-white transition-all">
-            {/* Hidden File Input for Image Chooser */}
+          {/* MiniMax Iconic Rounded-3xl Input Capsule Dock */}
+          <div className="relative p-3 rounded-3xl bg-[#f4f4f6] border border-gray-200/70 shadow-sm focus-within:border-gray-400 focus-within:bg-white transition-all">
+            {/* 隐藏的原生文件输入：支持图片、源码、文档等所有格式 */}
             <input
               ref={fileInputRef}
               type="file"
-              accept="image/*"
+              accept="*/*"
               className="hidden"
               onChange={(e) => {
                 const file = e.target.files?.[0];
                 if (!file) return;
-                const reader = new FileReader();
-                reader.onload = () => {
-                  const result = reader.result as string;
-                  const base64Data = result.split(',')[1] || result;
-                  setAttachment({
-                    data: base64Data,
-                    mediaType: file.type || 'image/png',
-                    name: file.name,
-                  });
-                };
-                reader.readAsDataURL(file);
+
+                const isImg = file.type.startsWith('image/') || /\.(png|jpe?g|webp|gif|svg)$/i.test(file.name);
+                if (isImg) {
+                  const reader = new FileReader();
+                  reader.onload = () => {
+                    const result = reader.result as string;
+                    const base64Data = result.split(',')[1] || result;
+                    setAttachment({
+                      name: file.name,
+                      size: file.size,
+                      mediaType: file.type || 'image/png',
+                      isImage: true,
+                      data: base64Data,
+                    });
+                  };
+                  reader.readAsDataURL(file);
+                } else {
+                  // 代码 / 文本文件（<= 512KB 直接读取全文注入提示词）
+                  if (file.size <= 512 * 1024) {
+                    const reader = new FileReader();
+                    reader.onload = () => {
+                      setAttachment({
+                        name: file.name,
+                        size: file.size,
+                        mediaType: file.type || 'text/plain',
+                        isImage: false,
+                        textContent: reader.result as string,
+                      });
+                    };
+                    reader.readAsText(file);
+                  } else {
+                    // 大文件以路径/名称引用
+                    setAttachment({
+                      name: file.name,
+                      size: file.size,
+                      mediaType: file.type || 'application/octet-stream',
+                      isImage: false,
+                    });
+                  }
+                }
                 e.target.value = '';
               }}
             />
+
+            {/* 桌面端对齐的「+ 添加与指令」浮层面板 */}
+            {addMenuOpen && (
+              <>
+                <div
+                  className="fixed inset-0 z-30"
+                  onClick={() => setAddMenuOpen(false)}
+                />
+                <div className="absolute bottom-[calc(100%+10px)] left-0 right-0 sm:left-2 sm:right-auto sm:w-[320px] z-40 bg-[#1e1f23] text-white rounded-2xl shadow-2xl border border-white/10 p-2 animate-in fade-in slide-in-from-bottom-2 duration-150">
+                  <div className="px-2.5 py-1 text-[11px] font-semibold text-gray-400 tracking-wider">
+                    添加
+                  </div>
+                  <div className="space-y-0.5">
+                    {/* 文件 file */}
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setAddMenuOpen(false);
+                        fileInputRef.current?.click();
+                      }}
+                      className="w-full min-h-[44px] flex items-center justify-between px-2.5 py-2 rounded-xl hover:bg-white/10 text-left transition-colors cursor-pointer group"
+                    >
+                      <div className="flex items-center gap-2.5 min-w-0">
+                        <Paperclip size={16} className="text-gray-300 group-hover:text-white shrink-0" />
+                        <span className="text-[13px] font-medium text-white">文件 <span className="text-gray-400 font-mono text-[11px]">file</span></span>
+                      </div>
+                      <span className="text-[11px] text-gray-400">选择图片、代码或文档</span>
+                    </button>
+
+                    {/* 目标 goal */}
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setAddMenuOpen(false);
+                        setInputText((prev) => (prev ? prev + ' /goal ' : '/goal '));
+                        inputRef.current = '/goal ';
+                      }}
+                      className="w-full min-h-[44px] flex items-center justify-between px-2.5 py-2 rounded-xl hover:bg-white/10 text-left transition-colors cursor-pointer group"
+                    >
+                      <div className="flex items-center gap-2.5 min-w-0">
+                        <Target size={16} className="text-amber-400 shrink-0" />
+                        <span className="text-[13px] font-medium text-white">目标 <span className="text-gray-400 font-mono text-[11px]">goal</span></span>
+                      </div>
+                      <span className="text-[11px] text-gray-400 truncate ml-2">设置或查看长期任务目标</span>
+                    </button>
+
+                    {/* 计划 plan */}
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setAddMenuOpen(false);
+                        setInputText((prev) => (prev ? prev + ' /plan ' : '/plan '));
+                        inputRef.current = '/plan ';
+                      }}
+                      className="w-full min-h-[44px] flex items-center justify-between px-2.5 py-2 rounded-xl hover:bg-white/10 text-left transition-colors cursor-pointer group"
+                    >
+                      <div className="flex items-center gap-2.5 min-w-0">
+                        <FileText size={16} className="text-blue-400 shrink-0" />
+                        <span className="text-[13px] font-medium text-white">计划 <span className="text-gray-400 font-mono text-[11px]">plan</span></span>
+                      </div>
+                      <span className="text-[11px] text-gray-400 truncate ml-2">进入或退出计划模式</span>
+                    </button>
+
+                    {/* 反馈 feedback */}
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setAddMenuOpen(false);
+                        setInputText((prev) => (prev ? prev + ' /feedback ' : '/feedback '));
+                        inputRef.current = '/feedback ';
+                      }}
+                      className="w-full min-h-[44px] flex items-center justify-between px-2.5 py-2 rounded-xl hover:bg-white/10 text-left transition-colors cursor-pointer group"
+                    >
+                      <div className="flex items-center gap-2.5 min-w-0">
+                        <Send size={15} className="text-indigo-400 shrink-0" />
+                        <span className="text-[13px] font-medium text-white">反馈 <span className="text-gray-400 font-mono text-[11px]">feedback</span></span>
+                      </div>
+                      <span className="text-[11px] text-gray-400 truncate ml-2">发送关于当前会话的反馈</span>
+                    </button>
+                  </div>
+
+                  <div className="px-2.5 pt-2 pb-1 text-[11px] font-semibold text-gray-400 tracking-wider border-t border-white/10 mt-1">
+                    指令
+                  </div>
+                  <div className="space-y-0.5">
+                    {/* 压缩 compact */}
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setAddMenuOpen(false);
+                        void handleSendText('/compact');
+                      }}
+                      className="w-full min-h-[44px] flex items-center justify-between px-2.5 py-2 rounded-xl hover:bg-white/10 text-left transition-colors cursor-pointer group"
+                    >
+                      <div className="flex items-center gap-2.5 min-w-0">
+                        <Minimize2 size={16} className="text-emerald-400 shrink-0" />
+                        <span className="text-[13px] font-medium text-white">压缩 <span className="text-gray-400 font-mono text-[11px]">compact</span></span>
+                      </div>
+                      <span className="text-[11px] text-gray-400 truncate ml-2">压缩以上对话内容</span>
+                    </button>
+
+                    {/* 权限 permission */}
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setAddMenuOpen(false);
+                        setPermissionMenuOpen(true);
+                      }}
+                      className="w-full min-h-[44px] flex items-center justify-between px-2.5 py-2 rounded-xl hover:bg-white/10 text-left transition-colors cursor-pointer group"
+                    >
+                      <div className="flex items-center gap-2.5 min-w-0">
+                        <Shield size={16} className="text-purple-400 shrink-0" />
+                        <span className="text-[13px] font-medium text-white">权限 <span className="text-gray-400 font-mono text-[11px]">permission</span></span>
+                      </div>
+                      <span className="text-[11px] text-gray-400 truncate ml-2">切换权限预设 (沙箱模式与审批策略)</span>
+                    </button>
+
+                    {/* 模型 model */}
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setAddMenuOpen(false);
+                        setModelPickerOpen(true);
+                      }}
+                      className="w-full min-h-[44px] flex items-center justify-between px-2.5 py-2 rounded-xl hover:bg-white/10 text-left transition-colors cursor-pointer group"
+                    >
+                      <div className="flex items-center gap-2.5 min-w-0">
+                        <Cpu size={16} className="text-cyan-400 shrink-0" />
+                        <span className="text-[13px] font-medium text-white">模型 <span className="text-gray-400 font-mono text-[11px]">model</span></span>
+                      </div>
+                      <span className="text-[11px] text-gray-400 truncate ml-2">选择本会话使用的模型</span>
+                    </button>
+
+                    {/* 下载日志 export */}
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setAddMenuOpen(false);
+                        void handleSendText('/export');
+                      }}
+                      className="w-full min-h-[44px] flex items-center justify-between px-2.5 py-2 rounded-xl hover:bg-white/10 text-left transition-colors cursor-pointer group"
+                    >
+                      <div className="flex items-center gap-2.5 min-w-0">
+                        <Download size={16} className="text-rose-400 shrink-0" />
+                        <span className="text-[13px] font-medium text-white">下载日志 <span className="text-gray-400 font-mono text-[11px]">export</span></span>
+                      </div>
+                      <span className="text-[11px] text-gray-400 truncate ml-2">将当前会话内容导出为 ZIP</span>
+                    </button>
+
+                    {/* 外置记忆 mnemon */}
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setAddMenuOpen(false);
+                        setInputText((prev) => (prev ? prev + ' /mnemon ' : '/mnemon '));
+                        inputRef.current = '/mnemon ';
+                      }}
+                      className="w-full min-h-[44px] flex items-center justify-between px-2.5 py-2 rounded-xl hover:bg-white/10 text-left transition-colors cursor-pointer group"
+                    >
+                      <div className="flex items-center gap-2.5 min-w-0">
+                        <Brain size={16} className="text-pink-400 shrink-0" />
+                        <span className="text-[13px] font-medium text-white">mnemon</span>
+                      </div>
+                      <span className="text-[11px] text-gray-400 truncate ml-2">查看、召回或管理外置记忆</span>
+                    </button>
+                  </div>
+                </div>
+              </>
+            )}
+
+            {/* 附件缩略图 / 文件条（若已选文件） */}
+            {attachment && (
+              <div className="flex items-center gap-2.5 mb-2 p-1.5 px-3 rounded-2xl bg-white border border-gray-200/80 shadow-2xs w-fit max-w-full animate-in fade-in duration-150">
+                {attachment.isImage && attachment.data ? (
+                  <div className="w-8 h-8 rounded-lg overflow-hidden border border-gray-200 shrink-0">
+                    <img
+                      src={`data:${attachment.mediaType};base64,${attachment.data}`}
+                      alt={attachment.name}
+                      className="w-full h-full object-cover"
+                    />
+                  </div>
+                ) : (
+                  <div className="w-8 h-8 rounded-lg bg-blue-50 border border-blue-200 flex items-center justify-center shrink-0 text-blue-600">
+                    <FileText size={16} />
+                  </div>
+                )}
+                <div className="min-w-0 flex-1 pr-1">
+                  <span className="block text-[12.5px] font-medium text-gray-800 truncate max-w-[180px]">{attachment.name}</span>
+                  <span className="block text-[10px] text-gray-400 font-mono">{(attachment.size / 1024).toFixed(1)} KB</span>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setAttachment(null)}
+                  aria-label="移除附件"
+                  className="w-11 h-11 rounded-full hover:bg-gray-100 flex items-center justify-center text-gray-400 hover:text-gray-700 cursor-pointer shrink-0 transition-colors"
+                >
+                  <X size={15} />
+                </button>
+              </div>
+            )}
 
             {/* 上层：多行自适应文本域 */}
             <div className="w-full px-1">
@@ -1083,62 +1389,91 @@ export const ChatScreen: React.FC<Props> = ({
                 placeholder={
                   running
                     ? '任务执行中，继续输入会进入待发队列…'
-                    : '问点什么吧...'
+                    : '发消息或创建任务，/ 调用指令，@ 文件或对话'
                 }
-                className="w-full max-h-36 min-h-[40px] py-1 text-[15px] leading-relaxed resize-none focus:outline-hidden bg-transparent text-gray-900 placeholder:text-[#52525b] font-normal"
+                className="w-full max-h-36 min-h-[40px] py-1 text-[15px] leading-relaxed resize-none focus:outline-hidden bg-transparent text-gray-900 placeholder:text-gray-400 font-normal"
               />
             </div>
 
-            {/* 下层：左侧添加/指令按钮，中间模型选择胶囊，右侧麦克风/发送 */}
-            <div className="flex items-center justify-between gap-2 pt-1 border-t border-gray-200/50 mt-1">
-              <div className="flex items-center gap-0.5">
-                {/* 附件与图片 */}
+            {/* 下层：左侧 + 与 🛡️完全权限⌵，右侧模型胶囊 与 麦克风/发送 (对齐官方桌面端) */}
+            <div className="flex items-center justify-between gap-1 pt-1.5 border-t border-gray-200/50 mt-1">
+              <div className="flex items-center gap-1.5 min-w-0">
+                {/* 官方桌面端同一套「+ 添加与指令」入口 */}
                 <button
                   type="button"
-                  onClick={() => fileInputRef.current?.click()}
-                  aria-label="添加图片附件"
-                  className="min-h-[44px] min-w-[44px] rounded-full text-[#52525b] hover:text-black flex items-center justify-center transition-colors cursor-pointer shrink-0"
-                  title="添加图片附件"
+                  onClick={() => setAddMenuOpen((prev) => !prev)}
+                  aria-label="添加与指令"
+                  className={`w-11 h-11 rounded-full flex items-center justify-center transition-all cursor-pointer shrink-0 ${
+                    addMenuOpen
+                      ? 'bg-gray-900 text-white rotate-45'
+                      : 'text-gray-600 hover:text-black hover:bg-gray-100'
+                  }`}
+                  title="添加与指令"
                 >
-                  <Plus size={19} />
+                  <Plus size={19} className="transition-transform duration-200" />
                 </button>
 
-                {/* 快捷指令 */}
-                <button
-                  type="button"
-                  onClick={() => setCommandPaletteOpen((prev) => !prev)}
-                  aria-label="快捷指令"
-                  className={`min-h-[44px] min-w-[44px] rounded-full flex items-center justify-center transition-colors cursor-pointer shrink-0 ${
-                    commandPaletteOpen
-                      ? 'bg-blue-100 text-blue-700'
-                      : 'text-[#52525b] hover:text-black'
-                  }`}
-                  title="快捷指令"
-                >
-                  <Terminal size={17} />
-                </button>
+                {/* 会话权限切换胶囊 (对齐官方桌面端完全权限 ⌵) */}
+                <div className="relative shrink-0">
+                  <button
+                    type="button"
+                    onClick={() => setPermissionMenuOpen((prev) => !prev)}
+                    aria-label="切换会话权限"
+                    aria-expanded={permissionMenuOpen}
+                    className={`min-h-[44px] px-2.5 py-1 rounded-full flex items-center gap-1.5 text-[11.5px] font-medium transition-all cursor-pointer border ${
+                      permissionPreset === 'full-access'
+                        ? 'bg-blue-50 border-blue-200/80 text-blue-700'
+                        : 'bg-white hover:bg-gray-50 border-gray-200/90 text-gray-700'
+                    }`}
+                    title="会话权限：决定电脑端执行操作时要不要问你"
+                  >
+                    <Shield size={13} className={permissionPreset === 'full-access' ? 'text-blue-600' : 'text-gray-500'} />
+                    <span className="whitespace-nowrap">{PERMISSION_PRESETS.find((p) => p.id === permissionPreset)?.label}</span>
+                    <ChevronDown size={11} className="text-gray-400" />
+                  </button>
+
+                  {/* 权限档位下拉菜单 */}
+                  {permissionMenuOpen && (
+                    <>
+                      <div
+                        className="fixed inset-0 z-40"
+                        onClick={() => setPermissionMenuOpen(false)}
+                      />
+                      <div className="absolute bottom-[calc(100%+8px)] left-0 mb-1 w-[240px] rounded-2xl bg-white border border-gray-200 shadow-2xl p-1.5 z-50 animate-in fade-in slide-in-from-bottom-2 duration-150">
+                        {PERMISSION_PRESETS.map((p) => (
+                          <button
+                            key={p.id}
+                            type="button"
+                            onClick={() => {
+                              void applyPermission(p.id);
+                            }}
+                            className={`w-full min-h-[44px] flex items-start gap-2 px-2.5 py-2 rounded-xl text-left transition-colors cursor-pointer ${
+                              permissionPreset === p.id ? 'bg-blue-50/80 text-blue-800' : 'hover:bg-gray-50'
+                            }`}
+                          >
+                            <Shield size={15} className={`shrink-0 mt-0.5 ${permissionPreset === p.id ? 'text-blue-600' : 'text-gray-400'}`} />
+                            <div className="min-w-0 flex-1">
+                              <span className="block text-[12.5px] font-semibold text-gray-900">{p.label}</span>
+                              <span className="block text-[10.5px] text-gray-500 leading-tight mt-0.5">{p.hint}</span>
+                            </div>
+                            {permissionPreset === p.id && <Check size={14} className="shrink-0 mt-0.5 text-blue-600" />}
+                          </button>
+                        ))}
+                      </div>
+                    </>
+                  )}
+                </div>
               </div>
 
-              <div className="flex items-center gap-2">
-                {/* MiniMax Model Selector Pill (Screenshot 5: M3.1-Flash... default ⌵) */}
-                <button
-                  type="button"
-                  onClick={() => setModelPickerOpen(true)}
-                  aria-label={`切换模型：当前 ${activeModelDisplayName}`}
-                  className="min-h-[44px] px-3.5 py-1.5 rounded-full bg-white hover:bg-gray-50 border border-gray-200/80 text-[12px] font-medium text-gray-700 shadow-2xs flex items-center gap-1.5 cursor-pointer shrink-0 max-w-[170px] truncate"
-                  title="点击切换模型"
-                >
-                  <span className="truncate">{activeModelDisplayName} default</span>
-                  <ChevronDown size={12} className="text-[#52525b] shrink-0" />
-                </button>
+              {/* 右侧：麦克风 / 发送按钮 */}
+              <div className="flex items-center gap-1.5 shrink-0">
 
-                {/* 右侧：无输入时麦克风，有输入时黑色发送按钮 */}
                 {!inputText.trim() && !attachment ? (
                   <button
                     type="button"
                     onClick={() => setVoiceOpen(true)}
                     aria-label="语音遥控"
-                    className="min-h-[44px] min-w-[44px] rounded-full text-gray-600 hover:text-black flex items-center justify-center transition-colors cursor-pointer shrink-0"
+                    className="w-11 h-11 rounded-full text-gray-600 hover:text-black flex items-center justify-center transition-colors cursor-pointer shrink-0"
                     title="语音遥控"
                   >
                     <Mic size={18} />
@@ -1148,7 +1483,7 @@ export const ChatScreen: React.FC<Props> = ({
                     type="button"
                     onClick={handleSend}
                     aria-label={running || sending ? '加入待发队列' : '发送'}
-                    className="theme-bg-deep min-h-[44px] min-w-[44px] rounded-full bg-black hover:bg-gray-800 text-white flex items-center justify-center shadow-md active:scale-95 transition-all cursor-pointer shrink-0"
+                    className="w-11 h-11 rounded-full bg-blue-600 hover:bg-blue-700 text-white flex items-center justify-center shadow-md active:scale-95 transition-all cursor-pointer shrink-0"
                     title={running ? '加入待发队列' : '发送'}
                   >
                     <Send size={15} />

@@ -4,6 +4,7 @@ import { SessionRow } from '../../types';
 import { ConnectionDot } from '../common/ConnectionDot';
 import { DeepSeekMascot } from '../common/DeepSeekMascot';
 import { triggerHaptic } from '../../utils/haptics';
+import { formatSessionTime } from '../../lib/session-groups';
 
 interface Props {
   isOpen: boolean;
@@ -118,16 +119,17 @@ export const AppDrawer: React.FC<Props> = ({
           </div>
         </div>
 
-        {/* 3. "最近" Recent Sessions List (Screenshot 4 style) */}
+        {/* 3. "最近" Recent Sessions List (对齐桌面端工作区列表设计) */}
         <div className="flex-1 overflow-y-auto px-3 py-2">
-          <div className="text-[12px] font-medium text-[#52525b] px-3 py-1">
-            最近
+          <div className="text-[12px] font-semibold text-gray-500 px-3 py-1 flex items-center justify-between">
+            <span>工作区与会话</span>
+            <span className="text-[11px] font-normal text-gray-400">{sessions.length} 个</span>
           </div>
           {sessions.length === 0 ? (
-            <div className="text-center py-8 text-[12px] text-[#52525b]">暂无会话记录</div>
+            <div className="text-center py-8 text-[12px] text-gray-400">暂无会话记录</div>
           ) : (
-            <div className="space-y-0.5">
-              {sessions.slice(0, 20).map((s) => {
+            <div className="space-y-1 mt-1">
+              {sessions.slice(0, 30).map((s) => {
                 const isSelected = s.sessionId === currentSessionId;
                 return (
                   <div
@@ -136,18 +138,36 @@ export const AppDrawer: React.FC<Props> = ({
                       onSelectSession(s);
                       onClose();
                     }}
-                    className={`flex items-center justify-between px-3 py-2.5 rounded-xl cursor-pointer transition-all ${
+                    className={`flex items-center justify-between px-2.5 py-2 rounded-xl cursor-pointer transition-all ${
                       isSelected
-                        ? 'bg-gray-100 text-black font-semibold'
-                        : 'text-gray-700 hover:text-black hover:bg-gray-50'
+                        ? 'bg-blue-50/90 text-blue-700 font-semibold border border-blue-200/60 shadow-2xs'
+                        : 'text-gray-700 hover:text-black hover:bg-gray-100/70 border border-transparent'
                     }`}
                   >
-                    <span className="text-[13.5px] truncate flex-1 min-w-0 pr-2">
-                      {s.title || '新对话'}
-                    </span>
-                    {s.running && (
-                      <span className="w-2 h-2 rounded-full bg-blue-500 animate-pulse shrink-0" />
-                    )}
+                    <div className="flex items-center gap-2.5 min-w-0 flex-1 pr-2">
+                      <Folder
+                        size={15}
+                        className={`shrink-0 ${
+                          isSelected
+                            ? 'text-blue-600'
+                            : s.running
+                              ? 'text-blue-500'
+                              : 'text-gray-400'
+                        }`}
+                      />
+                      <span className="text-[13px] truncate">
+                        {s.title || '新对话'}
+                      </span>
+                    </div>
+
+                    <div className="flex items-center gap-1.5 shrink-0">
+                      {s.running && (
+                        <span className="w-1.5 h-1.5 rounded-full bg-blue-500 animate-pulse" />
+                      )}
+                      <span className="text-[11px] font-mono text-gray-400">
+                        {formatSessionTime(s.updatedAt)}
+                      </span>
+                    </div>
                   </div>
                 );
               })}

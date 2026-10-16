@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { Archive, ArchiveRestore, ChevronRight, EllipsisVertical, Folder } from 'lucide-react';
+import { Archive, ArchiveRestore, ChevronRight, EllipsisVertical, Folder, MessageSquare } from 'lucide-react';
 import type { SessionRow } from '../../types';
 import type { SessionActionId } from '../../lib/session-groups';
 import { describeWorkspace, formatSessionTime, sessionActionItems } from '../../lib/session-groups';
@@ -188,8 +188,8 @@ export const SessionCard: React.FC<Props> = ({
 
   return (
     <div
-      className={`group relative overflow-hidden rounded-2xl bg-[#f8f9fa] hover:bg-[#f4f4f6] border border-gray-200/60 shadow-2xs transition-all ${
-        compact ? 'p-3' : 'p-3.5'
+      className={`group relative overflow-hidden rounded-2xl bg-white hover:bg-[#f9fafb] active:bg-[#f3f4f6] border border-gray-200/70 shadow-2xs transition-all ${
+        compact ? 'p-2.5' : 'p-3'
       } ${archived ? 'opacity-60' : ''}`}
       data-session-id={session.sessionId}
       onTouchStart={startLongPress}
@@ -201,64 +201,71 @@ export const SessionCard: React.FC<Props> = ({
         setMenuOpen(true);
       }}
     >
-      <div className="flex items-start gap-2.5">
+      <div className="flex items-center gap-3">
+        {/* 左侧：整洁的工作区/会话图标 */}
+        <div
+          className={`w-9 h-9 rounded-xl flex items-center justify-center shrink-0 border ${
+            session.running
+              ? 'bg-blue-50 border-blue-200 text-blue-600'
+              : session.isSubagent
+                ? 'bg-purple-50 border-purple-200 text-purple-600'
+                : 'bg-gray-50 border-gray-200/80 text-gray-600'
+          }`}
+        >
+          {session.workspace ? <Folder size={17} /> : <MessageSquare size={17} />}
+        </div>
+
+        {/* 中间：标题与工作区/摘要 */}
         <button
           type="button"
           onClick={handleOpen}
           className="min-w-0 flex-1 text-left cursor-pointer"
           aria-label={`打开会话 ${session.title || session.sessionId}`}
         >
-          <div className="flex items-center gap-2 flex-wrap">
+          <div className="flex items-center gap-1.5 min-w-0">
             <h3
-              className={`min-w-0 truncate font-semibold tracking-tight text-[#18181b] group-hover:text-black transition-colors ${
-                compact ? 'text-[13.5px]' : 'text-[15px]'
+              className={`min-w-0 truncate font-semibold tracking-tight text-gray-900 group-hover:text-black transition-colors ${
+                compact ? 'text-[13.5px]' : 'text-[14.5px]'
               }`}
             >
               {session.title || '未命名会话'}
             </h3>
 
             {session.isSubagent && (
-              <span className="shrink-0 text-[10.5px] font-medium px-2 py-0.5 rounded-md bg-purple-50 text-purple-700 border border-purple-200/60">
+              <span className="shrink-0 text-[10px] font-medium px-1.5 py-0.2 rounded-md bg-purple-50 text-purple-700 border border-purple-200/60">
                 子代理
               </span>
             )}
 
             {session.running && (
-              <span className="shrink-0 flex items-center gap-1.5 text-[11px] font-semibold text-blue-600 bg-blue-50 px-2.5 py-0.5 rounded-full border border-blue-200/60">
+              <span className="shrink-0 flex items-center gap-1 text-[10.5px] font-medium text-blue-600 bg-blue-50 px-2 py-0.2 rounded-full border border-blue-200/60">
                 <span className="w-1.5 h-1.5 rounded-full bg-blue-500 animate-ping" />
-                电脑执行中
+                执行中
               </span>
             )}
           </div>
 
-          {session.preview && (
-            <p
-              className={`text-[#52525b] mt-1 leading-relaxed font-normal ${
-                compact ? 'text-[12px] line-clamp-1' : 'text-[13px] line-clamp-2'
-              }`}
-            >
-              {session.preview}
-            </p>
-          )}
-
-          <div className="flex items-center gap-2 mt-2 text-[11.5px] text-[#52525b]">
+          <div className="flex items-center gap-1.5 mt-0.5 text-[12px] text-gray-500 truncate">
             {showWorkspace && session.workspace && (
               <>
-                <span
-                  className="flex items-center gap-1 font-medium text-gray-700 truncate max-w-[180px] bg-white px-2 py-0.5 rounded-md border border-gray-200/60"
-                  title={session.workspace}
-                >
-                  <Folder size={11} className="shrink-0 text-blue-500" />
-                  <span className="truncate">{describeWorkspace(session.workspace).label}</span>
+                <span className="font-medium text-gray-700 truncate max-w-[140px]">
+                  {describeWorkspace(session.workspace).label}
                 </span>
                 <span>·</span>
               </>
             )}
-            <span className="shrink-0 whitespace-nowrap">{formatSessionTime(session.updatedAt)}</span>
+            <span className="truncate">
+              {session.preview || describeWorkspace(session.workspace || '').label || '暂无内容'}
+            </span>
           </div>
         </button>
 
-        <div className="flex shrink-0 flex-col items-end gap-1.5 pt-0.5">
+        {/* 右侧：单行时间 + 单个操作菜单按钮，比例极简均衡 */}
+        <div className="flex flex-col items-end justify-between shrink-0 self-stretch py-0.5">
+          <span className="text-[11px] font-mono text-gray-400 whitespace-nowrap">
+            {formatSessionTime(session.updatedAt)}
+          </span>
+
           <button
             type="button"
             onClick={(event) => {
@@ -270,29 +277,10 @@ export const SessionCard: React.FC<Props> = ({
             aria-expanded={menuOpen}
             title="更多操作（重命名 / 复制 id / fork / 取消运行 / 归档）"
             data-testid="session-card-more"
-            className="w-7 h-7 rounded-lg flex items-center justify-center border bg-white hover:bg-gray-100 border-gray-200/60 text-[#52525b] hover:text-gray-900 transition-colors cursor-pointer studio-tap"
+            className="w-6 h-6 rounded-md flex items-center justify-center hover:bg-gray-100 text-gray-400 hover:text-gray-800 transition-colors cursor-pointer studio-tap"
           >
-            <EllipsisVertical size={15} />
+            <EllipsisVertical size={14} />
           </button>
-
-          {canToggleArchive && (
-            <button
-              type="button"
-              onClick={handleToggleArchive}
-              aria-label={archived ? `恢复会话 ${session.title}` : `归档会话 ${session.title}（仅本机）`}
-              title={archived ? '恢复（仅本机归档）' : '归档（仅本机，不会同步回电脑）'}
-              className={`w-7 h-7 rounded-lg flex items-center justify-center border transition-colors cursor-pointer studio-tap ${
-                archived
-                  ? 'bg-emerald-50 hover:bg-emerald-100 border-emerald-200 text-emerald-700'
-                  : 'bg-black/[0.03] hover:bg-black/[0.05] border-black/[0.08] text-[#52525b] hover:text-[#3f3f46]'
-              }`}
-            >
-              {archived ? <ArchiveRestore size={14} /> : <Archive size={14} />}
-            </button>
-          )}
-          <span className="text-[#475569] group-hover:text-[#60a5fa] group-hover:translate-x-0.5 transition-all">
-            <ChevronRight size={17} />
-          </span>
         </div>
       </div>
 
