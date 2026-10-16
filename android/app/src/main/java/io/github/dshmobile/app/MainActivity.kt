@@ -176,6 +176,13 @@ class MainActivity : Activity() {
                     handler.postDelayed({ deliverPendingDeepLink() }, 3_000L)
                 }
             }
+
+            setDownloadListener { downloadUrl, _, _, _, _ ->
+                try {
+                    val intent = Intent(Intent.ACTION_VIEW, Uri.parse(downloadUrl))
+                    startActivity(intent)
+                } catch (_: Exception) {}
+            }
         }
 
         setContentView(webView)

@@ -3,13 +3,16 @@ import {
   Check,
   ChevronDown,
   Copy,
+  Download,
   ExternalLink,
+  Eye,
   Image as ImageIcon,
   Info,
   Lightbulb,
   Bookmark,
   AlertTriangle,
   ShieldAlert,
+  ZoomIn,
 } from 'lucide-react';
 import {
   Align,
@@ -22,9 +25,11 @@ import {
   parseMarkdown,
   parseMarkdownIncremental,
   safeUrl,
+  safeImageUrl,
 } from '../../lib/markdown';
 import { TOKEN_STYLES, highlight, normalizeLang } from '../../lib/highlight';
-
+import { ImageViewerModal, FileViewerModal } from '../modals/MediaViewerModal';
+import { downloadFile } from '../../utils/downloader';
 import { triggerHaptic } from '../../utils/haptics';
 
 interface Props {
@@ -312,40 +317,82 @@ const TaskView: React.FC<{ checked: boolean; nodes: MdInline[]; padLeft: number 
 // ── 图片 ────────────────────────────────────────────────────────────────────
 
 /**
- * 图片占位卡。
- *
- * 🔴 只渲染卡片、**不加载**远程图（省流量 + 避免聊天流里的跟踪像素）。
- * href 同样走 safeUrl 白名单：`![x](javascript:alert(1))` 不允许变成可点链接。
- * URL 不安全时降级成**不可点的静态卡片**，alt 文字照常显示。
+ * 图片卡：支持原图/缩略图展示、点击全屏画廊大图预览以及下载保存到手机。
+ * 安全性：通过 safeImageUrl 白名单放行安全协议与纯图片 Base64。
  */
 const ImageCard: React.FC<{ alt: string; url: string }> = ({ alt, url }) => {
-  const href = safeUrl(url);
-
-  const body = (
-    <>
-      <ImageIcon size={15} className="shrink-0 text-[#52525b]" />
-      <div className="min-w-0 flex-1">
-        <div className="text-[13px] text-[#1c1c1e] truncate">{alt || '图片'}</div>
-        {/* 🔴 不安全 URL 不回显原文，否则攻击者可借此把恶意协议显示成可信文本 */}
-        <div className="text-[11px] text-[#52525b] font-mono truncate">
-          {href ?? '（不安全的链接已被禁用）'}
-        </div>
-      </div>
-      {href && <ExternalLink size={12} className="shrink-0 text-[#52525b]" />}
-    </>
-  );
-
-  const cls =
-    'my-1.5 flex items-center gap-2 px-3 py-2 rounded-xl bg-[#f7f7fa] border border-[#e8e8ee] no-underline hover:bg-[#f0f2f8] transition-colors';
+  const href = safeImageUrl(url);
+  const [previewOpen, setPreviewOpen] = useState(false);
+  const [loadError, setLoadError] = useState(false);
 
   if (!href) {
-    return <div className={`${cls} cursor-default`}>{body}</div>;
+    return (
+      <div className="my-1.5 flex items-center gap-2 px-3 py-2 rounded-xl bg-[#f7f7fa] border border-[#e8e8ee] cursor-default">
+        <ImageIcon size={15} className="shrink-0 text-[#52525b]" />
+        <div className="min-w-0 flex-1">
+          <div className="text-[13px] text-[#1c1c1e] truncate">{alt || '图片'}</div>
+          <div className="text-[11px] text-[#52525b] font-mono truncate">（不安全的链接已被禁用）</div>
+        </div>
+      </div>
+    );
   }
 
   return (
-    <a href={href} target="_blank" rel="noopener noreferrer" className={cls}>
-      {body}
-    </a>
+    <>
+      <div className="my-2.5 max-w-sm">
+        {!loadError ? (
+          <div
+            onClick={() => {
+              triggerHaptic('light');
+              setPreviewOpen(true);
+            }}
+            className="group relative rounded-2xl overflow-hidden border border-gray-200/90 bg-gray-50/50 shadow-2xs cursor-pointer hover:shadow-md transition-all active:scale-[0.99]"
+            title="点击全屏放大预览与下载"
+          >
+            <img
+              src={href}
+              alt={alt || '图片'}
+              onError={() => setLoadError(true)}
+              className="max-h-64 w-auto max-w-full object-contain mx-auto transition-transform duration-200 group-hover:scale-[1.02]"
+              loading="lazy"
+            />
+            <div className="absolute inset-0 bg-black/0 group-hover:bg-black/25 transition-colors flex items-center justify-center opacity-0 group-hover:opacity-100">
+              <span className="px-3 py-1.5 rounded-full bg-black/75 text-white text-[11.5px] font-medium backdrop-blur-xs flex items-center gap-1.5 shadow-lg">
+                <ZoomIn size={14} />
+                <span>点击全屏预览 / 下载</span>
+              </span>
+            </div>
+            {alt && (
+              <div className="px-3 py-1.5 bg-white/95 border-t border-gray-100 text-[11.5px] text-gray-700 truncate font-medium">
+                {alt}
+              </div>
+            )}
+          </div>
+        ) : (
+          <a
+            href={href}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="my-1.5 flex items-center gap-2 px-3 py-2 rounded-xl bg-[#f7f7fa] border border-[#e8e8ee] no-underline hover:bg-[#f0f2f8] transition-colors"
+          >
+            <ImageIcon size={15} className="shrink-0 text-[#52525b]" />
+            <div className="min-w-0 flex-1">
+              <div className="text-[13px] text-[#1c1c1e] truncate">{alt || '图片链接'}</div>
+              <div className="text-[11px] text-[#52525b] font-mono truncate">{href}</div>
+            </div>
+            <ExternalLink size={12} className="shrink-0 text-[#52525b]" />
+          </a>
+        )}
+      </div>
+
+      {previewOpen && (
+        <ImageViewerModal
+          src={href}
+          alt={alt}
+          onClose={() => setPreviewOpen(false)}
+        />
+      )}
+    </>
   );
 };
 
@@ -474,9 +521,19 @@ function visualLen(nodes: MdInline[]): number {
  * - 一键复制，带「已复制」反馈态
  * - 语法高亮按行分词，未知语言走轻量规则
  */
+const EXT_MAP: Record<string, string> = {
+  python: 'py', py: 'py', javascript: 'js', js: 'js', typescript: 'ts', ts: 'ts',
+  tsx: 'tsx', jsx: 'jsx', json: 'json', html: 'html', css: 'css', bash: 'sh',
+  sh: 'sh', zsh: 'sh', shell: 'sh', sql: 'sql', rust: 'rs', rs: 'rs',
+  go: 'go', java: 'java', kotlin: 'kt', kt: 'kt', markdown: 'md', md: 'md',
+  yaml: 'yaml', yml: 'yaml', toml: 'toml', xml: 'xml', c: 'c', cpp: 'cpp',
+};
+
 const CodeCard: React.FC<{ lang: string | null; code: string }> = ({ lang, code }) => {
   const [copied, setCopied] = useState(false);
+  const [downloading, setDownloading] = useState(false);
   const [expanded, setExpanded] = useState(false);
+  const [viewerOpen, setViewerOpen] = useState(false);
 
   const normalized = normalizeLang(lang);
   const lines = useMemo(() => highlight(code, lang), [code, lang]);
@@ -493,44 +550,80 @@ const CodeCard: React.FC<{ lang: string | null; code: string }> = ({ lang, code 
     }
   };
 
+  const handleDownload = async () => {
+    triggerHaptic('medium');
+    setDownloading(true);
+    const key = (normalized || '').toLowerCase();
+    const ext = EXT_MAP[key] || 'txt';
+    const filename = `code_${Date.now()}.${ext}`;
+    await downloadFile(code, filename, 'text/plain');
+    setDownloading(false);
+    triggerHaptic('success');
+  };
+
   // 长代码折叠：默认显示 18 行，展开后全部显示
   const COLLAPSE_AFTER = 18;
   const isLong = lines.length > COLLAPSE_AFTER;
   const visibleLines = isLong && !expanded ? lines.slice(0, COLLAPSE_AFTER) : lines;
 
+  const resolvedFileName = `snippet.${(normalized && EXT_MAP[normalized.toLowerCase()]) || 'txt'}`;
+
   return (
-    <div className="my-2.5 rounded-xl overflow-hidden border border-[#2c2c34] bg-[#1b1b22] shadow-[0_2px_8px_rgba(0,0,0,0.18)]">
-      <div className="flex items-center justify-between px-3 py-1.5 bg-[#23232b] border-b border-[#2c2c34]">
-        <span className="text-[10.5px] font-bold uppercase tracking-[0.8px] text-[#b4b8c4]">
-          {normalized || 'code'}
-        </span>
-        <div className="flex items-center gap-1">
-          {isLong && (
+    <>
+      <div className="my-2.5 rounded-xl overflow-hidden border border-[#2c2c34] bg-[#1b1b22] shadow-[0_2px_8px_rgba(0,0,0,0.18)]">
+        <div className="flex items-center justify-between px-3 py-1.5 bg-[#23232b] border-b border-[#2c2c34]">
+          <span className="text-[10.5px] font-bold uppercase tracking-[0.8px] text-[#b4b8c4]">
+            {normalized || 'code'}
+          </span>
+          <div className="flex items-center gap-1.5">
+            {isLong && (
+              <button
+                type="button"
+                onClick={() => {
+                  triggerHaptic('selection');
+                  setExpanded((v) => !v);
+                }}
+                className="flex items-center gap-0.5 text-[11px] text-[#b4b8c4] hover:text-white transition-colors cursor-pointer px-1.5 py-0.5 rounded studio-tap"
+              >
+                <ChevronDown
+                  size={12}
+                  className={`transition-transform ${expanded ? 'rotate-180' : ''}`}
+                />
+                <span>{expanded ? '收起' : `展开全部 ${lines.length} 行`}</span>
+              </button>
+            )}
             <button
               type="button"
               onClick={() => {
-                triggerHaptic('selection');
-                setExpanded((v) => !v);
+                triggerHaptic('light');
+                setViewerOpen(true);
               }}
-              className="flex items-center gap-0.5 text-[11px] text-[#b4b8c4] hover:text-white transition-colors cursor-pointer px-1.5 py-0.5 rounded studio-tap"
+              title="全屏预览与查阅代码"
+              className="flex items-center gap-1 text-[11px] text-[#b4b8c4] hover:text-white transition-colors cursor-pointer px-1.5 py-0.5 rounded studio-tap"
             >
-              <ChevronDown
-                size={12}
-                className={`transition-transform ${expanded ? 'rotate-180' : ''}`}
-              />
-              <span>{expanded ? '收起' : `展开全部 ${lines.length} 行`}</span>
+              <Eye size={12} />
+              <span>预览</span>
             </button>
-          )}
-          <button
-            type="button"
-            onClick={handleCopy}
-            className="flex items-center gap-1 text-[11px] text-[#b4b8c4] hover:text-white transition-colors cursor-pointer px-1.5 py-0.5 rounded studio-tap"
-          >
-            {copied ? <Check size={12} className="text-[#4ade80]" /> : <Copy size={12} />}
-            <span>{copied ? '已复制' : '复制'}</span>
-          </button>
+            <button
+              type="button"
+              onClick={handleCopy}
+              className="flex items-center gap-1 text-[11px] text-[#b4b8c4] hover:text-white transition-colors cursor-pointer px-1.5 py-0.5 rounded studio-tap"
+            >
+              {copied ? <Check size={12} className="text-[#4ade80]" /> : <Copy size={12} />}
+              <span>{copied ? '已复制' : '复制'}</span>
+            </button>
+            <button
+              type="button"
+              onClick={handleDownload}
+              disabled={downloading}
+              title="下载为本地文件"
+              className="flex items-center gap-1 text-[11px] text-[#b4b8c4] hover:text-white transition-colors cursor-pointer px-1.5 py-0.5 rounded studio-tap disabled:opacity-50"
+            >
+              <Download size={12} />
+              <span>下载</span>
+            </button>
+          </div>
         </div>
-      </div>
 
       <div className="overflow-x-auto overscroll-x-contain">
         <pre className="m-0 py-2.5 text-[12.5px] leading-[19px] font-mono">
@@ -574,6 +667,14 @@ const CodeCard: React.FC<{ lang: string | null; code: string }> = ({ lang, code 
           </code>
         </pre>
       </div>
-    </div>
+      </div>
+      {viewerOpen && (
+        <FileViewerModal
+          fileName={resolvedFileName}
+          content={code}
+          onClose={() => setViewerOpen(false)}
+        />
+      )}
+    </>
   );
 };

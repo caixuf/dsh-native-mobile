@@ -5,7 +5,9 @@
 ## 下载安装
 
 | 版本 | APK | 说明 |
-| **v1.4.0**（最新） | [dsh-mobile-v1.4.0.apk](https://github.com/caixuf/dsh-native-mobile/releases/download/v1.4.0/dsh-mobile-v1.4.0.apk) | 对齐官方桌面端：输入框上方极简模型/主机双胶囊、全格式通用附件与桌面级「+」指令抽屉、黄金比例会话卡片重构 |
+|---|---|---|
+| **v1.4.1**（最新） | [dsh-mobile-v1.4.1.apk](https://github.com/caixuf/dsh-native-mobile/releases/download/v1.4.1/dsh-mobile-v1.4.1.apk) | 会话多媒体升级：图片原图/缩略图展示、点击全屏大图画廊缩放与保存下载；代码块与改动文件支持全文预览、按语言另存为及系统分享 |
+| v1.4.0 | [dsh-mobile-v1.4.0.apk](https://github.com/caixuf/dsh-native-mobile/releases/download/v1.4.0/dsh-mobile-v1.4.0.apk) | 对齐官方桌面端：输入框上方极简模型/主机双胶囊、全格式通用附件与桌面级「+」指令抽屉、黄金比例会话卡片重构 |
 | v1.3.2 | [dsh-mobile-v1.3.2.apk](https://github.com/caixuf/dsh-native-mobile/releases/download/v1.3.2/dsh-mobile-v1.3.2.apk) | 修复自定义壁纸不显示（屏幕根节点不透明白底把壁纸盖住） |
 | v1.3.1 | [dsh-mobile-v1.3.1.apk](https://github.com/caixuf/dsh-native-mobile/releases/download/v1.3.1/dsh-mobile-v1.3.1.apk) | 键盘弹起时输入坞悬浮 + 顶栏透明穿帮 |
 | v1.3.0 | [dsh-mobile-v1.3.0.apk](https://github.com/caixuf/dsh-native-mobile/releases/download/v1.3.0/dsh-mobile-v1.3.0.apk) | 浅色主题 5 处低对比度修复（实测 1.27:1 ~ 2.37:1）+ 待办挂住 / 皮肤切换 / 演示主机抢占真实主机 |

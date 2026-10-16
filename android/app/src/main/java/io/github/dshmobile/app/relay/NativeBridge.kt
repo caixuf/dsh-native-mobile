@@ -2,11 +2,17 @@ package io.github.dshmobile.app.relay
 
 import android.Manifest
 import android.app.Activity
+import android.content.ContentValues
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
+import android.os.Build
+import android.os.Environment
+import android.provider.MediaStore
 import android.provider.Settings
+import android.util.Base64
 import android.webkit.JavascriptInterface
+import android.widget.Toast
 
 /**
  * WebView ↔ 原生 的桥。
@@ -182,6 +188,61 @@ class NativeBridge(
             MiniJson.write(
                 mapOf("ok" to false, "error" to (e.message ?: "无法打开应用设置"), "cameraGranted" to cameraGranted)
             )
+        }
+    }
+
+    /**
+     * 保存文件/图片到系统存储 (Android 10+ MediaStore Downloads / Pictures)
+     */
+    @JavascriptInterface
+    fun saveFile(filename: String, base64Data: String, mimeType: String): String {
+        return try {
+            val bytes = Base64.decode(base64Data, Base64.DEFAULT)
+            val isImage = mimeType.startsWith("image/")
+
+            val collection = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                if (isImage) MediaStore.Images.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY)
+                else MediaStore.Downloads.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY)
+            } else {
+                if (isImage) MediaStore.Images.Media.EXTERNAL_CONTENT_URI
+                else MediaStore.Files.getContentUri("external")
+            }
+
+            val values = ContentValues().apply {
+                put(MediaStore.MediaColumns.DISPLAY_NAME, filename)
+                put(MediaStore.MediaColumns.MIME_TYPE, mimeType)
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    if (isImage) {
+                        put(MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_PICTURES + "/DSH")
+                    } else {
+                        put(MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS + "/DSH")
+                    }
+                    put(MediaStore.MediaColumns.IS_PENDING, 1)
+                }
+            }
+
+            val uri = activity.contentResolver.insert(collection, values)
+                ?: return MiniJson.write(mapOf("ok" to false, "error" to "无法创建媒体库文件条目"))
+
+            activity.contentResolver.openOutputStream(uri)?.use { os ->
+                os.write(bytes)
+                os.flush()
+            }
+
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                values.clear()
+                values.put(MediaStore.MediaColumns.IS_PENDING, 0)
+                activity.contentResolver.update(uri, values, null, null)
+            }
+
+            activity.runOnUiThread {
+                val folderName = if (isImage) "相册/DSH" else "下载/DSH"
+                Toast.makeText(activity, "已保存文件到: $folderName", Toast.LENGTH_SHORT).show()
+            }
+
+            MiniJson.write(mapOf("ok" to true, "uri" to uri.toString()))
+        } catch (e: Exception) {
+            MiniJson.write(mapOf("ok" to false, "error" to (e.message ?: "保存失败")))
         }
     }
 

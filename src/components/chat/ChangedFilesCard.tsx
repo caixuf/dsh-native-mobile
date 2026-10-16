@@ -1,6 +1,8 @@
 import React, { useState, useMemo } from 'react';
-import { FileCode, ChevronDown, ChevronRight, FileText, Check, Copy, X } from 'lucide-react';
+import { FileCode, ChevronDown, ChevronRight, FileText, Check, Copy, X, Download } from 'lucide-react';
 import { ChatLine } from '../../types';
+import { downloadFile } from '../../utils/downloader';
+import { triggerHaptic } from '../../utils/haptics';
 
 export interface ChangedFile {
   path: string;
@@ -180,6 +182,18 @@ export const ChangedFilesCard: React.FC<ChangedFilesCardProps> = ({ lines }) => 
               </div>
 
               <div className="flex items-center gap-2 shrink-0">
+                <button
+                  type="button"
+                  onClick={async () => {
+                    triggerHaptic('medium');
+                    if (!inspectingFile.diff) return;
+                    await downloadFile(inspectingFile.diff, `${inspectingFile.name}.patch`, 'text/plain');
+                  }}
+                  className="w-9 h-9 rounded-full bg-white hover:bg-gray-100 border border-gray-200 flex items-center justify-center text-gray-700 hover:text-black cursor-pointer min-h-[44px]"
+                  title="下载补丁文件"
+                >
+                  <Download size={15} />
+                </button>
                 <button
                   type="button"
                   onClick={() => handleCopyDiff(inspectingFile.diff || '')}

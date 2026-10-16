@@ -64,6 +64,7 @@ import { CommandPalette } from '../chat/CommandPalette';
 import { ChangedFilesCard } from '../chat/ChangedFilesCard';
 import { AttachmentBar, ImageAttachment } from '../chat/AttachmentBar';
 import { clearDraft, loadDraft, loadExpandedKeys, saveDraft, saveExpandedKeys } from '../chat/draft-store';
+import { ImageViewerModal, FileViewerModal } from '../modals/MediaViewerModal';
 
 export interface UniversalAttachment {
   name: string;
@@ -173,6 +174,7 @@ export const ChatScreen: React.FC<Props> = ({
     return hit ? hit.id : 'workspace-write';
   });
   const [attachment, setAttachment] = useState<UniversalAttachment | null>(null);
+  const [previewAttachment, setPreviewAttachment] = useState<UniversalAttachment | null>(null);
   const [planMode, setPlanMode] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [sendError, setSendError] = useState<string | null>(null);
@@ -1347,22 +1349,28 @@ export const ChatScreen: React.FC<Props> = ({
             {/* 附件缩略图 / 文件条（若已选文件） */}
             {attachment && (
               <div className="flex items-center gap-2.5 mb-2 p-1.5 px-3 rounded-2xl bg-white border border-gray-200/80 shadow-2xs w-fit max-w-full animate-in fade-in duration-150">
-                {attachment.isImage && attachment.data ? (
-                  <div className="w-8 h-8 rounded-lg overflow-hidden border border-gray-200 shrink-0">
-                    <img
-                      src={`data:${attachment.mediaType};base64,${attachment.data}`}
-                      alt={attachment.name}
-                      className="w-full h-full object-cover"
-                    />
+                <div
+                  onClick={() => setPreviewAttachment(attachment)}
+                  className="flex items-center gap-2.5 min-w-0 flex-1 cursor-pointer group"
+                  title="点击全屏预览与查阅"
+                >
+                  {attachment.isImage && attachment.data ? (
+                    <div className="w-8 h-8 rounded-lg overflow-hidden border border-gray-200 shrink-0 group-hover:opacity-80 transition-opacity">
+                      <img
+                        src={`data:${attachment.mediaType};base64,${attachment.data}`}
+                        alt={attachment.name}
+                        className="w-full h-full object-cover"
+                      />
+                    </div>
+                  ) : (
+                    <div className="w-8 h-8 rounded-lg bg-blue-50 border border-blue-200 flex items-center justify-center shrink-0 text-blue-600 group-hover:bg-blue-100 transition-colors">
+                      <FileText size={16} />
+                    </div>
+                  )}
+                  <div className="min-w-0 flex-1 pr-1">
+                    <span className="block text-[12.5px] font-medium text-gray-800 truncate max-w-[180px] group-hover:text-blue-600 transition-colors">{attachment.name}</span>
+                    <span className="block text-[10px] text-gray-400 font-mono">{(attachment.size / 1024).toFixed(1)} KB (点击预览)</span>
                   </div>
-                ) : (
-                  <div className="w-8 h-8 rounded-lg bg-blue-50 border border-blue-200 flex items-center justify-center shrink-0 text-blue-600">
-                    <FileText size={16} />
-                  </div>
-                )}
-                <div className="min-w-0 flex-1 pr-1">
-                  <span className="block text-[12.5px] font-medium text-gray-800 truncate max-w-[180px]">{attachment.name}</span>
-                  <span className="block text-[10px] text-gray-400 font-mono">{(attachment.size / 1024).toFixed(1)} KB</span>
                 </div>
                 <button
                   type="button"
@@ -1523,6 +1531,25 @@ export const ChatScreen: React.FC<Props> = ({
           }
         }}
       />
+
+      {/* 附件全屏大图预览与下载 */}
+      {previewAttachment && previewAttachment.isImage && previewAttachment.data && (
+        <ImageViewerModal
+          src={`data:${previewAttachment.mediaType};base64,${previewAttachment.data}`}
+          alt={previewAttachment.name}
+          onClose={() => setPreviewAttachment(null)}
+        />
+      )}
+
+      {/* 附件文档与代码全屏查阅与下载 */}
+      {previewAttachment && !previewAttachment.isImage && (
+        <FileViewerModal
+          fileName={previewAttachment.name}
+          content={previewAttachment.textContent || ''}
+          fileSize={previewAttachment.size}
+          onClose={() => setPreviewAttachment(null)}
+        />
+      )}
     </div>
   );
 };

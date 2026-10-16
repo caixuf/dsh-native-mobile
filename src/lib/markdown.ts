@@ -181,6 +181,18 @@ export function safeUrl(raw: string | null | undefined): string | null {
   return cleaned;
 }
 
+/**
+ * 清洗图片 URL；放行安全协议以及安全的 data:image/ base64 协议
+ */
+export function safeImageUrl(raw: string | null | undefined): string | null {
+  if (!raw) return null;
+  const cleaned = raw.replace(/[\u0000-\u001F\u007F]/g, '').trim();
+  if (/^data:image\/(?:png|jpeg|jpg|gif|webp|svg\+xml);base64,/i.test(cleaned)) {
+    return cleaned;
+  }
+  return safeUrl(cleaned);
+}
+
 export type MdInline = MdText | MdImage;
 
 /** 块级节点。任务项不属于块级 —— 它只能作为 `MdListBlock` 里的一项存在。 */
