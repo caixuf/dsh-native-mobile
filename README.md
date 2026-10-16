@@ -6,7 +6,12 @@
 
 | 版本 | APK | 说明 |
 |---|---|---|
-| **v1.1.0**（最新） | [dsh-mobile-v1.1.0.apk](https://github.com/caixuf/dsh-native-mobile/releases/download/v1.1.0/dsh-mobile-v1.1.0.apk) | 全新浅色界面（MiniMax 风格）+ 个人中心 + 对比度全面达标 |
+| **v1.3.2**（最新） | [dsh-mobile-v1.3.2.apk](https://github.com/caixuf/dsh-native-mobile/releases/download/v1.3.2/dsh-mobile-v1.3.2.apk) | 修复自定义壁纸不显示（屏幕根节点不透明白底把壁纸盖住） |
+| v1.3.1 | [dsh-mobile-v1.3.1.apk](https://github.com/caixuf/dsh-native-mobile/releases/download/v1.3.1/dsh-mobile-v1.3.1.apk) | 键盘弹起时输入坞悬浮 + 顶栏透明穿帮 |
+| v1.3.0 | [dsh-mobile-v1.3.0.apk](https://github.com/caixuf/dsh-native-mobile/releases/download/v1.3.0/dsh-mobile-v1.3.0.apk) | 浅色主题 5 处低对比度修复（实测 1.27:1 ~ 2.37:1）+ 待办挂住 / 皮肤切换 / 演示主机抢占真实主机 |
+| v1.2.0 | [dsh-mobile-v1.2.0.apk](https://github.com/caixuf/dsh-native-mobile/releases/download/v1.2.0/dsh-mobile-v1.2.0.apk) | 主题 / 皮肤中心（四套配色一键切换） |
+| v1.1.1 | [dsh-mobile-v1.1.1.apk](https://github.com/caixuf/dsh-native-mobile/releases/download/v1.1.1/dsh-mobile-v1.1.1.apk) | 会话列表与分组视觉重构 + 工作区切换器 |
+| v1.1.0 | [dsh-mobile-v1.1.0.apk](https://github.com/caixuf/dsh-native-mobile/releases/download/v1.1.0/dsh-mobile-v1.1.0.apk) | 全新浅色界面（MiniMax 风格）+ 个人中心 + 对比度全面达标 |
 | v1.0.7 | [dsh-mobile-v1.0.7.apk](https://github.com/caixuf/dsh-native-mobile/releases/download/v1.0.7/dsh-mobile-v1.0.7.apk) | 顶栏会话统计 + 双层输入坞；构建可复现 |
 
 全部版本见 [Releases](https://github.com/caixuf/dsh-native-mobile/releases)。APK 用 debug 密钥签名（可直接覆盖安装，**不适合上架分发**）；`minSdk 26（Android 8.0）`。
