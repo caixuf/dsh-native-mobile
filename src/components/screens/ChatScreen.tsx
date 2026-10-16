@@ -43,11 +43,13 @@ import { AttachmentBar, ImageAttachment } from '../chat/AttachmentBar';
 import { clearDraft, loadDraft, loadExpandedKeys, saveDraft, saveExpandedKeys } from '../chat/draft-store';
 import { ConnectionDot } from '../common/ConnectionDot';
 import { DeepSeekLogo } from '../common/DeepSeekLogo';
+import { DeepSeekMascot } from '../common/DeepSeekMascot';
 import { triggerHaptic } from '../../utils/haptics';
 import type { QueuedMessage } from '../../lib/message-queue';
 import { elapsedMs, formatDuration, modelLabel, phaseLabel, turnSummary } from '../../lib/session-activity';
 import type { ActivityState } from '../../lib/session-activity';
 import { describeWorkspace } from '../../lib/session-groups';
+import { Laptop } from 'lucide-react';
 
 interface Props {
   sessionId: string;
@@ -89,6 +91,9 @@ interface Props {
   onApprove: (allow: boolean) => void;
   onAnswerOption: (selected: string[] | string, customText?: string) => void;
   onOpenDrawer: () => void;
+  onManageHosts?: () => void;
+  onNewSession?: () => void;
+  isDemoHost?: boolean;
   modelCatalog?: ModelCatalog | null;
   selectedModel?: { provider?: string; model?: string } | null;
   onSelectModel?: (provider: string, model: string) => Promise<boolean | void> | void;
@@ -117,6 +122,9 @@ export const ChatScreen: React.FC<Props> = ({
   onApprove,
   onAnswerOption,
   onOpenDrawer,
+  onManageHosts,
+  onNewSession,
+  isDemoHost,
   modelCatalog,
   selectedModel,
   onSelectModel,
@@ -162,7 +170,7 @@ export const ChatScreen: React.FC<Props> = ({
     const distance = el.scrollHeight - el.scrollTop - el.clientHeight;
     const atBottom = distance < 80;
     followBottomRef.current = atBottom;
-    setShowJumpToLatest((prev) => (prev === !atBottom ? prev : !atBottom));
+    setShowJumpToLatest(lines.length > 0 && !atBottom);
   };
 
   const jumpToLatest = () => {
@@ -410,45 +418,68 @@ export const ChatScreen: React.FC<Props> = ({
 
   return (
     <div className="flex flex-col h-full bg-white text-[#18181b] select-none">
-      {/* 1. MiniMax Light Header (Screenshot 5) */}
-      <header className="sticky top-0 z-30 bg-white/95 backdrop-blur-md border-b border-gray-100 px-4 py-2.5 transition-all">
+      {/* 1. MiniMax Light Header (对齐 MiniMax 主界面：左侧汉堡菜单，右侧新会话与更多) */}
+      <header
+        className={`sticky top-0 z-30 transition-all px-4 py-2 ${
+          lines.length === 0
+            ? 'bg-transparent border-b border-transparent'
+            : 'bg-white/95 backdrop-blur-md border-b border-gray-100'
+        }`}
+      >
         <div className="flex items-center justify-between max-w-2xl mx-auto w-full gap-2">
           <div className="flex items-center gap-2.5 min-w-0 flex-1">
-            <button
-              onClick={onBack}
-              type="button"
-              aria-label="返回会话列表"
-              className="w-11 h-11 rounded-full hover:bg-gray-100 flex items-center justify-center text-gray-700 cursor-pointer shrink-0"
-            >
-              <ArrowLeft size={18} />
-            </button>
-            <div className="min-w-0">
-              <h2 className="text-[15px] font-bold tracking-tight text-gray-900 truncate">
-                {title || '新对话'}
-              </h2>
-              <div className="flex items-center gap-1.5 text-[11px] text-[#52525b] truncate">
-                <span>minimax</span>
-                <span>·</span>
-                <span className="truncate">{hostName || 'caixuf'}</span>
-                {workspace && (
-                  <>
-                    <span>·</span>
-                    <span
-                      className="truncate font-medium text-gray-700 max-w-[130px]"
-                      title={workspace}
-                    >
-                      {describeWorkspace(workspace).label}
-                    </span>
-                  </>
-                )}
+            {lines.length === 0 ? (
+              <button
+                onClick={() => {
+                  triggerHaptic('light');
+                  onOpenDrawer();
+                }}
+                type="button"
+                aria-label="打开会话菜单"
+                className="w-11 h-11 rounded-full hover:bg-gray-100/80 flex items-center justify-center text-gray-800 cursor-pointer shrink-0"
+              >
+                <Menu size={22} strokeWidth={1.8} />
+              </button>
+            ) : (
+              <button
+                onClick={() => {
+                  triggerHaptic('light');
+                  onBack();
+                }}
+                type="button"
+                aria-label="返回会话列表"
+                className="w-11 h-11 rounded-full hover:bg-gray-100 flex items-center justify-center text-gray-800 cursor-pointer shrink-0"
+              >
+                <ArrowLeft size={20} />
+              </button>
+            )}
+            {lines.length > 0 && (
+              <div className="min-w-0">
+                <h2 className="text-[15px] font-bold tracking-tight text-gray-900 truncate">
+                  {title || '新会话'}
+                </h2>
+                <div className="flex items-center gap-1.5 text-[11px] text-[#52525b] truncate">
+                  <span className="truncate">{hostName || 'caixuf'}</span>
+                  {workspace && (
+                    <>
+                      <span>·</span>
+                      <span
+                        className="truncate font-medium text-gray-700 max-w-[130px]"
+                        title={workspace}
+                      >
+                        {describeWorkspace(workspace).label}
+                      </span>
+                    </>
+                  )}
+                </div>
               </div>
-            </div>
+            )}
           </div>
 
-          <div className="flex items-center gap-1.5 shrink-0">
+          <div className="flex items-center gap-1 shrink-0">
             {running && (
               <span
-                className="flex items-center gap-1.5 text-[11px] font-medium text-blue-600 bg-blue-50 px-2.5 py-1 rounded-full shrink-0"
+                className="flex items-center gap-1.5 text-[11px] font-medium text-blue-600 theme-text-accent bg-blue-50 px-2.5 py-1 rounded-full shrink-0"
                 data-testid="activity-badge"
                 data-phase={activityOn ? (activity as ActivityState).phase : 'unknown'}
                 title={activityModel ? `模型：${activityModel}` : undefined}
@@ -466,27 +497,43 @@ export const ChatScreen: React.FC<Props> = ({
                 {summaryText}
               </span>
             )}
-            <button
-              type="button"
-              onClick={togglePlanMode}
-              aria-label={`计划模式：${planMode ? '已开启' : '已关闭'}`}
-              className={`flex items-center gap-1 px-2.5 py-1 min-h-[44px] rounded-full text-[11px] font-mono transition-colors cursor-pointer shrink-0 ${
-                planMode
-                  ? 'bg-purple-100 text-purple-700 border border-purple-300 font-semibold'
-                  : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
-              }`}
-              title={planMode ? '点击退出计划模式' : '点击开启计划模式'}
-            >
-              <CheckSquare size={11} className={planMode ? 'text-purple-600' : 'text-[#52525b]'} />
-              <span>{planMode ? 'Plan 开启' : 'Plan'}</span>
-            </button>
+            {lines.length > 0 && (
+              <button
+                type="button"
+                onClick={togglePlanMode}
+                aria-label={`计划模式：${planMode ? '已开启' : '已关闭'}`}
+                className={`flex items-center gap-1 px-2.5 py-1 min-h-[44px] rounded-full text-[11px] font-mono transition-colors cursor-pointer shrink-0 ${
+                  planMode
+                    ? 'bg-purple-100 text-purple-700 border border-purple-300 font-semibold'
+                    : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
+                }`}
+                title={planMode ? '点击退出计划模式' : '点击开启计划模式'}
+              >
+                <CheckSquare size={11} className={planMode ? 'text-purple-600' : 'text-[#52525b]'} />
+                <span>{planMode ? 'Plan' : 'Plan'}</span>
+              </button>
+            )}
+            {onNewSession && (
+              <button
+                onClick={() => {
+                  triggerHaptic('light');
+                  onNewSession();
+                }}
+                type="button"
+                aria-label="开启新会话"
+                className="theme-text-accent w-11 h-11 rounded-full hover:bg-gray-100 flex items-center justify-center transition-colors cursor-pointer"
+                title="开启新会话"
+              >
+                <Plus size={20} />
+              </button>
+            )}
             <button
               onClick={() => {
                 triggerHaptic('light');
                 onOpenDrawer();
               }}
               type="button"
-              aria-label="打开会话菜单"
+              aria-label="打开侧边菜单"
               className="w-11 h-11 rounded-full hover:bg-gray-100 flex items-center justify-center text-gray-700 transition-colors cursor-pointer"
             >
               <MoreHorizontal size={19} />
@@ -507,8 +554,35 @@ export const ChatScreen: React.FC<Props> = ({
       <div
         ref={timelineRef}
         onScroll={handleTimelineScroll}
-        className="flex-1 overflow-y-auto px-4 py-4 space-y-4 max-w-2xl w-full mx-auto pb-[calc(11rem+var(--sab)+var(--keyboard-inset-bottom,0px))]"
+        className="flex-1 overflow-y-auto px-4 py-4 space-y-4 max-w-2xl w-full mx-auto pb-[calc(16rem+var(--sab)+var(--keyboard-inset-bottom,0px))]"
       >
+        {/* MiniMax Empty State: Iconic Mascot & "有什么可以帮忙的" */}
+        {lines.length === 0 && (
+          <div className="h-full min-h-[50vh] flex flex-col items-center justify-center text-center px-4 select-none animate-in fade-in duration-300">
+            <div className="mb-4 p-2 rounded-full hover:bg-blue-50/50 transition-colors">
+              <DeepSeekMascot size={80} interactive={true} />
+            </div>
+            <h1 className="text-[26px] font-bold tracking-tight text-gray-900 mb-6">
+              有什么可以帮忙的
+            </h1>
+            <div className="flex flex-wrap justify-center gap-2 max-w-sm">
+              {quickPrompts.slice(0, 3).map((p, idx) => (
+                <button
+                  key={idx}
+                  type="button"
+                  onClick={() => {
+                    triggerHaptic('light');
+                    void handleSendText(p);
+                  }}
+                  className="px-3.5 py-2 min-h-[44px] rounded-full bg-gray-50 hover:bg-gray-100 text-gray-700 border border-gray-200 text-xs font-medium shadow-2xs transition-all cursor-pointer"
+                >
+                  {p}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+
         {/* Task Progress Summary if steps exist */}
         {steps.length > 0 && <TaskProgressCard steps={steps} running={running} />}
 
@@ -712,7 +786,7 @@ export const ChatScreen: React.FC<Props> = ({
         })}
 
         {/* Prompt suggestion pills for quick trigger when lines are short */}
-        {lines.length <= 2 && (
+        {lines.length > 0 && lines.length <= 2 && (
           <div className="pt-2">
             <div className="text-[11px] font-semibold text-[#52525b] mb-2 px-1 uppercase tracking-wider flex items-center gap-1.5">
               <Sparkles size={13} className="text-blue-500" />
@@ -787,7 +861,7 @@ export const ChatScreen: React.FC<Props> = ({
                       onApprove(true);
                     }}
                     aria-label="允许一次"
-                    className="min-h-[44px] px-5 py-2 rounded-xl bg-black text-white text-[13px] font-semibold shadow-sm transition-transform cursor-pointer"
+                    className="theme-bg-deep min-h-[44px] px-5 py-2 rounded-xl bg-black text-white text-[13px] font-semibold shadow-sm transition-transform cursor-pointer"
                   >
                     允许一次 (Allow Once)
                   </button>
@@ -817,8 +891,8 @@ export const ChatScreen: React.FC<Props> = ({
       </div>
 
       {/* 3. Floating MiniMax Composer Dock (Screenshot 5) */}
-      <div className="fixed bottom-0 left-0 right-0 z-20 bg-gradient-to-t from-white via-white/95 to-transparent pt-4 pb-[calc(1.25rem+var(--sab)+var(--keyboard-inset-bottom,0px))] px-4 transition-all duration-150">
-        <div className="max-w-2xl mx-auto">
+      <div className="fixed bottom-0 left-0 right-0 z-20 pointer-events-none bg-gradient-to-t from-white via-white/95 to-transparent pt-4 pb-[calc(1.25rem+var(--sab)+var(--keyboard-inset-bottom,0px))] px-4 transition-all duration-150">
+        <div className="max-w-2xl mx-auto pointer-events-auto">
           {/* 上滑看历史时才出现；点了回底部并恢复自动跟随 */}
           {showJumpToLatest && (
             <div className="flex justify-center mb-2">
@@ -834,7 +908,7 @@ export const ChatScreen: React.FC<Props> = ({
             </div>
           )}
           {/* Live event stream status */}
-          {liveConnected === false && (
+          {lines.length > 0 && liveConnected === false && (
             <div
               role="status"
               className="flex items-center gap-1.5 mb-2 px-3 py-1.5 rounded-xl bg-amber-50 border border-amber-200 text-[11.5px] text-amber-800"
@@ -879,7 +953,7 @@ export const ChatScreen: React.FC<Props> = ({
               role="status"
               className="flex items-center gap-2 mb-2 px-3 py-1.5 rounded-xl bg-blue-50 border border-blue-200 text-[11.5px] text-blue-800"
             >
-              <Sparkles size={12} className="shrink-0 text-blue-600" />
+              <Sparkles size={12} className="shrink-0 text-blue-600 theme-text-accent" />
               <span className="flex-1">{draftNotice}</span>
               <button
                 type="button"
@@ -933,6 +1007,39 @@ export const ChatScreen: React.FC<Props> = ({
             onInsertPath={(p) => setInputText((prev) => prev + p)}
             workspace={workspace}
           />
+
+          {/* MiniMax Host Status Pill (对应用户截图左下角 caixuf 电脑连接标识) */}
+          <div className="flex items-center justify-between mb-2 px-1">
+            <button
+              type="button"
+              onClick={() => {
+                triggerHaptic('light');
+                onManageHosts?.();
+              }}
+              aria-label="切换连接电脑"
+              className="min-h-[44px] flex items-center gap-2 px-3.5 py-1.5 rounded-xl bg-[#f4f4f6] hover:bg-gray-200/70 border border-transparent text-[13px] font-medium text-gray-800 transition-all cursor-pointer group active:scale-95"
+              title="点击查看或切换连接电脑"
+            >
+              <Laptop size={15} className="text-gray-700 group-hover:text-blue-600 theme-text-accent transition-colors" />
+              <span className="font-medium text-gray-900">
+                {hostName ? hostName.split('.')[0] : 'caixuf'}
+              </span>
+              <span
+                className={`w-2 h-2 rounded-full ${
+                  isDemoHost
+                    ? 'bg-amber-400'
+                    : liveConnected
+                    ? 'bg-emerald-500'
+                    : 'bg-gray-400'
+                }`}
+              />
+              {isDemoHost && (
+                <span className="text-[10px] text-amber-700 bg-amber-100 px-1.5 py-0.2 rounded-md font-semibold">
+                  演练
+                </span>
+              )}
+            </button>
+          </div>
 
           {/* MiniMax Iconic Rounded-3xl Input Capsule Dock (Screenshot 5) */}
           <div className="p-3 rounded-3xl bg-[#f4f4f6] border border-gray-200/70 shadow-sm focus-within:border-gray-400 focus-within:bg-white transition-all">
@@ -1039,7 +1146,7 @@ export const ChatScreen: React.FC<Props> = ({
                     type="button"
                     onClick={handleSend}
                     aria-label={running || sending ? '加入待发队列' : '发送'}
-                    className="min-h-[44px] min-w-[44px] rounded-full bg-black hover:bg-gray-800 text-white flex items-center justify-center shadow-md active:scale-95 transition-all cursor-pointer shrink-0"
+                    className="theme-bg-deep min-h-[44px] min-w-[44px] rounded-full bg-black hover:bg-gray-800 text-white flex items-center justify-center shadow-md active:scale-95 transition-all cursor-pointer shrink-0"
                     title={running ? '加入待发队列' : '发送'}
                   >
                     <Send size={15} />
@@ -1049,13 +1156,11 @@ export const ChatScreen: React.FC<Props> = ({
             </div>
           </div>
 
-          <p id="composer-hint" className="mt-1 px-2 text-[10px] text-[#52525b] truncate">
-            {running
-              ? '任务执行中：Enter 发送即入队'
-              : sending
-                ? '正在发送：继续输入会排队'
-                : 'Enter 发送 · Shift+Enter 换行 · 草稿自动保存'}
-          </p>
+          <div className="text-center mt-2.5">
+            <span className="text-[11px] text-gray-400 select-none">
+              内容由AI生成，重要信息请务必核查
+            </span>
+          </div>
         </div>
       </div>
 

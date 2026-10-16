@@ -1,20 +1,41 @@
-import React from 'react';
+import React, { useState } from 'react';
+import { triggerHaptic } from '../../utils/haptics';
 
 interface Props {
   size?: number;
   className?: string;
-  variant?: 'blue' | 'light';
+  variant?: 'blue' | 'light' | 'theme';
+  state?: 'idle' | 'thinking' | 'happy' | 'winking';
+  interactive?: boolean;
 }
 
 /**
- * DeepSeek 官方经典蓝鲸吉祥物组件。
- * 呈现灵动优美的科技蓝鲸轮廓、智能气孔微光与双色微渐变，对齐 DeepSeek 品牌视觉。
+ * 灵动吉祥物组件（对齐 MiniMax 官方灵动发光水母/小章鱼造型，支持多表情与轻触微交互）。
  */
-export const DeepSeekMascot: React.FC<Props> = ({ size = 64, className = '', variant = 'blue' }) => {
+export const DeepSeekMascot: React.FC<Props> = ({
+  size = 72,
+  className = '',
+  state = 'idle',
+  interactive = true,
+}) => {
+  const [internalState, setInternalState] = useState<'idle' | 'thinking' | 'happy' | 'winking'>(state);
+
+  const handleClick = () => {
+    if (!interactive) return;
+    triggerHaptic('light');
+    const states: ('idle' | 'thinking' | 'happy' | 'winking')[] = ['idle', 'happy', 'winking', 'thinking'];
+    const next = states[(states.indexOf(internalState) + 1) % states.length];
+    setInternalState(next);
+  };
+
+  const currentState = state !== 'idle' ? state : internalState;
+
   return (
     <div
       style={{ width: size, height: size }}
-      className={`relative inline-flex items-center justify-center select-none ${className}`}
+      onClick={handleClick}
+      className={`relative inline-flex items-center justify-center select-none cursor-pointer transition-transform duration-300 hover:scale-105 active:scale-95 ${className}`}
+      title="轻触吉祥物变换表情"
     >
       <svg
         viewBox="0 0 100 100"
@@ -22,64 +43,95 @@ export const DeepSeekMascot: React.FC<Props> = ({ size = 64, className = '', var
         height={size}
         fill="none"
         xmlns="http://www.w3.org/2000/svg"
-        className="w-full h-full drop-shadow-[0_8px_16px_rgba(77,107,254,0.28)]"
+        className="w-full h-full drop-shadow-[0_8px_20px_rgba(12,127,242,0.28)] transition-all duration-300"
       >
         <defs>
-          <linearGradient id="deepseek-body-grad" x1="15" y1="15" x2="85" y2="85" gradientUnits="userSpaceOnUse">
-            <stop offset="0%" stopColor="#38bdf8" />
-            <stop offset="35%" stopColor="#4d6bfe" />
-            <stop offset="100%" stopColor="#1d4ed8" />
+          <linearGradient id="minimax-mascot-grad" x1="50" y1="10" x2="50" y2="90" gradientUnits="userSpaceOnUse">
+            <stop offset="0%" stopColor="#67e8f9" />
+            <stop offset="35%" stopColor="#38bdf8" />
+            <stop offset="70%" stopColor="#0c7ff2" />
+            <stop offset="100%" stopColor="#0066ff" />
           </linearGradient>
 
-          <linearGradient id="deepseek-belly-grad" x1="25" y1="50" x2="65" y2="80" gradientUnits="userSpaceOnUse">
-            <stop offset="0%" stopColor="#ffffff" stopOpacity="0.85" />
-            <stop offset="100%" stopColor="#e0f2fe" stopOpacity="0.65" />
+          <linearGradient id="minimax-highlight" x1="30" y1="20" x2="60" y2="50" gradientUnits="userSpaceOnUse">
+            <stop offset="0%" stopColor="#ffffff" stopOpacity="0.65" />
+            <stop offset="100%" stopColor="#ffffff" stopOpacity="0" />
           </linearGradient>
         </defs>
 
-        {/* 顶部呼吸孔喷出灵动 AI 智能水滴 / 能量光点 */}
-        <circle cx="36" cy="18" r="4.5" fill="#38bdf8" />
-        <circle cx="46" cy="13" r="3" fill="#60a5fa" />
+        {/* 顶部可爱左右小耳朵/触角 */}
+        <ellipse cx="23" cy="28" rx="5" ry="3.5" transform="rotate(-25 23 28)" fill="#38bdf8" />
+        <ellipse cx="77" cy="28" rx="5" ry="3.5" transform="rotate(25 77 28)" fill="#38bdf8" />
+
+        {/* 主体圆润水母/小包子身躯与底部的萌动小脚触手 */}
         <path
-          d="M 33 24 Q 35 20 36 18 Q 38 21 38 24 Z"
-          fill="#38bdf8"
+          d="
+            M 24 45
+            C 24 22, 76 22, 76 45
+            C 77 58, 77 64, 75 70
+            C 73 72, 70 77, 67 75
+            C 64 73, 63 68, 59 70
+            C 56 72, 54 77, 50 76
+            C 46 77, 44 72, 41 70
+            C 37 68, 36 73, 33 75
+            C 30 77, 27 72, 25 70
+            C 23 64, 23 58, 24 45
+            Z
+          "
+          fill="url(#minimax-mascot-grad)"
         />
 
-        {/* 蓝鲸尾鳍 (向后上方舒展) */}
-        <path
-          d="M 68 52 C 76 46 86 38 90 32 C 88 44 82 52 87 58 C 81 55 75 56 68 56 Z"
-          fill="url(#deepseek-body-grad)"
-        />
+        {/* 顶部柔和弧形高光 */}
+        <ellipse cx="44" cy="36" rx="18" ry="11" fill="url(#minimax-highlight)" />
 
-        {/* 蓝鲸圆润身躯 (大头、饱满线条、流畅向后收尾) */}
-        <path
-          d="M 12 52 C 12 34 26 24 45 24 C 64 24 74 38 78 52 C 80 58 76 66 70 70 C 60 76 42 76 28 73 C 18 70 12 62 12 52 Z"
-          fill="url(#deepseek-body-grad)"
-        />
+        {/* 萌动表情系统 */}
+        {currentState === 'idle' && (
+          <g>
+            {/* 灵动双眼 */}
+            <circle cx="41" cy="48" r="3.2" fill="#0f172a" />
+            <circle cx="42" cy="47" r="1.1" fill="#ffffff" />
+            <circle cx="59" cy="48" r="3.2" fill="#0f172a" />
+            <circle cx="60" cy="47" r="1.1" fill="#ffffff" />
+            {/* 温暖微笑 */}
+            <path d="M 47 54 Q 50 57 53 54" stroke="#0f172a" strokeWidth="1.8" strokeLinecap="round" />
+          </g>
+        )}
 
-        {/* 蓝鲸浅色腹部弧度 */}
-        <path
-          d="M 22 58 C 28 69 44 73 60 70 C 58 66 52 62 42 62 C 32 62 25 59 22 58 Z"
-          fill="url(#deepseek-belly-grad)"
-        />
+        {currentState === 'happy' && (
+          <g>
+            {/* 开心弯弯月牙眼 */}
+            <path d="M 37 49 Q 41 44 45 49" stroke="#0f172a" strokeWidth="2.2" strokeLinecap="round" />
+            <path d="M 55 49 Q 59 44 63 49" stroke="#0f172a" strokeWidth="2.2" strokeLinecap="round" />
+            {/* 开心大微笑 */}
+            <path d="M 46 53 Q 50 59 54 53" stroke="#0f172a" strokeWidth="2" strokeLinecap="round" fill="none" />
+            {/* 可爱粉色腮红 */}
+            <circle cx="34" cy="52" r="3.2" fill="#f43f5e" opacity="0.45" />
+            <circle cx="66" cy="52" r="3.2" fill="#f43f5e" opacity="0.45" />
+          </g>
+        )}
 
-        {/* 侧面可爱的小胸鳍 */}
-        <path
-          d="M 40 56 C 46 56 53 62 50 68 C 45 68 40 64 38 58 Z"
-          fill="#2563eb"
-        />
+        {currentState === 'winking' && (
+          <g>
+            {/* 眨眼 + 睁眼 */}
+            <path d="M 37 48 Q 41 44 45 48" stroke="#0f172a" strokeWidth="2.2" strokeLinecap="round" />
+            <circle cx="59" cy="48" r="3.2" fill="#0f172a" />
+            <circle cx="60" cy="47" r="1.1" fill="#ffffff" />
+            <path d="M 47 54 Q 50 58 53 54" stroke="#0f172a" strokeWidth="1.8" strokeLinecap="round" />
+            <circle cx="35" cy="52" r="2.8" fill="#f43f5e" opacity="0.4" />
+          </g>
+        )}
 
-        {/* 蓝鲸温和微笑的眼睛与高光点 */}
-        <circle cx="27" cy="46" r="3.8" fill="#0f172a" />
-        <circle cx="28.5" cy="44.5" r="1.5" fill="#ffffff" />
-
-        {/* 微微上翘的微笑弧线 */}
-        <path
-          d="M 17 55 Q 21 59 26 57"
-          stroke="#1e3a8a"
-          strokeWidth="1.8"
-          strokeLinecap="round"
-        />
+        {currentState === 'thinking' && (
+          <g>
+            {/* 往上看眼神 */}
+            <circle cx="41" cy="46" r="3.2" fill="#0f172a" />
+            <circle cx="41" cy="44.8" r="1.1" fill="#ffffff" />
+            <circle cx="59" cy="46" r="3.2" fill="#0f172a" />
+            <circle cx="59" cy="44.8" r="1.1" fill="#ffffff" />
+            {/* 呆萌小圆嘴 */}
+            <circle cx="50" cy="55" r="2.2" fill="#0f172a" />
+          </g>
+        )}
       </svg>
     </div>
   );

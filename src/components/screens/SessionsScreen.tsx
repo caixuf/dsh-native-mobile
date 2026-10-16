@@ -409,7 +409,7 @@ export const SessionsScreen: React.FC<Props> = ({
             }}
             className="flex items-center gap-1.5 text-[15px] font-bold text-gray-900 hover:text-black cursor-pointer group"
           >
-            <FolderOpen size={17} className="text-gray-700 group-hover:text-black" />
+            <FolderOpen size={17} className="theme-text-accent group-hover:text-black" />
             <span className="truncate max-w-[220px]">{activeWorkspaceTitle}</span>
             <ChevronDown size={14} className="text-[#52525b] group-hover:text-black" />
           </button>
@@ -450,7 +450,7 @@ export const SessionsScreen: React.FC<Props> = ({
                   <span className="font-semibold text-gray-800">{grouping.workspaceCount}</span> 个工作区 ·{' '}
                   <span className="font-semibold text-gray-800">{grouping.visibleCount}</span> 个会话
                   {grouping.runningCount > 0 && (
-                    <span className="text-blue-600 font-medium"> · {grouping.runningCount} 个执行中</span>
+                    <span className="text-blue-600 theme-text-accent font-medium"> · {grouping.runningCount} 个执行中</span>
                   )}
                   {grouping.archivedCount > 0 && (
                     <span className="text-[#52525b]"> · {grouping.archivedCount} 个已归档</span>
@@ -560,7 +560,7 @@ export const SessionsScreen: React.FC<Props> = ({
           onClick={openCreateDialog}
           type="button"
           aria-label="新建聊天"
-          className="flex items-center gap-2 px-5 py-3 rounded-full bg-black hover:bg-gray-800 text-white text-[14px] font-medium shadow-lg hover:shadow-xl active:scale-95 transition-all cursor-pointer"
+          className="theme-bg-deep flex items-center gap-2 px-5 py-3 rounded-full bg-black hover:bg-gray-800 text-white text-[14px] font-medium shadow-lg hover:shadow-xl active:scale-95 transition-all cursor-pointer"
         >
           <Plus size={17} />
           <span>聊天</span>
@@ -604,7 +604,7 @@ export const SessionsScreen: React.FC<Props> = ({
                         onClick={() => setCustomCwd(option.workspace)}
                         className={`flex items-center gap-2 px-2.5 py-2 rounded-xl border text-left transition-colors cursor-pointer ${
                           active
-                            ? 'bg-blue-50 border-blue-200 text-blue-700'
+                            ? 'theme-bg-light theme-border-accent bg-blue-50 border-blue-200 text-blue-700'
                             : 'bg-gray-50 border-gray-200/60 text-gray-700 hover:bg-gray-100'
                         }`}
                       >
@@ -649,7 +649,7 @@ export const SessionsScreen: React.FC<Props> = ({
                   setCreateDialogOpen(false);
                 }}
                 type="button"
-                className="px-5 py-2.5 rounded-full bg-black hover:bg-gray-800 text-white text-[13px] font-semibold transition-all shadow-sm cursor-pointer"
+                className="theme-bg-deep px-5 py-2.5 rounded-full bg-black hover:bg-gray-800 text-white text-[13px] font-semibold transition-all shadow-sm cursor-pointer"
               >
                 开始会话
               </button>

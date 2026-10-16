@@ -104,7 +104,7 @@ function localizedText(value: unknown): string {
 }
 
 export const App: React.FC = () => {
-  const [route, setRoute] = useState<Route>('sessions');
+  const [route, setRoute] = useState<Route>('chat');
   const [hosts, setHosts] = useState<HostRecord[]>([]);
   const [activeHostId, setActiveHostId] = useState<string | null>(null);
   const [linkState, setLinkState] = useState<LinkState>({ type: 'disconnected' });
@@ -137,6 +137,14 @@ export const App: React.FC = () => {
 
   /** 待处理审批所属的会话（真主机审批载荷里带 sessionId，用于"跳过去处理"）。 */
   const [promptSessionId, setPromptSessionId] = useState<string | null>(null);
+  /**
+   * 上面那个 id 的 ref 镜像。
+   *
+   * 为什么需要：onRequest 的回调只在连接建立时注册一次，闭包里的 state 是**首次渲染
+   * 那一版**的。轮次结束的兜底判断要读最新的 promptSessionId，只能走 ref。
+   */
+  const promptSessionIdRef = useRef<string | null>(null);
+  promptSessionIdRef.current = promptSessionId;
 
   /** 网页端的鉴权失效（401/403 分流后的状态，见 connection.ts）。 */
   const [authFailure, setAuthFailure] = useState<{ status: number; message: string } | null>(null);
@@ -247,6 +255,15 @@ export const App: React.FC = () => {
     });
 
     conn.onRequest((req: HostRequestItem) => {
+      // 🔴 cancel 必须在这里显式分流。
+      // 它的 answerable=false（不是"待应答"，而是"这条待办作废了"），于是原来
+      // 会落到下面的 handleStreamTick 分支 —— handleHostRequest 里那段 cancel 处理
+      // 是**永远进不去的死代码**。实测症状：AI 明明结束了，手机上的提问一直挂着。
+      // 判据用 method 而非 answerable，因为 cancel 恰好就是 answerable=false。
+      if (req.method === 'cancel' || req.method.includes('cancel')) {
+        handleHostRequest(req);
+        return;
+      }
       if (req.answerable) {
         handleHostRequest(req);
         return;
@@ -309,6 +326,15 @@ export const App: React.FC = () => {
   };
 
   const handleHostRequest = (req: HostRequestItem) => {
+    // 🔴 关键修复（Issue #2）：处理主机发来的 cancel 取消帧
+    if (req.method === 'cancel' || req.method.includes('cancel') || (req.payload as Record<string, unknown>)?.type === 'cancel') {
+      const cancelId = req.rpcId || ((req.payload as Record<string, unknown>)?.eventId as string | undefined);
+      if (!cancelId || pendingPrompt?.rpcId === cancelId) {
+        setPendingPrompt(null);
+        setPromptSessionId(null);
+      }
+      return;
+    }
     if (!req.answerable) return;
     const isApproval = req.method.includes('approval');
     const rawQuestions = req.payload.questions as Array<{
@@ -409,6 +435,15 @@ export const App: React.FC = () => {
 
     if (eventName === 'api-session/status' && Array.isArray(payload?.args)) {
       const [sid, runningNow] = payload.args as [unknown, unknown];
+
+      // 🔴 兜底：提问所属的会话**在后台**结束（用户可能停在会话列表，
+      // currentSessionRef 对不上，下面那段只覆盖"正在看的那条会话"）→ 收起待办。
+      // 主机发 cancel 是主路径；这条覆盖主机没发 cancel 的情况。
+      if (typeof sid === 'string' && runningNow !== true && sid === promptSessionIdRef.current) {
+        setPendingPrompt(null);
+        setPromptSessionId(null);
+      }
+
       if (typeof sid === 'string' && sid === currentSessionRef.current?.sessionId) {
         const next = runningNow === true;
         setRunning(next);
@@ -417,6 +452,9 @@ export const App: React.FC = () => {
           const current = currentSessionRef.current;
           if (current) void loadChatPage(current);
           void loadProjections(sid);
+          // 🔴 关键修复（Issue #2）：会话结束时，自动清理挂住未清的 pendingPrompt
+          setPendingPrompt(null);
+          setPromptSessionId(null);
         }
       }
     }
@@ -972,6 +1010,18 @@ export const App: React.FC = () => {
     }, 1000);
   };
 
+  const handleStartNewChat = () => {
+    stopTurnWatch();
+    closeFollow();
+    setCurrentSession(null);
+    setChatLines([]);
+    chatLinesRef.current = [];
+    lineKeysRef.current = new Set();
+    setPendingPrompt(null);
+    setPromptSessionId(null);
+    setRoute('chat');
+  };
+
   /**
    * 真正把一条指令发出去。
    *
@@ -981,8 +1031,36 @@ export const App: React.FC = () => {
     text: string,
     image?: { data: string; mediaType: string },
   ): Promise<boolean> => {
-    if (!currentSession || !connRef.current) return false;
-    const sid = currentSession.sessionId;
+    if (!connRef.current) return false;
+
+    // 🔴 如果当前没有会话（从 MiniMax 空白主页直接发问），自动在电脑上建会话
+    let activeSession = currentSession;
+    if (!activeSession) {
+      try {
+        const targetCwd = inferDefaultCwd(sessions);
+        const res = (await connRef.current.call('session.create', {
+          request: { cwd: targetCwd },
+        })) as { sessionId?: string };
+        const newId = res?.sessionId || 'session-' + Date.now();
+        activeSession = {
+          sessionId: newId,
+          title: text.slice(0, 20) || '新遥控会话',
+          preview: text.slice(0, 30),
+          updatedAt: Date.now(),
+          running: true,
+          isSubagent: false,
+          workspace: targetCwd,
+        };
+        setSessions((prev) => [activeSession!, ...prev]);
+        setCurrentSession(activeSession);
+        openFollow(activeSession);
+      } catch (err) {
+        console.error('Failed to auto create session for prompt', err);
+        setError('创建新会话失败，请检查主机连接');
+        return false;
+      }
+    }
+    const sid = activeSession.sessionId;
 
     setSending(true);
     setPreparing(true);
@@ -1041,8 +1119,8 @@ export const App: React.FC = () => {
       setSending(false);
 
       // Refresh chat；真正的实时更新靠事件流 + 下面的 turn watch
-      loadChatPage(currentSession);
-      startTurnWatch(currentSession);
+      loadChatPage(activeSession);
+      startTurnWatch(activeSession);
       return true;
     } catch (err) {
       setPreparing(false);
@@ -1391,6 +1469,16 @@ export const App: React.FC = () => {
       className="flex h-screen w-screen overflow-hidden bg-white text-[#18181b] font-sans pt-[var(--sat)] pb-[var(--sab)]"
       data-safe-area="top-bottom"
     >
+      {/* 自定义壁纸图层（由主题中心配置注入） */}
+      <div
+        className="fixed inset-0 pointer-events-none z-0 bg-cover bg-center transition-all duration-300"
+        style={{
+          backgroundImage: 'var(--custom-bg-image, none)',
+          opacity: 'var(--custom-bg-opacity, 0)',
+          filter: 'blur(var(--custom-bg-blur, 0px))',
+        }}
+      />
+
       {/* App Drawer */}
       <AppDrawer
         isOpen={drawerOpen}
@@ -1404,7 +1492,7 @@ export const App: React.FC = () => {
           setDrawerOpen(false);
         }}
         onNewSession={() => {
-          handleCreateSession();
+          handleStartNewChat();
           setDrawerOpen(false);
         }}
         onManageHosts={() => {
@@ -1564,10 +1652,10 @@ export const App: React.FC = () => {
             />
           )}
 
-          {route === 'chat' && currentSession && (
+          {route === 'chat' && (
             <ChatScreen
-              sessionId={currentSession.sessionId}
-              title={currentSession.title}
+              sessionId={currentSession?.sessionId || ''}
+              title={currentSession?.title || '新会话'}
               lines={chatLines}
               pending={pendingPrompt}
               running={running}
@@ -1575,7 +1663,7 @@ export const App: React.FC = () => {
               preparing={preparing}
               preparingStep={preparingStep}
               hostName={linkState.hostName || activeHost?.label}
-              workspace={currentSession.workspace}
+              workspace={currentSession?.workspace}
               queued={queued}
               onRemoveQueued={handleRemoveQueued}
               onRetryQueued={handleRetryQueued}
@@ -1588,6 +1676,9 @@ export const App: React.FC = () => {
               onApprove={handleApprove}
               onAnswerOption={handleAnswerOption}
               onOpenDrawer={() => setDrawerOpen(true)}
+              onManageHosts={() => setRoute('hosts')}
+              onNewSession={handleStartNewChat}
+              isDemoHost={activeHost?.id === 'demo-local-host'}
               modelCatalog={modelCatalog}
               selectedModel={selectedModel}
               onSelectModel={handleSelectModel}

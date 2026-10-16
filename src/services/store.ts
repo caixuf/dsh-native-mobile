@@ -66,6 +66,13 @@ export const HostStore = {
     const next = this.all().filter((h) => h.id !== record.id);
     next.unshift(record);
     localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
+
+    // 🔴 关键修复：如果之前 active 是演练主机或为空，而新加入的是真实主机，
+    // 必须自动切换 active 为真实主机，避免用户配对了电脑却依然挂在演练主机上！
+    const currentActive = localStorage.getItem(ACTIVE_HOST_KEY);
+    if (record.id !== DEFAULT_DEMO_HOST.id && (!currentActive || currentActive === DEFAULT_DEMO_HOST.id)) {
+      this.setActiveId(record.id);
+    }
   },
 
   touch(id: string): void {
@@ -96,11 +103,13 @@ export const HostStore = {
       return saved;
     }
     const all = this.all();
-    const first = all[0]?.id || null;
-    if (first) {
-      localStorage.setItem(ACTIVE_HOST_KEY, first);
+    // 🔴 关键修复：优先挑真实主机，绝不让 demo 占第一位导致默认被选
+    const realHost = all.find((h) => h.id !== DEFAULT_DEMO_HOST.id);
+    const chosen = realHost?.id || all[0]?.id || null;
+    if (chosen) {
+      localStorage.setItem(ACTIVE_HOST_KEY, chosen);
     }
-    return first;
+    return chosen;
   },
 
   setActiveId(id: string | null): void {
@@ -113,8 +122,18 @@ export const HostStore = {
   },
 
   addDemoHost(): HostRecord {
-    this.upsert(DEFAULT_DEMO_HOST);
-    this.setActiveId(DEFAULT_DEMO_HOST.id);
+    // 🔴 关键修复：添加演练主机时，如果已有真实主机且 active 正常，绝不抢占 activeId！
+    const all = this.all();
+    const existing = this.find(DEFAULT_DEMO_HOST.id);
+    if (!existing) {
+      const next = [...all, DEFAULT_DEMO_HOST];
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
+    }
+    const currentActive = localStorage.getItem(ACTIVE_HOST_KEY);
+    const hasRealActive = currentActive && currentActive !== DEFAULT_DEMO_HOST.id && this.find(currentActive);
+    if (!hasRealActive && !currentActive) {
+      this.setActiveId(DEFAULT_DEMO_HOST.id);
+    }
     return DEFAULT_DEMO_HOST;
   },
 };

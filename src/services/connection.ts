@@ -1335,6 +1335,24 @@ export class DshConnection {
           answerable: true,
         }),
       );
+    } else if (
+      value.type === 'cancel' ||
+      value.type === 'waterfall/cancel' ||
+      value.event === 'waterfall/cancel' ||
+      value.event === 'cancel'
+    ) {
+      const cancelId = String(value.eventId || value.cancelEventId || value.rpcId || '');
+      if (cancelId) {
+        this.inflightEventIds.delete(cancelId);
+      }
+      this.requestListeners.forEach((fn) =>
+        fn({
+          rpcId: cancelId,
+          method: 'cancel',
+          payload: value,
+          answerable: false,
+        }),
+      );
     }
   }
 

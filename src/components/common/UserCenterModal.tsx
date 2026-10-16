@@ -5,6 +5,10 @@ import { ConnectionDot } from './ConnectionDot';
 import { triggerHaptic } from '../../utils/haptics';
 import { ThemeStore, THEME_PRESETS } from '../../services/theme';
 import { SkinCenterModal } from './SkinCenterModal';
+import { ModelPreferencesModal } from './ModelPreferencesModal';
+import { ApprovalSettingsModal } from './ApprovalSettingsModal';
+import { AboutModal } from './AboutModal';
+import { APP_VERSION } from '../../version';
 
 interface Props {
   isOpen: boolean;
@@ -26,6 +30,9 @@ export const UserCenterModal: React.FC<Props> = ({
   onDisconnect,
 }) => {
   const [skinModalOpen, setSkinModalOpen] = useState(false);
+  const [modelPrefOpen, setModelPrefOpen] = useState(false);
+  const [approvalModalOpen, setApprovalModalOpen] = useState(false);
+  const [aboutModalOpen, setAboutModalOpen] = useState(false);
   const [themeId, setThemeId] = useState(() => ThemeStore.getThemeId());
 
   if (!isOpen) return null;
@@ -58,24 +65,38 @@ export const UserCenterModal: React.FC<Props> = ({
 
         {/* Content Body */}
         <div className="flex-1 overflow-y-auto px-5 py-6 space-y-6">
-          {/* Avatar & User Header */}
-          <div className="flex flex-col items-center text-center">
-            <div className="w-20 h-20 rounded-full bg-blue-50 border-2 border-blue-100 flex items-center justify-center shadow-xs mb-3 relative">
-              <DeepSeekMascot size={64} className="scale-110" />
-              <span className="absolute bottom-0 right-0 w-5 h-5 rounded-full bg-green-500 border-2 border-white shadow-xs" />
+          {/* User Profile Header Card */}
+          <div className="flex items-center gap-4 p-4 rounded-3xl bg-[#f4f4f6] border border-gray-200/60 shadow-2xs">
+            <div className="relative">
+              <div className="w-16 h-16 rounded-full bg-white p-2 border border-gray-200 shadow-xs flex items-center justify-center">
+                <DeepSeekMascot size={52} />
+              </div>
+              <div className="absolute -bottom-1 -right-1">
+                <ConnectionDot status={isOnline ? 'online' : 'offline'} size={12} />
+              </div>
             </div>
-            <h2 className="text-[20px] font-bold text-gray-900">{username}</h2>
-            <div className="inline-flex items-center gap-1.5 px-3 py-1 mt-2 rounded-full bg-gray-100 text-[12px] font-medium text-gray-600">
-              <ConnectionDot status={isOnline ? 'online' : 'offline'} size={6} />
-              <span>{hostName}</span>
+
+            <div className="flex-1 min-w-0">
+              <div className="flex items-center gap-2">
+                <h2 className="text-[18px] font-bold text-gray-900 tracking-tight truncate">
+                  {username}
+                </h2>
+                <span className="px-2 py-0.5 rounded-full text-[11px] font-semibold theme-btn-primary">
+                  Pro 用户
+                </span>
+              </div>
+              <p className="text-[13px] text-[#52525b] mt-0.5 truncate flex items-center gap-1.5 font-mono">
+                <Monitor size={14} className="text-gray-400 shrink-0" />
+                <span>{hostName}</span>
+              </p>
             </div>
           </div>
 
-          {/* Quick Connection Card */}
-          <div className="p-4 rounded-2xl bg-[#f4f4f6] flex items-center justify-between">
+          {/* Connection Status Card */}
+          <div className="p-4 rounded-2xl bg-[#f4f4f6] border border-gray-200/60 flex items-center justify-between">
             <div className="flex items-center gap-3">
-              <div className="w-10 h-10 rounded-xl bg-white flex items-center justify-center text-blue-600 shadow-xs">
-                <Monitor size={20} />
+              <div className="w-10 h-10 rounded-xl bg-white flex items-center justify-center shadow-2xs border border-gray-200/60">
+                <ConnectionDot status={isOnline ? 'online' : 'offline'} size={10} pulse={isOnline} />
               </div>
               <div>
                 <div className="text-[14px] font-semibold text-gray-900">工作站连接</div>
@@ -110,11 +131,11 @@ export const UserCenterModal: React.FC<Props> = ({
               className="flex items-center justify-between px-4 py-3.5 hover:bg-gray-200/50 cursor-pointer transition-colors"
             >
               <div className="flex items-center gap-3">
-                <Palette size={18} className="text-[#0c7ff2]" />
+                <Palette size={18} className="theme-text-accent" />
                 <span className="text-[14px] font-medium text-gray-800">个性装扮 · 皮肤中心</span>
               </div>
               <div className="flex items-center gap-1.5">
-                <span className="text-[12px] font-medium px-2 py-0.5 rounded-md bg-blue-100/70 text-[#0c7ff2]">
+                <span className="text-[12px] font-medium px-2 py-0.5 rounded-md theme-badge">
                   {currentTheme.name}
                 </span>
                 <ChevronRight size={16} className="text-[#52525b]" />
@@ -138,8 +159,12 @@ export const UserCenterModal: React.FC<Props> = ({
               <ChevronRight size={16} className="text-[#52525b]" />
             </div>
 
+            {/* 模型推理与偏好设置 (Issue #4) */}
             <div
-              onClick={() => triggerHaptic('light')}
+              onClick={() => {
+                triggerHaptic('light');
+                setModelPrefOpen(true);
+              }}
               className="flex items-center justify-between px-4 py-3.5 hover:bg-gray-200/50 cursor-pointer transition-colors"
             >
               <div className="flex items-center gap-3">
@@ -149,8 +174,12 @@ export const UserCenterModal: React.FC<Props> = ({
               <ChevronRight size={16} className="text-[#52525b]" />
             </div>
 
+            {/* 权限与自动化审批 (Issue #4) */}
             <div
-              onClick={() => triggerHaptic('light')}
+              onClick={() => {
+                triggerHaptic('light');
+                setApprovalModalOpen(true);
+              }}
               className="flex items-center justify-between px-4 py-3.5 hover:bg-gray-200/50 cursor-pointer transition-colors"
             >
               <div className="flex items-center gap-3">
@@ -163,15 +192,19 @@ export const UserCenterModal: React.FC<Props> = ({
 
           {/* Settings Section 2 */}
           <div className="rounded-2xl bg-[#f4f4f6] overflow-hidden divide-y divide-gray-200/60">
+            {/* 关于 (Issue #4, #6) */}
             <div
-              onClick={() => triggerHaptic('light')}
+              onClick={() => {
+                triggerHaptic('light');
+                setAboutModalOpen(true);
+              }}
               className="flex items-center justify-between px-4 py-3.5 hover:bg-gray-200/50 cursor-pointer transition-colors"
             >
               <div className="flex items-center gap-3">
                 <Info size={18} className="text-gray-600" />
                 <span className="text-[14px] font-medium text-gray-800">关于 DSH Remote 移动遥控伴侣</span>
               </div>
-              <span className="text-[12px] text-[#52525b] font-mono">v1.1.1</span>
+              <span className="text-[12px] text-[#52525b] font-mono">v{APP_VERSION}</span>
             </div>
           </div>
 
@@ -192,7 +225,7 @@ export const UserCenterModal: React.FC<Props> = ({
           )}
         </div>
 
-        {/* 皮肤选择弹窗 */}
+        {/* 弹窗组件栈 */}
         <SkinCenterModal
           isOpen={skinModalOpen}
           onClose={() => setSkinModalOpen(false)}
@@ -201,6 +234,21 @@ export const UserCenterModal: React.FC<Props> = ({
             ThemeStore.setTheme(id);
             setThemeId(id);
           }}
+        />
+
+        <ModelPreferencesModal
+          isOpen={modelPrefOpen}
+          onClose={() => setModelPrefOpen(false)}
+        />
+
+        <ApprovalSettingsModal
+          isOpen={approvalModalOpen}
+          onClose={() => setApprovalModalOpen(false)}
+        />
+
+        <AboutModal
+          isOpen={aboutModalOpen}
+          onClose={() => setAboutModalOpen(false)}
         />
       </div>
     </div>
