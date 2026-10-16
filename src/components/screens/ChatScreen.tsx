@@ -420,11 +420,7 @@ export const ChatScreen: React.FC<Props> = ({
     <div className="flex flex-col h-full bg-white text-[#18181b] select-none">
       {/* 1. MiniMax Light Header (对齐 MiniMax 主界面：左侧汉堡菜单，右侧新会话与更多) */}
       <header
-        className={`sticky top-0 z-30 transition-all px-4 py-2 ${
-          lines.length === 0
-            ? 'bg-transparent border-b border-transparent'
-            : 'bg-white/95 backdrop-blur-md border-b border-gray-100'
-        }`}
+        className="sticky top-0 z-30 px-4 py-2 bg-white/95 backdrop-blur-md border-b border-gray-100 transition-all"
       >
         <div className="flex items-center justify-between max-w-2xl mx-auto w-full gap-2">
           <div className="flex items-center gap-2.5 min-w-0 flex-1">
@@ -891,7 +887,13 @@ export const ChatScreen: React.FC<Props> = ({
       </div>
 
       {/* 3. Floating MiniMax Composer Dock (Screenshot 5) */}
-      <div className="fixed bottom-0 left-0 right-0 z-20 pointer-events-none bg-gradient-to-t from-white via-white/95 to-transparent pt-4 pb-[calc(1.25rem+var(--sab)+var(--keyboard-inset-bottom,0px))] px-4 transition-all duration-150">
+      {/* ⚠️ 键盘高度要用 `bottom` 定位，**不能**塞进 padding-bottom。
+          Android WebView 开 adjustResize 时布局视口本来就缩小了，`fixed bottom-0`
+          已经贴着键盘；再把键盘高度加进 padding 等于加了两次，输入坞会被顶到
+          屏幕中间、真机实测长这样（键盘上方浮着一整块输入框，下面一大片空白）。
+          改成 bottom 偏移后两种形态都对：WebView 缩过视口时 inset≈0；没缩时
+          bottom 把整块坞顶到键盘上方。 */}
+      <div className="fixed left-0 right-0 z-20 bottom-[var(--keyboard-inset-bottom,0px)] pointer-events-none bg-gradient-to-t from-white via-white/95 to-transparent pt-4 pb-[calc(1.25rem+var(--sab))] px-4 transition-all duration-150">
         <div className="max-w-2xl mx-auto pointer-events-auto">
           {/* 上滑看历史时才出现；点了回底部并恢复自动跟随 */}
           {showJumpToLatest && (

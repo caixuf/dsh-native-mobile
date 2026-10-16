@@ -198,7 +198,15 @@ export const App: React.FC = () => {
     if (typeof window === 'undefined' || !window.visualViewport) return;
     const vv = window.visualViewport;
     const updateViewport = () => {
-      const keyboardHeight = Math.max(0, window.innerHeight - vv.height);
+      // ⚠️ 不能用 `window.innerHeight - vv.height`：Android WebView 开 adjustResize 时
+      // innerHeight 未必跟着缩，这个差值会把**整个键盘高度**算进来；而输入坞是
+      // `fixed bottom-0`（位置已随视口上移），再加一次就把输入坞顶到屏幕中间
+      // —— 真机实测就是那个悬浮在键盘上方、中间一大片空白的画面。
+      // 改成量"布局视口底部"与"可视视口底部"的真实差值：视口缩过时≈0，
+      // 键盘浮在视口上（没缩）时=键盘高度，两种形态都对。
+      const layoutBottom = document.documentElement.clientHeight;
+      const visualBottom = vv.height + vv.offsetTop;
+      const keyboardHeight = Math.max(0, Math.round(layoutBottom - visualBottom));
       document.documentElement.style.setProperty('--keyboard-inset-bottom', `${keyboardHeight}px`);
     };
     vv.addEventListener('resize', updateViewport);
