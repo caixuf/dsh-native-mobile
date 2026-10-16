@@ -137,6 +137,7 @@ export const SessionGroupSection: React.FC<Props> = ({
           <SessionCard
             key={session.sessionId}
             session={session}
+            showWorkspace={isSearch}
             onOpen={onOpen}
             onArchive={onArchive}
             onUnarchive={onUnarchive}
@@ -173,6 +174,7 @@ export const SessionGroupSection: React.FC<Props> = ({
                 <SessionCard
                   key={session.sessionId}
                   session={session}
+                  showWorkspace={isSearch}
                   onOpen={onOpen}
                   onArchive={onArchive}
                   onUnarchive={onUnarchive}

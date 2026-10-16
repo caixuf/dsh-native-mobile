@@ -2,7 +2,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import { Archive, ArchiveRestore, ChevronRight, EllipsisVertical, Folder } from 'lucide-react';
 import type { SessionRow } from '../../types';
 import type { SessionActionId } from '../../lib/session-groups';
-import { formatSessionTime, sessionActionItems } from '../../lib/session-groups';
+import { describeWorkspace, formatSessionTime, sessionActionItems } from '../../lib/session-groups';
 import { SessionActionMenu } from './SessionActionMenu';
 
 /**
@@ -27,6 +27,8 @@ interface Props {
   onUnarchive?: (session: SessionRow) => void;
   /** 紧凑模式：子代理子节里用，省一点垂直空间。 */
   compact?: boolean;
+  /** 是否在卡片底部显示工作区标签（跨工作区搜索时显示短名，平时由分组头说明）。默认 false */
+  showWorkspace?: boolean;
   /**
    * 重命名（T6）。**可选**：不传则菜单里的「重命名」置灰。
    * 返回 promise 时组件会等结果，失败信息就地显示在菜单里。
@@ -68,6 +70,7 @@ export const SessionCard: React.FC<Props> = ({
   onArchive,
   onUnarchive,
   compact = false,
+  showWorkspace = false,
   onRename,
   onFork,
   onCancel,
@@ -239,11 +242,14 @@ export const SessionCard: React.FC<Props> = ({
           )}
 
           <div className="flex items-center gap-2 mt-2 text-[11.5px] text-[#52525b]">
-            {session.workspace && (
+            {showWorkspace && session.workspace && (
               <>
-                <span className="flex items-center gap-1 font-mono text-gray-600 truncate max-w-[220px] bg-white px-2 py-0.5 rounded-md border border-gray-200/60">
+                <span
+                  className="flex items-center gap-1 font-medium text-gray-700 truncate max-w-[180px] bg-white px-2 py-0.5 rounded-md border border-gray-200/60"
+                  title={session.workspace}
+                >
                   <Folder size={11} className="shrink-0 text-blue-500" />
-                  <span className="truncate">{session.workspace}</span>
+                  <span className="truncate">{describeWorkspace(session.workspace).label}</span>
                 </span>
                 <span>·</span>
               </>

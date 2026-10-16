@@ -37,16 +37,16 @@ interface Props {
 
 const HEADER_CLASS: Record<Level, string> = {
   group:
-    'px-3 py-2.5 rounded-2xl bg-black/[0.03] hover:bg-black/[0.05] border border-black/[0.08]',
-  sub: 'px-3 py-2 rounded-xl bg-black/[0.02] hover:bg-black/[0.04] border border-black/[0.06]',
+    'px-3.5 py-2.5 rounded-2xl bg-white hover:bg-gray-50 border border-gray-200/70 shadow-2xs',
+  sub: 'px-3 py-2 rounded-xl bg-gray-50/80 hover:bg-gray-100/80 border border-gray-200/60',
   archive:
-    'px-3 py-2.5 rounded-2xl bg-black/[0.02] hover:bg-black/[0.04] border border-dashed border-black/[0.12]',
+    'px-3.5 py-2.5 rounded-2xl bg-white hover:bg-gray-50 border border-dashed border-gray-300 shadow-2xs',
 };
 
 const TITLE_CLASS: Record<Level, string> = {
-  group: 'text-[14px] font-semibold text-[#3f3f46]',
-  sub: 'text-[12.5px] font-medium text-[#3f3f46]',
-  archive: 'text-[13px] font-medium text-[#52525b]',
+  group: 'text-[14.5px] font-bold text-gray-900',
+  sub: 'text-[12.5px] font-medium text-gray-700',
+  archive: 'text-[13px] font-semibold text-gray-700',
 };
 
 export const CollapsibleSection: React.FC<Props> = ({
@@ -62,6 +62,7 @@ export const CollapsibleSection: React.FC<Props> = ({
   children,
 }) => {
   const panelId = useId();
+  const isPathHint = hint ? (hint.includes('/') || hint.includes('\\')) : false;
 
   return (
     <section className="w-full">
@@ -71,28 +72,29 @@ export const CollapsibleSection: React.FC<Props> = ({
           onClick={onToggle}
           aria-expanded={!collapsed}
           aria-controls={panelId}
-          className={`flex-1 min-w-0 flex items-center gap-2 text-left cursor-pointer transition-colors studio-tap ${HEADER_CLASS[level]}`}
+          title={hint || undefined}
+          className={`flex-1 min-w-0 flex items-center gap-2.5 text-left cursor-pointer transition-colors studio-tap ${HEADER_CLASS[level]}`}
         >
-          <span className="shrink-0 text-[#52525b]">
+          <span className="shrink-0 text-gray-500">
             {collapsed ? <ChevronRight size={16} /> : <ChevronDown size={16} />}
           </span>
           <span className={`truncate ${TITLE_CLASS[level]}`}>{title}</span>
 
           {typeof count === 'number' && (
-            <span className="shrink-0 text-[11px] font-mono px-1.5 py-0.5 rounded-md bg-black/[0.05] border border-black/[0.08] text-[#52525b]">
+            <span className="shrink-0 text-[11px] font-mono px-2 py-0.5 rounded-md bg-gray-100 border border-gray-200/60 text-gray-600">
               {count}
             </span>
           )}
 
           {runningCount > 0 && (
-            <span className="shrink-0 flex items-center gap-1 text-[11px] font-semibold text-[#0369a1] bg-[#38bdf8]/12 px-2 py-0.5 rounded-full border border-[#38bdf8]/25">
-              <span className="w-1.5 h-1.5 rounded-full bg-[#38bdf8] animate-pulse" />
+            <span className="shrink-0 flex items-center gap-1.5 text-[11px] font-semibold text-blue-600 bg-blue-50 px-2 py-0.5 rounded-full border border-blue-200/60">
+              <span className="w-1.5 h-1.5 rounded-full bg-blue-500 animate-pulse" />
               {runningCount} 运行中
             </span>
           )}
 
-          {hint && (
-            <span className="hidden sm:block shrink min-w-0 truncate text-[11px] font-mono text-[#475569]">
+          {hint && !isPathHint && (
+            <span className="shrink-0 text-[11px] font-medium text-[#52525b] bg-gray-100 px-2 py-0.5 rounded-md border border-gray-200/60">
               {hint}
             </span>
           )}

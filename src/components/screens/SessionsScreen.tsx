@@ -117,6 +117,8 @@ export const SessionsScreen: React.FC<Props> = ({
   const [searchOpen, setSearchOpen] = useState(false);
   const [query, setQuery] = useState('');
   const [createDialogOpen, setCreateDialogOpen] = useState(false);
+  const [workspaceSheetOpen, setWorkspaceSheetOpen] = useState(false);
+  const [selectedWorkspaceKey, setSelectedWorkspaceKey] = useState<string | null>(null);
   const [customCwd, setCustomCwd] = useState('');
   const [renameEcho, setRenameEchoState] = useState<RenameEchoState>({});
 
@@ -209,6 +211,24 @@ export const SessionsScreen: React.FC<Props> = ({
 
   /** 新建会话可选的工作区（来自已知分组，不让用户手打路径）。 */
   const workspaceChoices = useMemo(() => listWorkspaceOptions(grouping.groups), [grouping.groups]);
+
+  /** 筛选后的展示分组（支持单个工作区专注视图） */
+  const displayGroups = useMemo(() => {
+    if (!selectedWorkspaceKey) return grouping.groups;
+    const filtered = grouping.groups.filter((g) => g.kind === 'search' || g.key === selectedWorkspaceKey);
+    return filtered.length > 0 ? filtered : grouping.groups;
+  }, [grouping.groups, selectedWorkspaceKey]);
+
+  const currentWorkspaceGroup = useMemo(() => {
+    if (!selectedWorkspaceKey) return null;
+    return grouping.groups.find((g) => g.key === selectedWorkspaceKey) || null;
+  }, [grouping.groups, selectedWorkspaceKey]);
+
+  const activeWorkspaceTitle = currentWorkspaceGroup
+    ? currentWorkspaceGroup.label
+    : (grouping.groups.length === 1 && grouping.groups[0]?.label)
+      ? grouping.groups[0].label
+      : '全部工作区';
 
   const archiveCollapsed = storedCollapse[ARCHIVE_SECTION_KEY] ?? true;
   const isCollapsed = (key: string) => collapsed[key] === true;
@@ -377,12 +397,15 @@ export const SessionsScreen: React.FC<Props> = ({
         <div className="flex items-center justify-between px-1 py-1">
           <button
             type="button"
-            onClick={openCreateDialog}
-            className="flex items-center gap-1.5 text-[15px] font-bold text-gray-900 hover:text-black cursor-pointer"
+            onClick={() => {
+              triggerHaptic('light');
+              setWorkspaceSheetOpen(true);
+            }}
+            className="flex items-center gap-1.5 text-[15px] font-bold text-gray-900 hover:text-black cursor-pointer group"
           >
-            <FolderOpen size={17} className="text-gray-700" />
-            <span>{grouping.groups[0]?.label || 'minimax'}</span>
-            <ChevronDown size={14} className="text-[#52525b]" />
+            <FolderOpen size={17} className="text-gray-700 group-hover:text-black" />
+            <span className="truncate max-w-[220px]">{activeWorkspaceTitle}</span>
+            <ChevronDown size={14} className="text-[#52525b] group-hover:text-black" />
           </button>
 
           <button
@@ -399,16 +422,32 @@ export const SessionsScreen: React.FC<Props> = ({
         {hasContent && (
           <div className="flex items-center justify-between gap-2 px-1">
             <p className="min-w-0 flex-1 text-[12px] text-[#52525b] whitespace-nowrap overflow-hidden text-ellipsis">
-              <span className="font-semibold text-gray-800">{grouping.workspaceCount}</span> 个工作区 ·{' '}
-              <span className="font-semibold text-gray-800">{grouping.visibleCount}</span> 个会话
-              {grouping.runningCount > 0 && (
-                <span className="text-blue-600 font-medium"> · {grouping.runningCount} 个执行中</span>
-              )}
-              {grouping.archivedCount > 0 && (
-                <span className="text-[#52525b]"> · {grouping.archivedCount} 个已归档</span>
+              {selectedWorkspaceKey && currentWorkspaceGroup ? (
+                <>
+                  已筛选：<span className="font-semibold text-gray-800">{currentWorkspaceGroup.label}</span> ·{' '}
+                  <span className="font-semibold text-gray-800">{currentWorkspaceGroup.total}</span> 个会话
+                  <button
+                    type="button"
+                    onClick={() => setSelectedWorkspaceKey(null)}
+                    className="ml-2 text-blue-600 hover:underline cursor-pointer font-medium"
+                  >
+                    显示全部
+                  </button>
+                </>
+              ) : (
+                <>
+                  <span className="font-semibold text-gray-800">{grouping.workspaceCount}</span> 个工作区 ·{' '}
+                  <span className="font-semibold text-gray-800">{grouping.visibleCount}</span> 个会话
+                  {grouping.runningCount > 0 && (
+                    <span className="text-blue-600 font-medium"> · {grouping.runningCount} 个执行中</span>
+                  )}
+                  {grouping.archivedCount > 0 && (
+                    <span className="text-[#52525b]"> · {grouping.archivedCount} 个已归档</span>
+                  )}
+                </>
               )}
             </p>
-            {grouping.groups.length > 1 && (
+            {displayGroups.length > 1 && (
               <div className="flex shrink-0 items-center gap-1">
                 <button
                   type="button"
@@ -470,7 +509,7 @@ export const SessionsScreen: React.FC<Props> = ({
 
         {/* 分组列表 */}
         <div className="space-y-2.5">
-          {grouping.groups.map((group) => (
+          {displayGroups.map((group) => (
             <SessionGroupSection
               key={group.key}
               group={group}
@@ -602,6 +641,108 @@ export const SessionsScreen: React.FC<Props> = ({
                 className="px-5 py-2.5 rounded-full bg-black hover:bg-gray-800 text-white text-[13px] font-semibold transition-all shadow-sm cursor-pointer"
               >
                 开始会话
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* MiniMax Workspace Switcher Sheet */}
+      {workspaceSheetOpen && (
+        <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center p-0 sm:p-4 bg-black/40 backdrop-blur-xs animate-in fade-in">
+          <div
+            className="fixed inset-0"
+            onClick={() => setWorkspaceSheetOpen(false)}
+          />
+          <div className="relative z-10 w-full max-w-sm rounded-t-3xl sm:rounded-3xl bg-white p-5 shadow-2xl border border-gray-200 text-gray-900 animate-in slide-in-from-bottom sm:zoom-in-95 duration-200 max-h-[80vh] flex flex-col">
+            <div className="flex items-center justify-between pb-3 border-b border-gray-100">
+              <div className="flex items-center gap-2">
+                <div className="w-8 h-8 rounded-full bg-blue-50 border border-blue-100 flex items-center justify-center p-1">
+                  <MiniMaxMascot size={22} />
+                </div>
+                <h3 className="text-[15px] font-bold text-gray-900">选择工作区</h3>
+              </div>
+              <button
+                type="button"
+                onClick={() => setWorkspaceSheetOpen(false)}
+                aria-label="关闭"
+                className="w-8 h-8 rounded-full hover:bg-gray-100 flex items-center justify-center text-gray-500 cursor-pointer"
+              >
+                <X size={16} />
+              </button>
+            </div>
+
+            <div className="flex-1 overflow-y-auto py-3 space-y-1.5 pr-0.5">
+              {/* Option: 全部工作区 */}
+              <button
+                type="button"
+                onClick={() => {
+                  triggerHaptic('selection');
+                  setSelectedWorkspaceKey(null);
+                  setWorkspaceSheetOpen(false);
+                }}
+                className={`w-full flex items-center justify-between px-3.5 py-2.5 rounded-xl border text-left transition-colors cursor-pointer ${
+                  selectedWorkspaceKey === null
+                    ? 'bg-blue-50 border-blue-200 text-blue-700 font-semibold'
+                    : 'bg-gray-50/80 hover:bg-gray-100 border-gray-200/60 text-gray-800'
+                }`}
+              >
+                <div className="flex items-center gap-2.5 min-w-0">
+                  <FolderOpen size={16} className={selectedWorkspaceKey === null ? 'text-blue-600' : 'text-gray-500'} />
+                  <span className="text-[13.5px] truncate">全部工作区</span>
+                </div>
+                <span className="text-[11px] font-mono px-2 py-0.5 rounded-md bg-white border border-gray-200/60 text-gray-600">
+                  {grouping.visibleCount}
+                </span>
+              </button>
+
+              {/* Individual Workspaces (Showing only clean human labels, no raw paths!) */}
+              {grouping.groups
+                .filter((g) => g.kind === 'workspace')
+                .map((group) => {
+                  const active = selectedWorkspaceKey === group.key;
+                  return (
+                    <button
+                      key={group.key}
+                      type="button"
+                      title={group.workspace || undefined}
+                      onClick={() => {
+                        triggerHaptic('selection');
+                        setSelectedWorkspaceKey(group.key);
+                        setWorkspaceSheetOpen(false);
+                      }}
+                      className={`w-full flex items-center justify-between px-3.5 py-2.5 rounded-xl border text-left transition-colors cursor-pointer ${
+                        active
+                          ? 'bg-blue-50 border-blue-200 text-blue-700 font-semibold'
+                          : 'bg-gray-50/80 hover:bg-gray-100 border-gray-200/60 text-gray-800'
+                      }`}
+                    >
+                      <div className="flex items-center gap-2.5 min-w-0 flex-1 pr-2">
+                        <FolderOpen size={16} className={active ? 'text-blue-600' : 'text-gray-500'} />
+                        <span className="text-[13.5px] truncate">{group.label}</span>
+                        {group.runningCount > 0 && (
+                          <span className="w-1.5 h-1.5 rounded-full bg-blue-500 animate-pulse shrink-0" />
+                        )}
+                      </div>
+                      <span className="text-[11px] font-mono px-2 py-0.5 rounded-md bg-white border border-gray-200/60 text-gray-600 shrink-0">
+                        {group.total}
+                      </span>
+                    </button>
+                  );
+                })}
+            </div>
+
+            <div className="pt-3 border-t border-gray-100 flex items-center justify-between gap-2">
+              <button
+                type="button"
+                onClick={() => {
+                  setWorkspaceSheetOpen(false);
+                  openCreateDialog();
+                }}
+                className="w-full py-2.5 px-4 rounded-xl bg-gray-100 hover:bg-gray-200 text-[13px] font-medium text-gray-800 flex items-center justify-center gap-2 transition-colors cursor-pointer"
+              >
+                <Plus size={15} />
+                <span>新建工作区会话…</span>
               </button>
             </div>
           </div>

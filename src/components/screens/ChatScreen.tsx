@@ -47,6 +47,7 @@ import { triggerHaptic } from '../../utils/haptics';
 import type { QueuedMessage } from '../../lib/message-queue';
 import { elapsedMs, formatDuration, modelLabel, phaseLabel, turnSummary } from '../../lib/session-activity';
 import type { ActivityState } from '../../lib/session-activity';
+import { describeWorkspace } from '../../lib/session-groups';
 
 interface Props {
   sessionId: string;
@@ -427,12 +428,17 @@ export const ChatScreen: React.FC<Props> = ({
               </h2>
               <div className="flex items-center gap-1.5 text-[11px] text-[#52525b] truncate">
                 <span>minimax</span>
-                <span>-</span>
-                <span className="truncate">{hostName || 'caixuf.Windows'}</span>
+                <span>·</span>
+                <span className="truncate">{hostName || 'caixuf'}</span>
                 {workspace && (
                   <>
                     <span>·</span>
-                    <span className="font-mono truncate">{workspace}</span>
+                    <span
+                      className="truncate font-medium text-gray-700 max-w-[130px]"
+                      title={workspace}
+                    >
+                      {describeWorkspace(workspace).label}
+                    </span>
                   </>
                 )}
               </div>

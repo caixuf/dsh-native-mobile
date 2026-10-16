@@ -52,6 +52,7 @@ export const ArchivedSection: React.FC<Props> = ({
             session={session}
             archived
             compact
+            showWorkspace={true}
             onOpen={onOpen}
             onUnarchive={onUnarchive}
           />
