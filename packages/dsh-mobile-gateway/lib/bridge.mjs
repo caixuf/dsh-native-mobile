@@ -134,7 +134,7 @@ function readToken(req, url) {
 export function createBridge({ ctx, store, log, config }) {
   const apiFetch = ctx.connection.createSharedFetchHandler('/api');
   const typert = ctx.typertGateway;
-  const peer = ctx.connection.operator;
+  const peer = ctx.connection.browserPeer ?? ctx.connection.operator;
   const wss = new WebSocketServer({ noServer: true, maxPayload: MAX_BODY_BYTES });
 
   // 两张表都归一化成点号小写形式，与 normalizeMethod() 的输出可比。
@@ -239,7 +239,7 @@ export function createBridge({ ctx, store, log, config }) {
       body: upstreamBody && upstreamBody.length ? upstreamBody : undefined,
     });
 
-    const response = await apiFetch.fetch(upstream);
+    const response = await apiFetch.fetch(upstream, peer);
     const buffer = Buffer.from(await response.arrayBuffer());
 
     // ---- 响应侧瘦身：session/list 剥掉重字段 ------------------------------
