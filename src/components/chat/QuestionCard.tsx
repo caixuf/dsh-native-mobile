@@ -2,9 +2,15 @@ import React, { useState } from 'react';
 import { HelpCircle, Check, Send } from 'lucide-react';
 import { PendingPrompt, PromptQuestion } from '../../types';
 
+export interface QuestionAnswerItem {
+  id: string;
+  selected: string[];
+  text?: string;
+}
+
 interface QuestionCardProps {
   prompt: PendingPrompt;
-  onSubmit: (selected: string[], customText?: string) => void;
+  onSubmit: (selected: QuestionAnswerItem[] | string[], customText?: string) => void;
   onCancel?: () => void;
 }
 
@@ -54,7 +60,16 @@ export const QuestionCard: React.FC<QuestionCardProps> = ({ prompt, onSubmit, on
 
   const handleSubmit = () => {
     if (!canSubmit) return;
-    onSubmit(allSelected, customText.trim() || undefined);
+    if (questions.length > 1) {
+      const answers: QuestionAnswerItem[] = questions.map((q) => ({
+        id: q.id,
+        selected: selectedMap[q.id] || [],
+        ...(customText.trim() ? { text: customText.trim() } : {}),
+      }));
+      onSubmit(answers, customText.trim() || undefined);
+    } else {
+      onSubmit(allSelected, customText.trim() || undefined);
+    }
   };
 
   return (

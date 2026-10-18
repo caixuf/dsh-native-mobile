@@ -24,6 +24,8 @@ export interface QueuedMessage {
   id: string;
   text: string;
   createdAt: number;
+  /** 附带的图片（运行中入队出队时不丢弃） */
+  image?: { data: string; mediaType: string };
   /** 缺省视为 'pending'（App 只传 id/text/createdAt 时同样可用）。 */
   status?: QueueItemStatus;
   /** 最近一次失败原因，仅 status==='failed' 时有意义。 */
@@ -65,14 +67,20 @@ const UNBOUNDED = Number.MAX_SAFE_INTEGER;
 
 // ── 基础清洗 ────────────────────────────────────────────────────────────────
 
-/** 把任意输入收敛成合法队列项；非法（空 id / 纯空白文本）返回 null。 */
+/** 把任意输入收敛成合法队列项；非法（空 id / 纯空白文本且无图片）返回 null。 */
 export function normalizeItem(raw: unknown): QueuedMessage | null {
   if (!raw || typeof raw !== 'object') return null;
   const source = raw as Record<string, unknown>;
 
   const id = typeof source.id === 'string' ? source.id.trim() : '';
   const rawText = typeof source.text === 'string' ? source.text : '';
-  if (!id || rawText.trim() === '') return null;
+  const rawImage = source.image as { data?: unknown; mediaType?: unknown } | undefined;
+  const image =
+    rawImage && typeof rawImage.data === 'string' && typeof rawImage.mediaType === 'string'
+      ? { data: rawImage.data, mediaType: rawImage.mediaType }
+      : undefined;
+
+  if (!id || (rawText.trim() === '' && !image)) return null;
 
   const createdAt =
     typeof source.createdAt === 'number' && Number.isFinite(source.createdAt) ? source.createdAt : 0;
@@ -82,6 +90,7 @@ export function normalizeItem(raw: unknown): QueuedMessage | null {
     text: rawText.slice(0, MAX_ITEM_TEXT),
     createdAt,
     status: source.status === 'failed' ? 'failed' : 'pending',
+    ...(image ? { image } : {}),
   };
 
   if (typeof source.error === 'string' && source.error) item.error = source.error;

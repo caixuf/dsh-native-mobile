@@ -36,6 +36,9 @@ interface Props {
   limit?: number;
   /** 必须落在上限内的 id（搜索命中 / 远端结果）。 */
   priorityIds?: ReadonlySet<string>;
+  /** 已星标置顶的会话 id 集合 */
+  pinnedIds?: ReadonlySet<string>;
+  onTogglePin?: (session: SessionRow) => void;
   /** T6：卡片操作菜单。均可选，不传则对应动作置灰。 */
   onRename?: (session: SessionRow, title: string) => void | Promise<unknown>;
   onFork?: (session: SessionRow) => void | Promise<unknown>;
@@ -89,6 +92,8 @@ export const SessionGroupSection: React.FC<Props> = ({
   onUnarchive,
   limit = DEFAULT_GROUP_LIMIT,
   priorityIds,
+  pinnedIds,
+  onTogglePin,
   onRename,
   onFork,
   onCancel,
@@ -141,6 +146,9 @@ export const SessionGroupSection: React.FC<Props> = ({
             key={session.sessionId}
             session={session}
             showWorkspace={isSearch}
+            pinned={pinnedIds?.has(session.sessionId)}
+            onPin={onTogglePin}
+            onUnpin={onTogglePin}
             onOpen={onOpen}
             onArchive={onArchive}
             onUnarchive={onUnarchive}
@@ -178,6 +186,9 @@ export const SessionGroupSection: React.FC<Props> = ({
                   key={session.sessionId}
                   session={session}
                   showWorkspace={isSearch}
+                  pinned={pinnedIds?.has(session.sessionId)}
+                  onPin={onTogglePin}
+                  onUnpin={onTogglePin}
                   onOpen={onOpen}
                   onArchive={onArchive}
                   onUnarchive={onUnarchive}

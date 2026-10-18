@@ -1,0 +1,86 @@
+name: CI & Release Pipeline
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  verify:
+    name: Test & Verify
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: 'npm'
+
+      - name: Setup Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Install Dependencies
+        run: npm install
+
+      - name: Run Typecheck
+        run: npm run typecheck
+
+      - name: Run Full Verification Pipeline
+        run: npm run verify
+
+      - name: Upload Web Build Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: dsh-web-dist
+          path: dist/
+          retention-days: 7
+
+  release:
+    name: GitHub Release
+    needs: [verify]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Download Web Dist Artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: dsh-web-dist
+          path: dist
+
+      - name: Create Web Distribution Archive
+        run: |
+          tar -czf dsh-native-mobile-web-${{ github.ref_name }}.tar.gz -C dist .
+          zip -r dsh-native-mobile-web-${{ github.ref_name }}.zip dist/
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: Release ${{ github.ref_name }}
+          draft: false
+          prerelease: false
+          generate_release_notes: true
+          files: |
+            dsh-native-mobile-web-${{ github.ref_name }}.tar.gz
+            dsh-native-mobile-web-${{ github.ref_name }}.zip

@@ -32,6 +32,19 @@ const GRADLE_BIN = process.env.GRADLE_BIN || (fs.existsSync(defaultWinGradle) ? 
 console.log('🤖 Android 原生单元测试（JVM）');
 console.log('─'.repeat(52));
 
+let hasGradle = false;
+try {
+  execSync(`"${GRADLE_BIN}" -v`, { stdio: 'ignore' });
+  hasGradle = true;
+} catch {
+  hasGradle = false;
+}
+
+if (!hasGradle) {
+  console.log(`⚠️  当前环境未检测到 Gradle 工具链（请设置 GRADLE_BIN 或安装 Gradle），已自动跳过 JVM 原生测试。`);
+  process.exit(0);
+}
+
 execSync(`"${GRADLE_BIN}" testDebugUnitTest --console=plain`, {
   cwd: androidDir,
   env: {

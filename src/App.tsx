@@ -26,8 +26,11 @@ import {
   buildForkedSession,
   inferDefaultCwd,
   readArchivedIds,
+  readPinnedIds,
   setArchivedId,
+  togglePinnedId,
   writeArchivedIds,
+  writePinnedIds,
 } from './lib/session-groups';
 import { currentDeviceName, getOrCreateDeviceId, uniqueDeviceName } from './services/device';
 import { HostsScreen } from './components/screens/HostsScreen';
@@ -44,6 +47,7 @@ interface QueuedPrompt {
   id: string;
   text: string;
   createdAt: number;
+  image?: { data: string; mediaType: string };
   status?: 'pending' | 'failed';
   error?: string;
   attempts?: number;
@@ -80,28 +84,7 @@ const withDeviceSuffix = (name: string): string => {
 // `session.page` 的记录类型由 lib/session-page.ts 定义（那里也是构造请求的地方），
 // 这里不再重复声明 —— 之前重复过一次，结果两边的字段漂移，类型检查才发现。
 
-/**
- * 真主机下发的文案字段可能是**多语言对象** `{en, zh}`（实测：`displayReason`）。
- *
- * 旧写法 `String(payload.displayReason)` 会把对象变成字面量 `"[object Object]"`
- * 直接怼到用户脸上 —— 审批卡片最重要的一行说明就成了乱码。
- * 这里按「当前语言 → 英文 → 纯字符串 → 空」依次取。
- */
-function localizedText(value: unknown): string {
-  if (typeof value === 'string') return value;
-  if (value && typeof value === 'object') {
-    const record = value as Record<string, unknown>;
-    const zh = record.zh;
-    const en = record.en;
-    if (typeof zh === 'string' && zh.trim()) return zh;
-    if (typeof en === 'string' && en.trim()) return en;
-    // 其它语言的兜底：取第一个非空字符串值
-    for (const candidate of Object.values(record)) {
-      if (typeof candidate === 'string' && candidate.trim()) return candidate;
-    }
-  }
-  return '';
-}
+import { localizedText } from './utils/i18n';
 
 export const App: React.FC = () => {
   const [route, setRoute] = useState<Route>('chat');
@@ -171,6 +154,14 @@ export const App: React.FC = () => {
   const [archivedIds, setArchivedIds] = useState<string[]>(() => {
     try {
       return readArchivedIds(localStorage);
+    } catch {
+      return [];
+    }
+  });
+  /** 本机星标置顶的会话 id（置顶后在工作区组内排在最前）。 */
+  const [pinnedIds, setPinnedIds] = useState<string[]>(() => {
+    try {
+      return readPinnedIds(localStorage);
     } catch {
       return [];
     }
@@ -612,6 +603,16 @@ export const App: React.FC = () => {
     setRoute('sessions');
   };
 
+  const handleDisconnectHost = () => {
+    if (connRef.current) {
+      connRef.current.stop();
+      connRef.current = null;
+    }
+    setLinkState({ type: 'disconnected', reason: '已断开当前远程连接' });
+    setSessions([]);
+    setCurrentSession(null);
+  };
+
   const handleForgetHost = (hostId: string) => {
     HostStore.remove(hostId);
     const updated = HostStore.all();
@@ -881,6 +882,19 @@ export const App: React.FC = () => {
         writeArchivedIds(next, localStorage);
       } catch {
         /* 存不下也不影响本次会话内的隐藏 */
+      }
+      return next;
+    });
+  };
+
+  /** 本机星标置顶切换（保存在 localStorage 中，工作区组内置顶优先展示）。 */
+  const handleTogglePin = (session: SessionRow) => {
+    setPinnedIds((prev) => {
+      const next = togglePinnedId(prev, session.sessionId);
+      try {
+        writePinnedIds(next, localStorage);
+      } catch {
+        /* 存不下降级 */
       }
       return next;
     });
@@ -1219,6 +1233,7 @@ export const App: React.FC = () => {
           id: `q-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
           text: trimmed,
           createdAt: Date.now(),
+          ...(image ? { image } : {}),
         },
       ]);
       return true;
@@ -1241,7 +1256,7 @@ export const App: React.FC = () => {
     }
     const timer = window.setTimeout(() => {
       setQueued(rest);
-      void sendPromptNow(next.text).then((ok) => {
+      void sendPromptNow(next.text, next.image).then((ok) => {
         if (!ok) {
           const attempts = (next.attempts ?? 0) + 1;
           setQueued((prev) => [
@@ -1322,14 +1337,24 @@ export const App: React.FC = () => {
     setPendingPrompt(null);
   };
 
-  const handleAnswerOption = async (selected: string[] | string, customText?: string) => {
+  const handleAnswerOption = async (
+    selected: string[] | string | Array<{ id: string; selected: string[]; text?: string }>,
+    customText?: string,
+  ) => {
     if (!pendingPrompt || !connRef.current) return;
-    const selectedArr = Array.isArray(selected) ? selected : [selected];
-    const outcome = Envelopes.questionOutcome(
-      pendingPrompt.questionId || 'q1',
-      selectedArr,
-      customText,
-    );
+    let outcome: Record<string, unknown>;
+    if (Array.isArray(selected) && selected.length > 0 && typeof selected[0] === 'object') {
+      outcome = Envelopes.multiQuestionOutcome(
+        selected as Array<{ id: string; selected: string[]; text?: string }>,
+      );
+    } else {
+      const selectedArr = Array.isArray(selected) ? (selected as string[]) : [selected as string];
+      outcome = Envelopes.questionOutcome(
+        pendingPrompt.questionId || (pendingPrompt.questions?.[0]?.id) || 'q1',
+        selectedArr,
+        customText,
+      );
+    }
     const ok = await connRef.current.respond(pendingPrompt.rpcId, outcome);
     if (!ok) {
       setError('回答未送达电脑，请重试');
@@ -1614,9 +1639,7 @@ export const App: React.FC = () => {
           setRoute('hosts');
         }}
         onDisconnect={() => {
-          if (activeHostId) {
-            handleForgetHost(activeHostId);
-          }
+          handleDisconnectHost();
           setUserCenterOpen(false);
           setRoute('hosts');
         }}
@@ -1741,6 +1764,8 @@ export const App: React.FC = () => {
               archivedIds={archivedIds}
               onArchive={(s) => applyArchive(s, true)}
               onUnarchive={(s) => applyArchive(s, false)}
+              pinnedIds={pinnedIds}
+              onTogglePin={handleTogglePin}
               onRenameSession={handleRenameSession}
               onForkSession={handleForkSession}
               onCancelSession={handleCancelSession}

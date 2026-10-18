@@ -27,6 +27,8 @@ import type { SessionRow } from '../types';
 export const COLLAPSE_STORAGE_KEY = 'dsh.sessions.collapsed.v1';
 /** 本机归档 id 列表持久化 key。 */
 export const ARCHIVE_STORAGE_KEY = 'dsh.sessions.archived.v1';
+/** 本机会话星标置顶 id 列表持久化 key。 */
+export const PINNED_STORAGE_KEY = 'dsh.sessions.pinned.v1';
 
 /** 没有 workspace 的会话统一归到这一组。 */
 export const UNKNOWN_WORKSPACE_KEY = '::unknown-workspace::';
@@ -75,6 +77,8 @@ export interface SessionGroup extends WorkspaceInfo {
 export interface GroupSessionsOptions {
   /** 已归档 id（本机归档），这些会话从工作区组里剔除。 */
   archivedIds?: ReadonlySet<string> | readonly string[] | null;
+  /** 已置顶 id（星标置顶），优先排在工作区最顶部。 */
+  pinnedIds?: ReadonlySet<string> | readonly string[] | null;
   /** 远端 session.search 返回的原始结果（可选）。 */
   searchResults?: readonly SessionRow[] | null;
   /** 当前搜索词；为空串时不生成「搜索结果」组。 */
@@ -182,7 +186,12 @@ function idOf(row: SessionRow): string {
  * 组内排序：**运行中排前**（带呼吸点，用户最关心），其次 updatedAt 倒序，
  * 最后用 sessionId 升序兜底，保证同一份输入永远得到同一份输出。
  */
-export function compareSessions(a: SessionRow, b: SessionRow): number {
+export function compareSessions(a: SessionRow, b: SessionRow, pinnedSet?: ReadonlySet<string>): number {
+  if (pinnedSet) {
+    const ap = pinnedSet.has(a.sessionId);
+    const bp = pinnedSet.has(b.sessionId);
+    if (ap !== bp) return ap ? -1 : 1;
+  }
   const ar = !!a.running;
   const br = !!b.running;
   if (ar !== br) return ar ? -1 : 1;
@@ -195,8 +204,8 @@ export function compareSessions(a: SessionRow, b: SessionRow): number {
 }
 
 /** 不就地修改输入（render 期间绝不允许改 props 数组）。 */
-export function sortSessions<T extends SessionRow>(rows: readonly T[]): T[] {
-  return [...rows].sort(compareSessions);
+export function sortSessions<T extends SessionRow>(rows: readonly T[], pinnedSet?: ReadonlySet<string>): T[] {
+  return [...rows].sort((a, b) => compareSessions(a, b, pinnedSet));
 }
 
 // ── 归档 id 集合 ────────────────────────────────────────────────────────────
@@ -227,6 +236,7 @@ export function groupSessions(
   const main = Array.isArray(sessions) ? sessions : [];
   const subs = Array.isArray(subagentSessions) ? subagentSessions : [];
   const archivedSet = toIdSet(options.archivedIds);
+  const pinnedSet = toIdSet(options.pinnedIds);
 
   const buckets = new Map<string, SessionGroup>();
   const archived: SessionRow[] = [];
@@ -275,8 +285,8 @@ export function groupSessions(
 
   const localIds = new Set<string>();
   for (const group of buckets.values()) {
-    group.sessions = sortSessions(group.sessions);
-    group.subagents = sortSessions(group.subagents);
+    group.sessions = sortSessions(group.sessions, pinnedSet);
+    group.subagents = sortSessions(group.subagents, pinnedSet);
     group.total = group.sessions.length + group.subagents.length;
     for (const row of group.sessions) localIds.add(row.sessionId);
     for (const row of group.subagents) localIds.add(row.sessionId);
@@ -487,6 +497,60 @@ export function setArchivedId(ids: readonly string[], id: string, archived: bool
   if (!id) return [...ids];
   const has = ids.includes(id);
   if (archived) return has ? [...ids] : [...ids, id];
+  return has ? ids.filter((x) => x !== id) : [...ids];
+}
+
+// ── 本机会话星标置顶 ────────────────────────────────────────────────────────
+
+/** 读置顶 id：过滤非字符串/空串并去重。 */
+export function readPinnedIds(
+  storage: StorageLike | null | undefined,
+  key: string = PINNED_STORAGE_KEY,
+): string[] {
+  const parsed = parseStored(storage, key);
+  if (!Array.isArray(parsed)) return [];
+  const seen = new Set<string>();
+  const ids: string[] = [];
+  for (const value of parsed) {
+    if (typeof value === 'string' && value && !seen.has(value)) {
+      seen.add(value);
+      ids.push(value);
+    }
+  }
+  return ids;
+}
+
+export function writePinnedIds(
+  ids: readonly string[],
+  storage: StorageLike | null | undefined,
+  key: string = PINNED_STORAGE_KEY,
+): boolean {
+  if (!storage) return false;
+  const seen = new Set<string>();
+  const clean: string[] = [];
+  for (const id of ids) {
+    if (typeof id === 'string' && id && !seen.has(id)) {
+      seen.add(id);
+      clean.push(id);
+    }
+  }
+  try {
+    storage.setItem(key, JSON.stringify(clean));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export function togglePinnedId(ids: readonly string[], id: string): string[] {
+  if (!id) return [...ids];
+  return ids.includes(id) ? ids.filter((x) => x !== id) : [...ids, id];
+}
+
+export function setPinnedId(ids: readonly string[], id: string, pinned: boolean): string[] {
+  if (!id) return [...ids];
+  const has = ids.includes(id);
+  if (pinned) return has ? [...ids] : [...ids, id];
   return has ? ids.filter((x) => x !== id) : [...ids];
 }
 
@@ -721,7 +785,7 @@ export function applyRenameEcho(
 
 // ── 会话操作菜单（T6）──────────────────────────────────────────────────────
 
-export type SessionActionId = 'rename' | 'copyId' | 'fork' | 'cancel' | 'archive' | 'unarchive';
+export type SessionActionId = 'rename' | 'copyId' | 'fork' | 'cancel' | 'archive' | 'unarchive' | 'pin' | 'unpin';
 
 export interface SessionActionItem {
   id: SessionActionId;
@@ -742,6 +806,8 @@ export const SESSION_ACTION_LABELS: Record<SessionActionId, string> = {
   cancel: '取消运行',
   archive: '本地归档（仅本机）',
   unarchive: '取消归档（仅本机）',
+  pin: '星标置顶',
+  unpin: '取消置顶',
 };
 
 export interface SessionActionCapabilities {
@@ -751,6 +817,8 @@ export interface SessionActionCapabilities {
   canCopyId?: boolean;
   canArchive?: boolean;
   canUnarchive?: boolean;
+  canPin?: boolean;
+  pinned?: boolean;
   /** 该行当前是否处于本机归档态（决定显示归档还是取消归档）。 */
   archived?: boolean;
 }
@@ -808,6 +876,12 @@ export function sessionActionItems(
       reason: caps.canUnarchive === true ? undefined : '未接线取消归档回调',
     });
   } else {
+    if (caps.canPin === true) {
+      items.push({
+        id: caps.pinned ? 'unpin' : 'pin',
+        label: caps.pinned ? SESSION_ACTION_LABELS.unpin : SESSION_ACTION_LABELS.pin,
+      });
+    }
     items.push({
       id: 'archive',
       label: SESSION_ACTION_LABELS.archive,

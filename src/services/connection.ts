@@ -289,7 +289,8 @@ export function isLanAddress(url: string): boolean {
     const raw = url.trim().replace(/^wss?:\/\//i, 'http://').replace(/^https?:\/\//i, 'http://');
     const parsed = new URL(raw.startsWith('http://') ? raw : `http://${raw}`);
     const host = parsed.hostname.toLowerCase();
-    if (host === 'localhost' || host === '127.0.0.1' || host === '::1' || host === '0.0.0.0') return true;
+    const cleanHost = host.replace(/^\[|\]$/g, '');
+    if (cleanHost === 'localhost' || cleanHost === '127.0.0.1' || cleanHost === '::1' || cleanHost === '0.0.0.0') return true;
     if (host.startsWith('192.168.')) return true;
     if (host.startsWith('10.')) return true;
     if (/^172\.(1[6-9]|2\d|3[01])\./.test(host)) return true;

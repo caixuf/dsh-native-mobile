@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { Archive, ArchiveRestore, ChevronRight, EllipsisVertical, Folder, MessageSquare } from 'lucide-react';
+import { Archive, ArchiveRestore, ChevronRight, EllipsisVertical, Folder, MessageSquare, Pin } from 'lucide-react';
 import type { SessionRow } from '../../types';
 import type { SessionActionId } from '../../lib/session-groups';
 import { describeWorkspace, formatSessionTime, sessionActionItems } from '../../lib/session-groups';
@@ -25,6 +25,10 @@ interface Props {
   archived?: boolean;
   onArchive?: (session: SessionRow) => void;
   onUnarchive?: (session: SessionRow) => void;
+  /** 是否星标置顶 */
+  pinned?: boolean;
+  onPin?: (session: SessionRow) => void;
+  onUnpin?: (session: SessionRow) => void;
   /** 紧凑模式：子代理子节里用，省一点垂直空间。 */
   compact?: boolean;
   /** 是否在卡片底部显示工作区标签（跨工作区搜索时显示短名，平时由分组头说明）。默认 false */
@@ -69,6 +73,9 @@ export const SessionCard: React.FC<Props> = ({
   archived = false,
   onArchive,
   onUnarchive,
+  pinned = false,
+  onPin,
+  onUnpin,
   compact = false,
   showWorkspace = false,
   onRename,
@@ -161,12 +168,24 @@ export const SessionCard: React.FC<Props> = ({
     canCopyId: true,
     canArchive: !!onArchive,
     canUnarchive: !!onUnarchive,
+    canPin: !!onPin || !!onUnpin,
+    pinned,
   });
 
   const handleAction = (id: SessionActionId) => {
     setMenuOpen(false);
     if (id === 'copyId') {
       void copyId();
+      return;
+    }
+    if (id === 'pin') {
+      onPin?.(session);
+      notify('已置顶会话');
+      return;
+    }
+    if (id === 'unpin') {
+      onUnpin?.(session);
+      notify('已取消置顶');
       return;
     }
     if (id === 'fork') {
@@ -223,6 +242,12 @@ export const SessionCard: React.FC<Props> = ({
           aria-label={`打开会话 ${session.title || session.sessionId}`}
         >
           <div className="flex items-center gap-1.5 min-w-0">
+            {pinned && (
+              <span className="shrink-0 flex items-center text-amber-500" title="已星标置顶" aria-label="已星标置顶">
+                <Pin size={13} className="fill-amber-400/40 text-amber-500" />
+              </span>
+            )}
+
             <h3
               className={`min-w-0 truncate font-semibold tracking-tight text-gray-900 group-hover:text-black transition-colors ${
                 compact ? 'text-[13.5px]' : 'text-[14.5px]'

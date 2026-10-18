@@ -65,6 +65,7 @@ import { ChangedFilesCard } from '../chat/ChangedFilesCard';
 import { AttachmentBar, ImageAttachment } from '../chat/AttachmentBar';
 import { clearDraft, loadDraft, loadExpandedKeys, saveDraft, saveExpandedKeys } from '../chat/draft-store';
 import { ImageViewerModal, FileViewerModal } from '../modals/MediaViewerModal';
+import { NetworkDiagnosticModal } from '../modals/NetworkDiagnosticModal';
 
 export interface UniversalAttachment {
   name: string;
@@ -82,6 +83,7 @@ import type { QueuedMessage } from '../../lib/message-queue';
 import { elapsedMs, formatDuration, modelLabel, phaseLabel, turnSummary } from '../../lib/session-activity';
 import type { ActivityState } from '../../lib/session-activity';
 import { describeWorkspace } from '../../lib/session-groups';
+import { exportMarkdownFile, formatSessionToMarkdown, sanitizeFilename } from '../../utils/export-markdown';
 import { Laptop } from 'lucide-react';
 
 interface Props {
@@ -122,7 +124,10 @@ interface Props {
   onSend: (text: string, image?: { data: string; mediaType: string }) => Promise<boolean> | boolean | void;
   onCancel: () => void;
   onApprove: (allow: boolean) => void;
-  onAnswerOption: (selected: string[] | string, customText?: string) => void;
+  onAnswerOption: (
+    selected: Array<{ id: string; selected: string[]; text?: string }> | string[] | string,
+    customText?: string,
+  ) => void;
   onOpenDrawer: () => void;
   onManageHosts?: () => void;
   onNewSession?: () => void;
@@ -185,6 +190,7 @@ export const ChatScreen: React.FC<Props> = ({
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [sendError, setSendError] = useState<string | null>(null);
   const [draftNotice, setDraftNotice] = useState<string | null>(null);
+  const [networkModalOpen, setNetworkModalOpen] = useState(false);
 
   const activeModelDisplayName =
     selectedModel?.model ||
@@ -291,6 +297,11 @@ export const ChatScreen: React.FC<Props> = ({
     setSendError(null);
     if (draftNotice) setDraftNotice(null);
     saveDraft(sessionId, value);
+    if (value.startsWith('/') && !value.includes(' ')) {
+      setCommandPaletteOpen(true);
+    } else {
+      setCommandPaletteOpen(false);
+    }
   };
 
   /**
@@ -358,11 +369,16 @@ export const ChatScreen: React.FC<Props> = ({
     clearDraft(targetSession);
   };
 
-  const togglePlanMode = () => {
+  const togglePlanMode = async () => {
     triggerHaptic('selection');
     const next = !planMode;
     setPlanMode(next);
-    void handleSendText(next ? '/plan' : '/plan off');
+    try {
+      await Promise.resolve(onSend(next ? '/plan' : '/plan off'));
+      setDraftNotice(next ? '已开启计划模式' : '已退出计划模式');
+    } catch {
+      setDraftNotice('计划模式切换失败，请重试');
+    }
   };
 
   /**
@@ -375,10 +391,34 @@ export const ChatScreen: React.FC<Props> = ({
     setPermissionMenuOpen(false);
     if (typeof localStorage !== 'undefined') localStorage.setItem(PERMISSION_STORAGE_KEY, preset);
     try {
-      await handleSendText('/permission ' + preset);
+      await Promise.resolve(onSend('/permission ' + preset));
       setDraftNotice('权限已切换为「' + (PERMISSION_PRESETS.find((p) => p.id === preset)?.label || preset) + '」');
     } catch {
       setDraftNotice('权限切换失败，电脑端没有确认收到');
+    }
+  };
+
+  const handleExportMarkdown = async () => {
+    try {
+      triggerHaptic('selection');
+      const content = formatSessionToMarkdown(
+        {
+          sessionId,
+          title,
+          workspace,
+          hostName,
+        },
+        lines,
+      );
+      const filename = sanitizeFilename(`${title || 'session'}-${sessionId.slice(0, 8)}`);
+      const res = await exportMarkdownFile(filename, content);
+      if (res.shared) {
+        setDraftNotice('已唤起系统分享');
+      } else if (res.downloaded) {
+        setDraftNotice(`已导出 ${filename}`);
+      }
+    } catch (e: unknown) {
+      setDraftNotice('导出失败: ' + ((e as Error)?.message || '未知错误'));
     }
   };
 
@@ -542,18 +582,21 @@ export const ChatScreen: React.FC<Props> = ({
                 <div className="flex items-center gap-1.5 text-[11px] text-[#52525b] truncate">
                   <span className="truncate">{hostName || 'caixuf'}</span>
                   {liveConnected && (
-                    <span
-                      title={isLan ? '局域网直连高速通道 (LAN)' : '公网服务器中继通道 (WAN)'}
-                      className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full text-[9.5px] font-semibold border shrink-0 ${
+                    <button
+                      type="button"
+                      onClick={() => setNetworkModalOpen(true)}
+                      aria-label="查看网络链路诊断"
+                      title="点击查看网络链路诊断"
+                      className={`min-h-[44px] inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[9.5px] font-semibold border shrink-0 cursor-pointer ${
                         isLan
                           ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
                           : 'bg-blue-50 text-blue-700 border-blue-200'
                       }`}
                     >
-                      <span className={`w-1 h-1 rounded-full ${isLan ? 'bg-emerald-500 animate-pulse' : 'bg-blue-500'}`} />
+                      <span className={`w-1.5 h-1.5 rounded-full ${isLan ? 'bg-emerald-500 animate-pulse' : 'bg-blue-500'}`} />
                       <span>{isLan ? 'LAN ⚡' : 'WAN 🌐'}</span>
                       {pingMs != null && <span className="font-mono">{pingMs}ms</span>}
-                    </span>
+                    </button>
                   )}
                   {workspace && (
                     <>
@@ -625,6 +668,17 @@ export const ChatScreen: React.FC<Props> = ({
                 title="开启新会话"
               >
                 <Plus size={20} />
+              </button>
+            )}
+            {lines.length > 0 && (
+              <button
+                onClick={handleExportMarkdown}
+                type="button"
+                aria-label="导出为 Markdown"
+                className="w-11 h-11 rounded-full hover:bg-gray-100 flex items-center justify-center text-gray-700 transition-colors cursor-pointer"
+                title="导出为 Markdown 全文"
+              >
+                <Download size={19} />
               </button>
             )}
             <button
@@ -1103,7 +1157,10 @@ export const ChatScreen: React.FC<Props> = ({
             isOpen={commandPaletteOpen}
             onClose={() => setCommandPaletteOpen(false)}
             onSelect={(cmd) => {
-              setInputText(cmd + ' ');
+              const nextVal = cmd + ' ';
+              setInputText(nextVal);
+              inputRef.current = nextVal;
+              saveDraft(sessionId, nextVal);
               setCommandPaletteOpen(false);
             }}
             filterText={inputText}
@@ -1242,8 +1299,10 @@ export const ChatScreen: React.FC<Props> = ({
                       type="button"
                       onClick={() => {
                         setAddMenuOpen(false);
-                        setInputText((prev) => (prev ? prev + ' /goal ' : '/goal '));
-                        inputRef.current = '/goal ';
+                        const nextVal = inputRef.current ? inputRef.current + ' /goal ' : '/goal ';
+                        setInputText(nextVal);
+                        inputRef.current = nextVal;
+                        saveDraft(sessionId, nextVal);
                       }}
                       className="w-full min-h-[44px] flex items-center justify-between px-2.5 py-2 rounded-xl hover:bg-white/10 text-left transition-colors cursor-pointer group"
                     >
@@ -1259,8 +1318,10 @@ export const ChatScreen: React.FC<Props> = ({
                       type="button"
                       onClick={() => {
                         setAddMenuOpen(false);
-                        setInputText((prev) => (prev ? prev + ' /plan ' : '/plan '));
-                        inputRef.current = '/plan ';
+                        const nextVal = inputRef.current ? inputRef.current + ' /plan ' : '/plan ';
+                        setInputText(nextVal);
+                        inputRef.current = nextVal;
+                        saveDraft(sessionId, nextVal);
                       }}
                       className="w-full min-h-[44px] flex items-center justify-between px-2.5 py-2 rounded-xl hover:bg-white/10 text-left transition-colors cursor-pointer group"
                     >
@@ -1276,8 +1337,10 @@ export const ChatScreen: React.FC<Props> = ({
                       type="button"
                       onClick={() => {
                         setAddMenuOpen(false);
-                        setInputText((prev) => (prev ? prev + ' /feedback ' : '/feedback '));
-                        inputRef.current = '/feedback ';
+                        const nextVal = inputRef.current ? inputRef.current + ' /feedback ' : '/feedback ';
+                        setInputText(nextVal);
+                        inputRef.current = nextVal;
+                        saveDraft(sessionId, nextVal);
                       }}
                       className="w-full min-h-[44px] flex items-center justify-between px-2.5 py-2 rounded-xl hover:bg-white/10 text-left transition-colors cursor-pointer group"
                     >
@@ -1296,9 +1359,14 @@ export const ChatScreen: React.FC<Props> = ({
                     {/* 压缩 compact */}
                     <button
                       type="button"
-                      onClick={() => {
+                      onClick={async () => {
                         setAddMenuOpen(false);
-                        void handleSendText('/compact');
+                        try {
+                          await Promise.resolve(onSend('/compact'));
+                          setDraftNotice('已发送上下文压缩指令');
+                        } catch {
+                          setDraftNotice('压缩指令发送失败');
+                        }
                       }}
                       className="w-full min-h-[44px] flex items-center justify-between px-2.5 py-2 rounded-xl hover:bg-white/10 text-left transition-colors cursor-pointer group"
                     >
@@ -1451,6 +1519,21 @@ export const ChatScreen: React.FC<Props> = ({
                   title="添加与指令"
                 >
                   <Plus size={19} className="transition-transform duration-200" />
+                </button>
+
+                {/* 快捷斜杠指令入口 */}
+                <button
+                  type="button"
+                  onClick={() => setCommandPaletteOpen((prev) => !prev)}
+                  aria-label="快捷指令"
+                  className={`w-11 h-11 rounded-full flex items-center justify-center font-mono font-bold text-[15px] transition-all cursor-pointer shrink-0 ${
+                    commandPaletteOpen
+                      ? 'bg-blue-600 text-white shadow-xs'
+                      : 'text-gray-600 hover:text-black hover:bg-gray-100'
+                  }`}
+                  title="快捷指令 (/)"
+                >
+                  /
                 </button>
 
                 {/* 会话权限切换胶囊 (对齐官方桌面端完全权限 ⌵) */}
@@ -1607,6 +1690,17 @@ export const ChatScreen: React.FC<Props> = ({
           onClose={() => setPreviewAttachment(null)}
         />
       )}
+
+      {/* 实时网络链路与健康诊断面板 */}
+      <NetworkDiagnosticModal
+        isOpen={networkModalOpen}
+        onClose={() => setNetworkModalOpen(false)}
+        hostName={hostName}
+        isLan={isLan}
+        liveConnected={liveConnected}
+        pingMs={pingMs}
+        onRetestLan={onRefreshConnection}
+      />
     </div>
   );
 };

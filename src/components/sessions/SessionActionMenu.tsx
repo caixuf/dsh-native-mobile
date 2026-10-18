@@ -8,6 +8,8 @@ import {
   GitFork,
   LoaderCircle,
   Pencil,
+  Pin,
+  PinOff,
   X,
 } from 'lucide-react';
 import type { SessionRow } from '../../types';
@@ -58,6 +60,10 @@ function ActionIcon({ id }: { id: SessionActionId }) {
       return <Archive size={16} className={ICON_CLASS} />;
     case 'unarchive':
       return <ArchiveRestore size={16} className={ICON_CLASS} />;
+    case 'pin':
+      return <Pin size={16} className={ICON_CLASS} />;
+    case 'unpin':
+      return <PinOff size={16} className={ICON_CLASS} />;
     default:
       return null;
   }

@@ -19,12 +19,15 @@ import {
   normalizeSessionTitle,
   readArchivedIds,
   readCollapseState,
+  readPinnedIds,
   resolveCollapseState,
   setArchivedId,
   setRenameEcho,
   subagentSectionKey,
+  togglePinnedId,
   writeArchivedIds,
   writeCollapseState,
+  writePinnedIds,
 } from '../../lib/session-groups';
 
 /**
@@ -84,6 +87,9 @@ interface Props {
   archivedIds?: string[];
   onArchive?: (s: SessionRow) => void;
   onUnarchive?: (s: SessionRow) => void;
+  /** 已星标置顶的会话 id（传入即受控）。 */
+  pinnedIds?: string[];
+  onTogglePin?: (s: SessionRow) => void;
   /** 远端搜索结果（session.search 原始 items），单独成组。 */
   searchResults?: SessionRow[];
   /** T6：重命名（session.rename，args `{request:{sessionId,title}}`）。 */
@@ -109,6 +115,8 @@ export const SessionsScreen: React.FC<Props> = ({
   archivedIds,
   onArchive,
   onUnarchive,
+  pinnedIds,
+  onTogglePin,
   searchResults,
   onRenameSession,
   onForkSession,
@@ -138,9 +146,24 @@ export const SessionsScreen: React.FC<Props> = ({
 
   const [storedCollapse, setStoredCollapse] = useState<CollapseState>(() => readCollapseState(storage));
   const [internalArchived, setInternalArchived] = useState<string[]>(() => readArchivedIds(storage));
+  const [internalPinned, setInternalPinned] = useState<string[]>(() => readPinnedIds(storage));
 
   const archiveControlled = Array.isArray(archivedIds);
   const archivedList = archiveControlled ? (archivedIds as string[]) : internalArchived;
+
+  const pinControlled = Array.isArray(pinnedIds);
+  const pinnedList = pinControlled ? (pinnedIds as string[]) : internalPinned;
+  const pinnedSet = useMemo(() => new Set(pinnedList), [pinnedList]);
+
+  const handleTogglePin = (session: SessionRow) => {
+    if (onTogglePin) {
+      onTogglePin(session);
+      return;
+    }
+    const next = togglePinnedId(internalPinned, session.sessionId);
+    setInternalPinned(next);
+    writePinnedIds(next, storage);
+  };
 
   const persistCollapse = (next: CollapseState) => {
     setStoredCollapse(next);
@@ -182,10 +205,11 @@ export const SessionsScreen: React.FC<Props> = ({
     () =>
       groupSessions(localMain, localSubagents, {
         archivedIds: archivedList,
+        pinnedIds: pinnedList,
         searchResults,
         searchQuery: query,
       }),
-    [localMain, localSubagents, archivedList, searchResults, query],
+    [localMain, localSubagents, archivedList, pinnedList, searchResults, query],
   );
 
   const collapsed = useMemo(
@@ -536,6 +560,8 @@ export const SessionsScreen: React.FC<Props> = ({
               onOpen={onOpen}
               onArchive={onArchive}
               onUnarchive={onUnarchive}
+              pinnedIds={pinnedSet}
+              onTogglePin={handleTogglePin}
               priorityIds={priorityIds}
               onRename={renameSession ? handleRenameSession : undefined}
               onFork={forkSession}
