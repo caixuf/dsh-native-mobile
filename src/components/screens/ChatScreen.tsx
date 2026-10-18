@@ -455,9 +455,8 @@ export const ChatScreen: React.FC<Props> = ({
   /** 流式光标：仅"实时链路健康 + 任务在跑"时显示（链路断了不假装还在输出）。 */
   const showStreamCursor = running && liveConnected === true;
 
-  /** 综合判定会话是否正在运行中（结合 running 标志、活动相位、未完成工具调用或准备状态） */
-  const hasRunningTool = lines.some((l) => l.kind === 'tool/call' && !l.toolResult);
-  const isBusy = running || (!!activity && activity.phase !== 'idle') || hasRunningTool || preparing;
+  /** 会话是否真正处于任务执行中（以主机 running 状态、发送中或准备中为准，绝不把历史工具调用误当正在运行） */
+  const isBusy = Boolean(running || preparing || sending);
 
   // 「用时 1分56秒」必须**自己走**，不能等下一条事件才刷新 ——
   // 工具跑一分钟时事件可能一直不来，只靠事件驱动会让计时停在原地。

@@ -782,10 +782,21 @@ export const App: React.FC = () => {
               chatLinesRef.current = kept;
               setChatLines(kept);
               activityRef.current = buildActivity(records);
-              setActivityTick((n) => n + 1);
-              if (activityRef.current && activityRef.current.phase !== 'idle') {
+              // 快照是历史事件：已结束的会话绝不能被历史快照篡改成 running=true
+              if (session.running === true) {
                 setRunning(true);
+              } else {
+                setRunning(false);
+                if (activityRef.current) {
+                  activityRef.current = {
+                    ...activityRef.current,
+                    phase: 'idle',
+                    toolName: null,
+                    thinking: null,
+                  };
+                }
               }
+              setActivityTick((n) => n + 1);
             }
             setChatError(null);
             return;
@@ -801,17 +812,24 @@ export const App: React.FC = () => {
               evType === 'step/start' ||
               evType === 'tool/call' ||
               evType === 'turn/start' ||
-              evType === 'agent/start' ||
-              (activityRef.current && activityRef.current.phase !== 'idle')
+              evType === 'agent/start'
             ) {
               setRunning(true);
             } else if (
               evType === 'turn/end' ||
               evType === 'session/complete' ||
               evType === 'run/finish' ||
-              evType === 'session/idle'
+              evType === 'session/idle' ||
+              evType === 'cancel'
             ) {
               setRunning(false);
+              activityRef.current = {
+                ...activityRef.current,
+                phase: 'idle',
+                toolName: null,
+                thinking: null,
+              };
+              setActivityTick((n) => n + 1);
             }
 
             // 每个工具的独立耗时：tool/call 记下时刻，tool/result 算出毫秒并写到那一行。
@@ -1258,7 +1276,10 @@ export const App: React.FC = () => {
   const handleCancelPrompt = async () => {
     if (!currentSession || !connRef.current) return;
     try {
+      stopTurnWatch();
       setRunning(false);
+      setSending(false);
+      setPreparing(false);
       activityRef.current = {
         ...activityRef.current,
         phase: 'idle',
