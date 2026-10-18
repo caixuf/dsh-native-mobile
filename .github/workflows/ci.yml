@@ -53,14 +53,17 @@ jobs:
       # 它内部跑 `sdkmanager tools`，而新版 cmdline-tools (16.0) 已经不再发布
       # `tools` 包，报 `Warning: Failed to find package 'tools'` 后 exit 1。
       # GitHub 托管的 ubuntu runner **本来**就预装了 Android SDK，并且已经设好
-      # ANDROID_HOME / ANDROID_SDK_ROOT，直接补装需要的 platform/build-tools 即可。
+      # ANDROID_HOME / ANDROID_SDK_ROOT。
+      # 但 sdkmanager **不在 PATH 上**（实测 line 3: sdkmanager: command not found,
+      # exit 127），必须用 $ANDROID_HOME/cmdline-tools/*/bin/sdkmanager 的绝对路径。
       - name: Install Android Platform
         run: |
           echo "ANDROID_HOME=$ANDROID_HOME"
-          echo "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT"
-          sdkmanager --version
-          yes | sdkmanager --licenses > /dev/null 2>&1 || true
-          sdkmanager "platforms;android-35" "build-tools;35.0.0"
+          SDKMANAGER=$(ls -d "$ANDROID_HOME"/cmdline-tools/*/bin/sdkmanager 2>/dev/null | head -1)
+          echo "sdkmanager: $SDKMANAGER"
+          test -n "$SDKMANAGER"
+          yes | "$SDKMANAGER" --licenses > /dev/null 2>&1 || true
+          "$SDKMANAGER" "platforms;android-35" "build-tools;35.0.0"
 
       - name: Install Dependencies
         run: pnpm install --frozen-lockfile
@@ -115,8 +118,11 @@ jobs:
       # 所以不需要 android/local.properties（它被 gitignore，且写死本机 Windows 路径）。
       - name: Install Android Platform
         run: |
-          yes | sdkmanager --licenses > /dev/null 2>&1 || true
-          sdkmanager "platforms;android-35" "build-tools;35.0.0"
+          SDKMANAGER=$(ls -d "$ANDROID_HOME"/cmdline-tools/*/bin/sdkmanager 2>/dev/null | head -1)
+          echo "sdkmanager: $SDKMANAGER"
+          test -n "$SDKMANAGER"
+          yes | "$SDKMANAGER" --licenses > /dev/null 2>&1 || true
+          "$SDKMANAGER" "platforms;android-35" "build-tools;35.0.0"
 
       - name: Install Dependencies
         run: pnpm install --frozen-lockfile
