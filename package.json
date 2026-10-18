@@ -4,6 +4,7 @@
   "version": "1.4.2",
   "type": "module",
   "scripts": {
+    "postinstall": "npm --prefix packages/dsh-mobile-gateway install",
     "dev": "vite --host 0.0.0.0 --port 3000",
     "build": "node scripts/build-web.mjs",
     "preview": "vite preview --host 0.0.0.0 --port 3000",
