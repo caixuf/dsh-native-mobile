@@ -11,30 +11,31 @@
  * 契约逻辑刻意写成零 Android 依赖的纯 Kotlin（见 MiniJson.kt 注释），
  * 才能这样在 JVM 上直接测。
  *
- * 工具链路径与本仓库既有的 `scripts/build-apk.mjs` 保持一致（本机是 Windows + 固定
- * 安装目录）。换机器时改这两个常量即可。
+ * 工具链路径由 `scripts/lib/gradle.mjs` 统一解析：优先仓库自带的 wrapper
+ * （CI / 换机器可复现），其次本机固定安装目录，最后 PATH 上的 gradle。
+ * 本机 Windows 开发机仍是固定的 android-toolchain 目录，行为不变。
  */
 
 import { execSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { resolveGradle, gradleEnv } from './lib/gradle.mjs';
 
 const rootDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const androidDir = path.join(rootDir, 'android');
 
-const defaultWinJava = 'C:\\Users\\20247\\Downloads\\android-toolchain\\jdk17';
-const defaultWinGradle = 'C:\\Users\\20247\\Downloads\\android-toolchain\\gradle-8.11.1\\bin\\gradle.bat';
-
-const JAVA_HOME = process.env.JAVA_HOME || (fs.existsSync(defaultWinJava) ? defaultWinJava : undefined);
-const GRADLE_BIN = process.env.GRADLE_BIN || (fs.existsSync(defaultWinGradle) ? defaultWinGradle : 'gradle');
+const gradle = resolveGradle();
+const GRADLE_BIN = gradle.bin;
 
 console.log('🤖 Android 原生单元测试（JVM）');
 console.log('─'.repeat(52));
 
 let hasGradle = false;
 try {
-  execSync(`"${GRADLE_BIN}" -v`, { stdio: 'ignore' });
+  // 探测也要带上 JAVA_HOME：wrapper 自己需要 java，否则会误判成「没装 Gradle」
+  // 而静默跳过原生测试（2026-10-19 踩过：wrapper 存在但探测返回 false）。
+  execSync(`"${GRADLE_BIN}" -v`, { stdio: 'ignore', env: gradleEnv() });
   hasGradle = true;
 } catch {
   hasGradle = false;
@@ -45,12 +46,11 @@ if (!hasGradle) {
   process.exit(0);
 }
 
+console.log(`   使用 Gradle (${gradle.kind}): ${GRADLE_BIN}`);
+
 execSync(`"${GRADLE_BIN}" testDebugUnitTest --console=plain`, {
   cwd: androidDir,
-  env: {
-    ...process.env,
-    ...(JAVA_HOME ? { JAVA_HOME } : {}),
-  },
+  env: gradleEnv(),
   stdio: 'inherit',
 });
 

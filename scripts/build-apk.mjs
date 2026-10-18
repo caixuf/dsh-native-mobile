@@ -2,6 +2,7 @@ import { execSync } from 'child_process';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import { resolveGradle, gradleEnv } from './lib/gradle.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -87,18 +88,12 @@ copyRecursive(distDir, assetsWebDir);
 console.log('   ✓ 网页资产已就绪');
 
 console.log('🔨 2. 执行 Gradle 打包 Android APK...');
-const defaultWinJava = 'C:\\Users\\20247\\Downloads\\android-toolchain\\jdk17';
-const defaultWinGradle = 'C:\\Users\\20247\\Downloads\\android-toolchain\\gradle-8.11.1\\bin\\gradle.bat';
+const gradle = resolveGradle();
+console.log(`   使用 Gradle (${gradle.kind}): ${gradle.bin}`);
 
-const javaHome = process.env.JAVA_HOME || (fs.existsSync(defaultWinJava) ? defaultWinJava : undefined);
-const gradleBin = process.env.GRADLE_BIN || (fs.existsSync(defaultWinGradle) ? defaultWinGradle : 'gradle');
-
-execSync(`"${gradleBin}" assembleDebug`, {
+execSync(`"${gradle.bin}" assembleDebug`, {
   cwd: androidDir,
-  env: {
-    ...process.env,
-    ...(javaHome ? { JAVA_HOME: javaHome } : {}),
-  },
+  env: gradleEnv(),
   stdio: 'inherit',
 });
 

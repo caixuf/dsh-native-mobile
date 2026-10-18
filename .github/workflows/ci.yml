@@ -8,6 +8,10 @@ on:
     branches: [main]
   workflow_dispatch:
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   verify:
     name: Test & Verify
@@ -19,11 +23,22 @@ jobs:
         with:
           fetch-depth: 0
 
+      # 🔴 本仓库用 pnpm（pnpm-lock.yaml），根目录**没有** package-lock.json
+      # （它在 .gitignore 里）。原先这里配 `cache: 'npm'` + `npm install`，
+      # setup-node 会在第一步就报
+      #   "Dependencies lock file is not found ... Supported file patterns:
+      #    package-lock.json,npm-shrinkwrap.json,yarn.lock"
+      # 直接 FAIL —— v1.5.0 的 tag 发布就是这么卡死的。改用 pnpm。
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
       - name: Setup Node.js 22
         uses: actions/setup-node@v4
         with:
           node-version: 22
-          cache: 'npm'
+          cache: 'pnpm'
 
       - name: Setup Java 17
         uses: actions/setup-java@v4
@@ -34,14 +49,24 @@ jobs:
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
 
+      # 🔴 `pnpm run verify` 末尾包含 `test:android`（gradle testDebugUnitTest），
+      # 它需要 Android SDK（compileSdk 35）。原先 verify job 只装了 Java 没装 SDK，
+      # 一旦前面的步骤修通，这一步必然失败。android/local.properties 被 gitignore，
+      # 所以必须靠 ANDROID_SDK_ROOT/ANDROID_HOME 环境变量定位（setup-android 会设）。
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android Platform
+        run: sdkmanager "platforms;android-35" "build-tools;35.0.0"
+
       - name: Install Dependencies
-        run: npm install
+        run: pnpm install --frozen-lockfile
 
       - name: Run Typecheck
-        run: npm run typecheck
+        run: pnpm run typecheck
 
       - name: Run Full Verification Pipeline
-        run: npm run verify
+        run: pnpm run verify
 
       - name: Upload Web Build Artifact
         uses: actions/upload-artifact@v4
@@ -51,7 +76,7 @@ jobs:
           retention-days: 7
 
   release:
-    name: GitHub Release
+    name: Build APK & Publish Release
     needs: [verify]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
@@ -62,25 +87,61 @@ jobs:
       - name: Checkout Code
         uses: actions/checkout@v4
 
-      - name: Download Web Dist Artifact
-        uses: actions/download-artifact@v4
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
         with:
-          name: dsh-web-dist
-          path: dist
+          version: 10
+
+      - name: Setup Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: 'pnpm'
+
+      - name: Setup Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      # 提供 ANDROID_SDK_ROOT / ANDROID_HOME，AGP 靠它定位 SDK，
+      # 所以 runner 上不需要 android/local.properties（它被 gitignore）。
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android Platform
+        run: sdkmanager "platforms;android-35" "build-tools;35.0.0"
+
+      - name: Install Dependencies
+        run: pnpm install --frozen-lockfile
+
+      # build:apk = tsc -b && vite build && 拷 dist 进 assets/web && gradle assembleDebug
+      # 走仓库自带的 gradlew（scripts/lib/gradle.mjs 优先解析 wrapper）。
+      - name: Build APK
+        run: pnpm run build:apk
 
       - name: Create Web Distribution Archive
         run: |
           tar -czf dsh-native-mobile-web-${{ github.ref_name }}.tar.gz -C dist .
-          zip -r dsh-native-mobile-web-${{ github.ref_name }}.zip dist/
+          (cd dist && zip -qr ../dsh-native-mobile-web-${{ github.ref_name }}.zip .)
 
+      - name: List Release Assets
+        run: ls -lh dist-apk/ *.tar.gz *.zip
+
+      # 🔴 之前这里只发 web 压缩包、**不发 APK** —— 但用户在手机上要装的正是
+      # APK，Release 页面因此永远拿不到安装包（v1.4.x 的 APK 是本地手工传的）。
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.ref_name }}
-          name: Release ${{ github.ref_name }}
+          name: DSH Remote ${{ github.ref_name }}
           draft: false
           prerelease: false
           generate_release_notes: true
           files: |
+            dist-apk/dsh-mobile-${{ github.ref_name }}.apk
             dsh-native-mobile-web-${{ github.ref_name }}.tar.gz
             dsh-native-mobile-web-${{ github.ref_name }}.zip
