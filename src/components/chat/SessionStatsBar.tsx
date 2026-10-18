@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { ChevronDown, ChevronRight, Gauge, Database, Layers } from 'lucide-react';
+import { ChevronDown, ChevronRight } from 'lucide-react';
 import { triggerHaptic } from '../../utils/haptics';
 
 interface Props {
@@ -40,18 +40,28 @@ export const SessionStatsBar: React.FC<Props> = ({ activity, usage, context, det
     setOpen((v) => !v);
   };
 
-  const seg = (label: string, value: string | null, icon?: React.ReactNode) =>
+  /**
+   * 一个读数段。
+   *
+   * 🔴 2026-10-19 真机实测：旧版给每段都塞了彩色图标 + 段间「·」分隔符，
+   * 三个读数拼出来是 `1 轮 30 步 · 249 tok/s · 1.1M tok · 缓存命中 99% · 上下文 15.9%`，
+   * 横向滚动条下用户只能看到前 3 段，剩下的全被切断 —— 而这正是用户说的
+   * 「头部信息互相冲突」。现在：
+   *   · 去掉彩色图标（三个颜色在浅底上抢注意力，且各 12px 白占宽度）；
+   *   · 段间用间距而不是「·」（圆点在窄屏上是纯噪音）；
+   *   · 值用等宽字体（数字对齐，扫视更快），标签用普通字体。
+   */
+  const seg = (label: string, value: string | null) =>
     value ? (
-      <span className="inline-flex items-center gap-1.5 shrink-0 whitespace-nowrap text-[11px]">
-        {icon}
-        {label && <span className={`${LABEL_TEXT} shrink-0 font-medium`}>{label}</span>}
-        <span className="text-[#18181b] font-mono font-medium">{value}</span>
+      <span className="inline-flex items-baseline gap-1 shrink-0 whitespace-nowrap text-[11px] leading-none">
+        {label && <span className={`${LABEL_TEXT} shrink-0`}>{label}</span>}
+        <span className="text-[#18181b] font-mono font-medium tabular-nums">{value}</span>
       </span>
     ) : null;
 
   return (
     <div
-      className="w-full bg-white/95 border-b border-gray-100 backdrop-blur-md px-4 py-1.5 transition-all select-none"
+      className="w-full bg-white/95 border-b border-gray-100 backdrop-blur-md px-4 py-1 select-none"
       data-testid="session-stats"
     >
       <div className="max-w-2xl mx-auto">
@@ -60,19 +70,17 @@ export const SessionStatsBar: React.FC<Props> = ({ activity, usage, context, det
           onClick={handleToggle}
           aria-expanded={open}
           aria-label={open ? '收起会话性能统计' : '展开会话性能统计明细'}
-          className="w-full flex items-center justify-between gap-3 text-left py-1 px-2.5 rounded-lg bg-[#f4f4f6] hover:bg-gray-200 border border-gray-200/60 transition-colors cursor-pointer"
+          className="w-full flex items-center justify-between gap-2 text-left py-1 px-2.5 rounded-lg bg-[#f4f4f6] hover:bg-gray-200 border border-gray-200/60 transition-colors cursor-pointer"
         >
           <div className="relative flex-1 min-w-0">
             <div
               ref={scrollerRef}
               onScroll={syncOverflow}
-              className="flex items-center gap-3 overflow-x-auto no-scrollbar py-0.5"
+              className="flex items-center gap-2.5 overflow-x-auto no-scrollbar py-0.5"
             >
-              {seg('', activity, <Gauge size={12} className="text-blue-600 shrink-0" />)}
-              {activity && (usage || context) && <span className="text-[#52525b] shrink-0">·</span>}
-              {seg('', usage, <Database size={12} className="text-indigo-600 shrink-0" />)}
-              {usage && context && <span className="text-[#52525b] shrink-0">·</span>}
-              {seg('上下文', context, <Layers size={11} className="text-purple-600 shrink-0" />)}
+              {seg('', activity)}
+              {seg('', usage)}
+              {seg('', context)}
             </div>
             {more && (
               <span
@@ -83,7 +91,7 @@ export const SessionStatsBar: React.FC<Props> = ({ activity, usage, context, det
             )}
           </div>
           {detail.length > 0 && (
-            <span className={`flex items-center gap-1 text-[10.5px] ${LABEL_TEXT} hover:text-gray-900 shrink-0 pl-1`}>
+            <span className={`flex items-center gap-0.5 text-[10.5px] ${LABEL_TEXT} hover:text-gray-900 shrink-0 pl-1`}>
               <span>{open ? '收起' : '明细'}</span>
               {open ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
             </span>

@@ -747,8 +747,15 @@ check('触控目标：输入区/队列条/工具卡/折叠消息的交互按钮 
     for (const tag of tags) {
       const matched = tag.match(/className=(?:"([^"]*)"|\{`([^`]*)`\})/);
       const cls = (matched && (matched[1] ?? matched[2])) || '';
+      // 两种达标方式，二选一：
+      //   A. 可见尺寸本身 ≥44px（w-11 / h-11 / min-h-[44px]）
+      //   B. 视觉上是很小的胶囊（如头部 LAN 徽章，9.5px 字号），
+      //      但用 `before:` 伪元素把**可点区域**撑到 44px。
+      //      20px 可见高 + 上下各 12px = 44px（见 test-header-layout.mjs 的数值校验）。
+      const visibleOk = /w-11|h-11|min-h-\[44px\]/.test(cls);
+      const hitAreaOk = /before:-inset-y-\[12px\]/.test(cls);
       ok(
-        /w-11|h-11|min-h-\[44px\]/.test(cls),
+        visibleOk || hitAreaOk,
         `${rel} 有按钮缺少 44px 触控目标: ${tag.replace(/\s+/g, ' ').slice(0, 90)}`,
       );
     }

@@ -80,7 +80,7 @@ import { DeepSeekLogo } from '../common/DeepSeekLogo';
 import { DeepSeekMascot } from '../common/DeepSeekMascot';
 import { triggerHaptic } from '../../utils/haptics';
 import type { QueuedMessage } from '../../lib/message-queue';
-import { elapsedMs, formatDuration, modelLabel, phaseLabel, turnSummary } from '../../lib/session-activity';
+import { activityHeadline, elapsedMs, formatDuration, modelLabel, phaseLabel, turnSummary } from '../../lib/session-activity';
 import type { ActivityState } from '../../lib/session-activity';
 import { describeWorkspace } from '../../lib/session-groups';
 import { exportMarkdownFile, formatSessionToMarkdown, sanitizeFilename } from '../../utils/export-markdown';
@@ -191,6 +191,8 @@ export const ChatScreen: React.FC<Props> = ({
   const [sendError, setSendError] = useState<string | null>(null);
   const [draftNotice, setDraftNotice] = useState<string | null>(null);
   const [networkModalOpen, setNetworkModalOpen] = useState(false);
+  /** 头部「更多」菜单：把 Plan / 导出 / 侧边菜单收进二级，避免常驻挤压标题与网络状态。 */
+  const [headerMenuOpen, setHeaderMenuOpen] = useState(false);
 
   const activeModelDisplayName =
     selectedModel?.model ||
@@ -508,9 +510,15 @@ export const ChatScreen: React.FC<Props> = ({
   }, [isBusy]);
 
   const activityOn = isBusy && !!activity && activity.phase !== 'idle';
-  const activityText = activityOn ? phaseLabel(activity as ActivityState, clockTick) : '';
-  const activityModel = activityOn ? modelLabel(activity as ActivityState) : '';
-  const activityElapsed = activityOn ? formatDuration(elapsedMs(activity as ActivityState, clockTick)) : '';
+  /**
+   * 运行中头部的那一行文案。
+   *
+   * 🔴 2026-10-19 真机实测：旧版把 `phaseLabel`（状态+步号+已完成步数+工具耗时）
+   * 直接塞进头部徽章，得到 306px 宽的胶囊，把头部动作区顶出屏幕 127px。
+   * 现在改为**单行纯文本**，且文案由 `activityHeadline` 统一组合
+   * （步号只出现一次、耗时只出现一次、不显示 0秒）。
+   */
+  const activityHeadlineText = activityOn ? activityHeadline(activity as ActivityState, clockTick) : '';
   /**
    * 跑完之后的总结（`3 步 · 2 次工具调用 · 用时 42秒 · 输出 1.2k tokens`）。
    * 只在"刚跑完一轮"时出现；数据不足就显示空 —— 不塞"0 步 0 秒"这种噪音。
@@ -575,38 +583,89 @@ export const ChatScreen: React.FC<Props> = ({
               </button>
             )}
             {lines.length > 0 && (
-              <div className="min-w-0">
-                <h2 className="text-[15px] font-bold tracking-tight text-gray-900 truncate">
+              <div className="min-w-0 flex-1">
+                <h2 className="text-[15px] font-bold tracking-tight text-gray-900 truncate leading-tight">
                   {title || '新会话'}
                 </h2>
-                <div className="flex items-center gap-1.5 text-[11px] text-[#52525b] truncate">
-                  <span className="truncate">{hostName || 'caixuf'}</span>
-                  {liveConnected && (
-                    <button
-                      type="button"
-                      onClick={() => setNetworkModalOpen(true)}
-                      aria-label="查看网络链路诊断"
-                      title="点击查看网络链路诊断"
-                      className={`min-h-[44px] inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[9.5px] font-semibold border shrink-0 cursor-pointer ${
-                        isLan
-                          ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
-                          : 'bg-blue-50 text-blue-700 border-blue-200'
-                      }`}
-                    >
-                      <span className={`w-1.5 h-1.5 rounded-full ${isLan ? 'bg-emerald-500 animate-pulse' : 'bg-blue-500'}`} />
-                      <span>{isLan ? 'LAN ⚡' : 'WAN 🌐'}</span>
-                      {pingMs != null && <span className="font-mono">{pingMs}ms</span>}
-                    </button>
-                  )}
-                  {workspace && (
+                {/* 副标题行：闲时显示「主机 · 工作区」，运行时**替换**为运行态文案。
+                    两态复用同一行，头部高度不跳变（旧版运行态另起一行，头部 83→102px）。
+                    🔴 闲态下主机名优先让位给工作区：真机实测 `desktop` 被压成 `de...`
+                    而工作区又被 `dsh-nati...` 截断，两个都读不出来 —— 不如只保留一个完整的。
+                    主机名本身在下方输入区的胶囊里已完整显示，这里可以省。 */}
+                <div className="flex items-center gap-1.5 text-[11px] text-[#52525b] truncate leading-tight min-h-[18px]">
+                  {activityOn ? (
                     <>
-                      <span>·</span>
+                      <span className="w-1.5 h-1.5 rounded-full bg-rose-500 animate-pulse shrink-0" />
                       <span
-                        className="truncate font-medium text-gray-700 max-w-[130px]"
-                        title={workspace}
+                        data-testid="activity-headline"
+                        className="text-rose-600 font-medium truncate min-w-0"
                       >
-                        {describeWorkspace(workspace).label}
+                        {activityHeadlineText}
                       </span>
+                      {liveConnected && (
+                        <span
+                          className={`inline-flex items-center gap-1 px-1.5 rounded-full text-[9.5px] font-semibold border shrink-0 leading-[14px] ${
+                            isLan
+                              ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                              : 'bg-blue-50 text-blue-700 border-blue-200'
+                          }`}
+                        >
+                          {isLan ? 'LAN' : 'WAN'}
+                        </span>
+                      )}
+                    </>
+                  ) : (
+                    <>
+                      {workspace ? (
+                        <>
+                          <span
+                            className="truncate font-medium text-gray-700 min-w-0"
+                            title={workspace}
+                          >
+                            {describeWorkspace(workspace).label}
+                          </span>
+                          {liveConnected && (
+                            <button
+                              type="button"
+                              onClick={() => setNetworkModalOpen(true)}
+                              aria-label="查看网络链路诊断"
+                              title="点击查看网络链路诊断"
+                              // 🔴 不要在这枚 9.5px 的小徽章上加 min-h-[44px]：
+                              // 它会把整条副标题行撑到 44px（实测 headerInner 因此 67px 高，
+                              // 头部 83px）。触控目标靠 before: 伪元素的负 inset 扩大。
+                              className={`relative inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[9.5px] font-semibold border shrink-0 cursor-pointer before:absolute before:-inset-y-[12px] before:-inset-x-1 before:content-[''] ${
+                                isLan
+                                  ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                                  : 'bg-blue-50 text-blue-700 border-blue-200'
+                              }`}
+                            >
+                              <span className={`w-1.5 h-1.5 rounded-full ${isLan ? 'bg-emerald-500 animate-pulse' : 'bg-blue-500'}`} />
+                              <span>{isLan ? 'LAN ⚡' : 'WAN 🌐'}</span>
+                            </button>
+                          )}
+                        </>
+                      ) : (
+                        <>
+                          <span className="truncate">{hostName || 'caixuf'}</span>
+                          {liveConnected && (
+                            <button
+                              type="button"
+                              onClick={() => setNetworkModalOpen(true)}
+                              aria-label="查看网络链路诊断"
+                              title="点击查看网络链路诊断"
+                              className={`relative inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[9.5px] font-semibold border shrink-0 cursor-pointer before:absolute before:-inset-y-[12px] before:-inset-x-1 before:content-[''] ${
+                                isLan
+                                  ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                                  : 'bg-blue-50 text-blue-700 border-blue-200'
+                              }`}
+                            >
+                              <span className={`w-1.5 h-1.5 rounded-full ${isLan ? 'bg-emerald-500 animate-pulse' : 'bg-blue-500'}`} />
+                              <span>{isLan ? 'LAN ⚡' : 'WAN 🌐'}</span>
+                              {pingMs != null && <span className="font-mono">{pingMs}ms</span>}
+                            </button>
+                          )}
+                        </>
+                      )}
                     </>
                   )}
                 </div>
@@ -615,6 +674,9 @@ export const ChatScreen: React.FC<Props> = ({
           </div>
 
           <div className="flex items-center gap-1 shrink-0">
+            {/* 🔴 运行中只留一个"停止"入口（旧版头部徽章也做成 306px 宽的停止按钮，
+                加上时间线与输入区各一个，共 3 处重复；真机量出头部因此溢出 127px）。
+                运行态改在下方状态行用纯文本表达，这里只保留一个紧凑的停止按钮。 */}
             {isBusy ? (
               <button
                 type="button"
@@ -629,8 +691,7 @@ export const ChatScreen: React.FC<Props> = ({
                 data-phase={activityOn ? (activity as ActivityState).phase : 'unknown'}
               >
                 <Square size={11} fill="currentColor" className="text-rose-600 animate-pulse" />
-                <span className="truncate">{activityText || '停止任务'}</span>
-                {activityElapsed && <span className="font-mono text-[11px] opacity-80 shrink-0">· {activityElapsed}</span>}
+                <span className="shrink-0">停止</span>
               </button>
             ) : summaryText ? (
               <span
@@ -640,60 +701,100 @@ export const ChatScreen: React.FC<Props> = ({
                 {summaryText}
               </span>
             ) : null}
-            {lines.length > 0 && (
-              <button
-                type="button"
-                onClick={togglePlanMode}
-                aria-label={`计划模式：${planMode ? '已开启' : '已关闭'}`}
-                className={`flex items-center gap-1 px-2.5 py-1 min-h-[44px] rounded-full text-[11px] font-mono transition-colors cursor-pointer shrink-0 ${
-                  planMode
-                    ? 'bg-purple-100 text-purple-700 border border-purple-300 font-semibold'
-                    : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
-                }`}
-                title={planMode ? '点击退出计划模式' : '点击开启计划模式'}
-              >
-                <CheckSquare size={11} className={planMode ? 'text-purple-600' : 'text-[#52525b]'} />
-                <span>{planMode ? 'Plan' : 'Plan'}</span>
-              </button>
-            )}
-            {onNewSession && (
-              <button
-                onClick={() => {
-                  triggerHaptic('light');
-                  onNewSession();
-                }}
-                type="button"
-                aria-label="开启新会话"
-                className="theme-text-accent w-11 h-11 rounded-full hover:bg-gray-100 flex items-center justify-center transition-colors cursor-pointer"
-                title="开启新会话"
-              >
-                <Plus size={20} />
-              </button>
-            )}
-            {lines.length > 0 && (
-              <button
-                onClick={handleExportMarkdown}
-                type="button"
-                aria-label="导出为 Markdown"
-                className="w-11 h-11 rounded-full hover:bg-gray-100 flex items-center justify-center text-gray-700 transition-colors cursor-pointer"
-                title="导出为 Markdown 全文"
-              >
-                <Download size={19} />
-              </button>
-            )}
+            {/* 导出/Plan/新会话/更多收进二级菜单（2026-10-19 真机实测）：
+                旧版这 4 枚 44px 按钮常驻头部，把动作区顶出屏幕 **127px**；
+                而且 360dp 下标题被压到只剩「给我手机安装…」。
+                「新会话」在会话列表 FAB 与抽屉里都有入口，头部这枚非必需。 */}
             <button
               onClick={() => {
                 triggerHaptic('light');
-                onOpenDrawer();
+                setHeaderMenuOpen((v) => !v);
               }}
               type="button"
-              aria-label="打开侧边菜单"
-              className="w-11 h-11 rounded-full hover:bg-gray-100 flex items-center justify-center text-gray-700 transition-colors cursor-pointer"
+              aria-label="更多操作"
+              aria-expanded={headerMenuOpen}
+              className="w-11 h-11 rounded-full hover:bg-gray-100 flex items-center justify-center text-gray-700 transition-colors cursor-pointer shrink-0"
+              title="更多操作"
             >
               <MoreHorizontal size={19} />
             </button>
           </div>
         </div>
+
+        {headerMenuOpen && (
+          <>
+            <div className="fixed inset-0 z-40" onClick={() => setHeaderMenuOpen(false)} aria-hidden="true" />
+            <div
+              role="menu"
+              data-testid="header-menu"
+              className="absolute right-3 top-[calc(100%-4px)] z-50 w-44 rounded-2xl bg-white border border-gray-200 shadow-xl py-1 animate-in fade-in-50 zoom-in-95 duration-120"
+            >
+              <button
+                type="button"
+                role="menuitem"
+                onClick={() => {
+                  setHeaderMenuOpen(false);
+                  triggerHaptic('light');
+                  togglePlanMode();
+                }}
+                className="w-full min-h-[44px] flex items-center gap-2.5 px-3.5 text-left text-[13px] text-gray-800 hover:bg-gray-50 cursor-pointer"
+              >
+                <CheckSquare size={15} className={planMode ? 'text-purple-600' : 'text-gray-500'} />
+                <span className="flex-1">计划模式</span>
+                <span className={`text-[11px] font-semibold ${planMode ? 'text-purple-600' : 'text-gray-400'}`}>
+                  {planMode ? '已开' : '关闭'}
+                </span>
+              </button>
+              {lines.length > 0 && (
+                <button
+                  type="button"
+                  role="menuitem"
+                  onClick={() => {
+                    setHeaderMenuOpen(false);
+                    triggerHaptic('light');
+                    handleExportMarkdown();
+                  }}
+                  className="w-full min-h-[44px] flex items-center gap-2.5 px-3.5 text-left text-[13px] text-gray-800 hover:bg-gray-50 cursor-pointer"
+                  aria-label="导出为 Markdown"
+                  title="导出为 Markdown 全文"
+                >
+                  <Download size={15} className="text-gray-500" />
+                  <span>导出 Markdown</span>
+                </button>
+              )}
+              {onNewSession && (
+                <button
+                  type="button"
+                  role="menuitem"
+                  onClick={() => {
+                    setHeaderMenuOpen(false);
+                    triggerHaptic('light');
+                    onNewSession();
+                  }}
+                  className="w-full min-h-[44px] flex items-center gap-2.5 px-3.5 text-left text-[13px] text-gray-800 hover:bg-gray-50 cursor-pointer"
+                  aria-label="开启新会话"
+                  title="开启新会话"
+                >
+                  <Plus size={15} className="text-gray-500" />
+                  <span>新会话</span>
+                </button>
+              )}
+              <button
+                type="button"
+                role="menuitem"
+                onClick={() => {
+                  setHeaderMenuOpen(false);
+                  triggerHaptic('light');
+                  onOpenDrawer();
+                }}
+                className="w-full min-h-[44px] flex items-center gap-2.5 px-3.5 text-left text-[13px] text-gray-800 hover:bg-gray-50 cursor-pointer"
+              >
+                <MoreHorizontal size={15} className="text-gray-500" />
+                <span>打开侧边菜单</span>
+              </button>
+            </div>
+          </>
+        )}
       </header>
 
       {/* 1.1 Session Performance & Readouts Bar (对齐桌面端 StatsPills，置顶展开，不遮挡底栏操作) */}
@@ -1134,23 +1235,10 @@ export const ChatScreen: React.FC<Props> = ({
             onRetry={handleRetryQueued}
           />
 
-          {/* Running cancel button */}
-          {isBusy && (
-            <div className="flex justify-center mb-2.5">
-              <button
-                type="button"
-                onClick={() => {
-                  triggerHaptic('medium');
-                  onCancel();
-                }}
-                aria-label="停止当前任务"
-                className="flex items-center gap-2 min-h-[44px] px-5 rounded-full bg-rose-50 border border-rose-300 text-rose-600 text-[13px] font-semibold shadow-sm hover:bg-rose-100 active:scale-95 transition-all cursor-pointer"
-              >
-                <Square size={12} fill="currentColor" className="animate-pulse" />
-                <span>停止当前任务</span>
-              </button>
-            </div>
-          )}
+          {/* 🔴 「停止当前任务」原来在这里还有第三个入口（头部徽章 / 这里 / 输入区各一个）。
+              它悬在时间线底部、把阅读区顶上去 44px+，而且与输入区那颗圆形停止键完全同义。
+              实测（2026-10-19）后移除：运行态改由头部单行文案表达，
+              停止操作用头部紧凑按钮 + 输入区圆形按钮两处即可。 */}
 
           {/* Quick Command Palette */}
           <CommandPalette

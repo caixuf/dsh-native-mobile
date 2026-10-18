@@ -15,6 +15,7 @@ import {
   formatTokens,
   isProcessEvent,
   modelLabel,
+  activityHeadline,
   phaseLabel,
   stepMarkerLine,
   turnSummary,
@@ -120,18 +121,18 @@ check('出现正文就算"在答"，不再显示分析中', () => {
 });
 
 check('文案对齐 GUI 措辞：分析中 / 正在调用 pwsh / 第 2 步 / 已完成 1 步 / 用时', () => {
-  // 停在 tool/call 上
+  // 停在 tool/call 上 —— phaseLabel 现在只给**状态短语**（步数与耗时由 activityHeadline 组合）
   let s = buildActivity(EVENTS.slice(0, 7));
   const label = phaseLabel(s, T0 + 10000);
   ok(label.includes('执行命令'), `tool 阶段要说人话，实际=${label}`);
   ok(!label.includes('pwsh'), `过程条不该甩英文工具名：${label}`);
-  ok(label.includes('第 1 步'), `应带步骤号：${label}`);
-  ok(label.includes('用时'), `应带耗时：${label}`);
+  ok(!label.includes('第 1 步'), `phaseLabel 不再夹带步号（否则会和 headline 重复）：${label}`);
+  ok(!label.includes('用时'), `phaseLabel 不再夹带耗时：${label}`);
   // 走到第 2 步开头
   s = buildActivity(EVENTS.slice(0, 10));
   const label2 = phaseLabel(s, T0 + 14000);
   ok(label2.includes('第 2 步'), `step 阶段文案=${label2}`);
-  ok(label2.includes('已完成 1 步'), `应带已完成步数：${label2}`);
+  ok(!label2.includes('已完成 1 步'), `phaseLabel 不再夹带已完成步数：${label2}`);
   // 纯 thinking
   const s3 = applyActivityEvent(buildActivity(EVENTS.slice(0, 6)), {
     type: 'step/end',
@@ -150,6 +151,42 @@ check('文案对齐 GUI 措辞：分析中 / 正在调用 pwsh / 第 2 步 / 已
     `未知工具应优雅降级：${phaseLabel(unknownTool, T0 + 9000)}`,
   );
   eq(phaseLabel(emptyActivity(), T0), '', '没有轮次就不该有文案');
+});
+
+check('🔴 头部只占一行：activityHeadline 不重复步号、耗时只出现一次、不出现 0秒', () => {
+  // 真机实测旧版文案是：
+  //   `执行命令 · 第 55 步 · 已完成 2 步 · 用时 2秒 · 0秒`（306px 宽，把动作区顶出屏幕 127px）
+  const s = buildActivity(EVENTS.slice(0, 7));
+  const head = activityHeadline(s, T0 + 10000);
+
+  ok(head.includes('执行命令'), `应含状态短语：${head}`);
+  // 步号只能出现一次
+  eq((head.match(/第 \d+ 步/g) || []).length, 1, `步号必须只出现一次：${head}`);
+  // 「已完成 N 步」这种第二套口径必须消失
+  ok(!head.includes('已完成'), `不该再出现"已完成 N 步"（与步号是两套口径）：${head}`);
+  // 耗时只出现一次，且不出现「用时」前缀（时间本身就是耗时）
+  eq((head.match(/\d+分\d+秒|\d+小时|\d+秒/g) || []).length, 1, `耗时必须只出现一次：${head}`);
+  ok(!head.includes('用时'), `不要"用时"前缀，避免两次耗时打架：${head}`);
+  ok(!head.includes('0秒'), `刚起步不显示 0秒 噪音：${head}`);
+
+  // 极窄屏可容纳的宽度预算：真机 412px 视口里，这一行连图标后的可用宽度约 210px
+  ok(head.length <= 26, `文案长度 ${head.length} 超出单行预算 26 字：${head}`);
+
+  // 没有起点（turnStartedAt 缺失）时不能凭空造耗时
+  const noStart = { ...emptyActivity(), phase: 'thinking', step: 3, stepsDone: 0, turnStartedAt: null };
+  ok(!/\d+秒/.test(activityHeadline(noStart, T0)), '没有轮次起点就不该显示耗时');
+});
+
+check('思考摘要会截断，不把头部撑开', () => {
+  const long = '这是一段很长的推理内容'.repeat(10);
+  const s = applyActivityEvent(emptyActivity(), {
+    type: 'assistant/message',
+    time: T0,
+    data: { message: { content: [{ type: 'reasoning', text: long }] } },
+  });
+  const head = activityHeadline(s, T0 + 1000);
+  ok(head.startsWith('分析中'), `应在分析中：${head}`);
+  ok(head.length <= 46, `头部文案被截断后仍过长（${head.length}）：${head}`);
 });
 
 check('耗时格式化：秒 / 分秒 / 小时', () => {

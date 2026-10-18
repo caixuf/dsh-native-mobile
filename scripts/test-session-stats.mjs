@@ -82,9 +82,9 @@ check('能从 {asOfSeq, values} 里挑出四个投影（也容忍直接给 value
 
 check('tok/s 与桌面版同口径：decodeTokens / (decodeMs/1000)', () => {
   // 641389 / 2196.017 = 292.06… 桌面版截图当时显示 295 tok/s（同一公式，会话在跑所以数字在变）
-  eq(formatTokensPerSecond(REAL.values.sessionStats), '292 tok/s');
-  eq(formatTokensPerSecond({ decodeTokens: 100, decodeMs: 1000 }), '100 tok/s');
-  eq(formatTokensPerSecond({ decodeTokens: 150, decodeMs: 1000 }), '150 tok/s');
+  eq(formatTokensPerSecond(REAL.values.sessionStats), '292 t/s');
+  eq(formatTokensPerSecond({ decodeTokens: 100, decodeMs: 1000 }), '100 t/s');
+  eq(formatTokensPerSecond({ decodeTokens: 150, decodeMs: 1000 }), '150 t/s');
   // 没有解码时长就**没有读数**，不能显示 0
   eq(formatTokensPerSecond({ decodeTokens: 0, decodeMs: 0 }), null);
   eq(formatTokensPerSecond({ decodeTokens: 100 }), null);
@@ -143,16 +143,40 @@ check('token 紧凑格式与桌面版一致（K/M）', () => {
 
 check('三个读数拼装成状态栏文案', () => {
   const r = buildReadouts(pickProjections(REAL));
-  ok(r.activity && r.activity.includes('20 轮 906 步'), `activity=${r.activity}`);
-  ok(r.activity && r.activity.includes('292 tok/s'), `activity=${r.activity}`);
-  ok(r.usage && r.usage.includes('缓存命中'), `usage=${r.usage}`);
-  ok(r.usage && r.usage.includes('334M'), `usage=${r.usage}（>=100 时按桌面版口径取整）`);
+  // 步数必须标「累计」：头部同时显示「第 N 步」（本轮），两个都叫"步"会互相矛盾
+  ok(r.activity && r.activity.includes('20轮'), `activity=${r.activity}`);
+  ok(r.activity && r.activity.includes('累计906步'), `累计步数要显式标注：${r.activity}`);
+  ok(r.activity && r.activity.includes('292 t/s'), `activity=${r.activity}`);
+  ok(r.usage && r.usage === '334M', `usage 只留数值（单位省给宽度预算）：${r.usage}`);
   eq(r.context, '35.7%');
   // 明细里应有模型/工具耗时、首字延迟、缓存桶、上下文构成
   const labels = r.detail.map((d) => d.label);
   for (const want of ['模型耗时', '工具耗时', '首字延迟', '输出速度', '缓存命中', '缓存读取', '上下文']) {
     ok(labels.includes(want), `明细缺少「${want}」，现有：${JSON.stringify(labels)}`);
   }
+});
+
+check('🔴 状态栏一行放得下：按真机 360dp 宽度的可视预算校验', () => {
+  const r = buildReadouts(pickProjections(REAL));
+  const line = [r.activity, r.usage, r.context].filter(Boolean).join('  ');
+  // 🔴 用户真机截图 540px / 1.5dpr = **360dp**。模拟器实测（CDP 改视口宽度）：
+  //   360dp 下统计条可视宽仅 **264px**；旧文案在这一行放不下 —— 还差 16px，
+  //   于是最后一段「上下文 x%」被裁掉，用户看到的就是「信息不全/互相冲突」。
+  // 估算口径：11px 等宽字体约 6.2px/字符，中文字符按 2 字符宽。
+  const width = [...line].reduce((sum, ch) => sum + (/[\u4e00-\u9fa5]/.test(ch) ? 11 : 6.2), 0);
+  ok(width <= 264, `拼出来约 ${Math.round(width)}px，超过 360dp 下的 264px 可视预算：${line}`);
+  ok(!line.includes('缓存命中'), `缓存命中不该出现在主行（明细里有）：${line}`);
+});
+
+check('🔴 同一读数不在主行和明细里各说一遍（用户反馈"信息互相冲突"）', () => {
+  const r = buildReadouts(pickProjections(REAL));
+  // 缓存命中只允许在明细出现；主行重复一次就是噪音
+  ok(!r.usage?.includes('缓存命中'), `usage 主行不该再带缓存命中：${r.usage}`);
+  ok(r.detail.some((d) => d.label === '缓存命中'), '缓存命中应在明细里');
+  // 上下文只出现在 context 字段，主行不再重复
+  ok(!r.activity?.includes('上下文'), `activity 不该重复上下文：${r.activity}`);
+  // 步数口径：主行只有「累计 N 步」这一套
+  eq((r.activity.match(/步/g) || []).length, 1, `步数只该出现一次：${r.activity}`);
 });
 
 check('数据缺失时读数为 null（UI 必须隐藏，绝不显示 0 冒充真实值）', () => {
@@ -167,8 +191,8 @@ check('数据缺失时读数为 null（UI 必须隐藏，绝不显示 0 冒充�
   eq(partial.usage, null);
 
   const noSpeed = buildReadouts({ sessionStats: { turns: 3, steps: 7 } });
-  ok(noSpeed.activity === '3 轮 7 步', `没有速度时应只剩计数：${noSpeed.activity}`);
-  ok(!noSpeed.activity?.includes('tok/s'), '没有速度就不该出现 tok/s');
+  ok(noSpeed.activity === '3轮 · 累计7步', `没有速度时应只剩计数：${noSpeed.activity}`);
+  ok(!noSpeed.activity?.includes('t/s'), '没有速度就不该出现 tok/s');
 });
 
 console.log('  ──────────────────────────────────────────────────');

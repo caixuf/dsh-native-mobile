@@ -244,33 +244,62 @@ export function elapsedMs(state: ActivityState, nowMsNow: number): number {
 }
 
 /**
- * 过程条的文案。对齐 GUI 的措辞：分析中 / 执行命令 / 第 N 步 / 深度搜索中，用时 …
+ * 过程条的**状态短语**（单一语义，不含步数与耗时）。
+ *
+ * 对齐 GUI 的措辞：分析中 / 执行命令 / 第 N 步 / 收尾中。
+ *
+ * 🔴 2026-10-19 实测修正：旧实现把「第 N 步」+「已完成 M 步」+「用时 X」全塞进
+ * 这一个字符串，真机量出的结果是一枚 **306px 宽**的徽章
+ * （`执行命令 · 第 55 步 · 已完成 2 步 · 用时 2秒 · 0秒`），把头部右侧动作区
+ * 顶出屏幕 127px。而且：
+ *   - `第 55 步`（步号）与 `已完成 2 步`（本轮完成数）是两套口径，并排即冲突；
+ *   - `用时 2秒`（工具耗时）与界面另加的轮次耗时 `0秒` 是同一件事说两遍。
+ * 所以这里**只输出状态短语**，步数与耗时由调用方组合一次。
  */
-export function phaseLabel(state: ActivityState, nowMsNow: number): string {
+export function phaseLabel(state: ActivityState, _nowMsNow?: number): string {
   if (state.phase === 'idle') return '';
-  const parts: string[] = [];
   switch (state.phase) {
     case 'thinking':
-      parts.push(state.thinking ? `分析中 · ${state.thinking}` : '分析中');
-      break;
+      return state.thinking ? `分析中 · ${state.thinking}` : '分析中';
     case 'tool':
       // 说人话（"执行命令"），不要甩英文工具名（"正在调用 pwsh"）——对齐 GUI 的「执行了命令」
-      parts.push(state.toolName ? toolActionLabel(state.toolName, 'running') : '正在调用工具');
-      break;
+      return state.toolName ? toolActionLabel(state.toolName, 'running') : '正在调用工具';
     case 'step':
-      parts.push(state.step ? `第 ${state.step} 步` : '准备中');
-      break;
+      return state.step ? `第 ${state.step} 步` : '准备中';
     case 'finalizing':
-      parts.push('收尾中');
-      break;
+      return '收尾中';
     default:
-      break;
+      return '';
   }
+}
+
+/**
+ * 运行中头部那一行的完整文案：`执行命令 · 第 55 步 · 2分42秒`。
+ *
+ * 组合规则（每条都对应一个被实测证实的坑）：
+ *   1. 状态短语已含「第 N 步」时**不再重复**步号；
+ *   2. **耗时只在末尾出现一次**（旧版会把工具耗时和轮次耗时各显示一遍）；
+ *   3. 耗时为 0（刚开始/没有起点）时**整段省略**，不显示 `0秒` 这种噪音；
+ *   4. 思考摘要可能很长 → 截到 `最长 36 字`，避免把布局撑开。
+ */
+export function activityHeadline(state: ActivityState, nowMsNow: number): string {
+  if (state.phase === 'idle') return '';
+  let head = phaseLabel(state, nowMsNow);
+  if (!head) return '';
+  // 思考摘要在手机头部只留一小段，完整内容在时间线里
+  if (state.phase === 'thinking') {
+    const prefix = '分析中 · ';
+    if (head.startsWith(prefix)) {
+      const note = head.slice(prefix.length);
+      head = note.length > 36 ? `${prefix}${note.slice(0, 36)}…` : head;
+    }
+  }
+
+  const parts = [head];
   if (state.step && state.phase !== 'step') parts.push(`第 ${state.step} 步`);
-  if (state.stepsDone > 0) parts.push(`已完成 ${state.stepsDone} 步`);
-  if (state.toolName && state.phase === 'tool' && state.toolStartedAt) {
-    parts.push(`用时 ${formatDuration(nowMsNow - state.toolStartedAt)}`);
-  }
+
+  const elapsed = elapsedMs(state, nowMsNow);
+  if (elapsed > 0) parts.push(formatDuration(elapsed));
   return parts.join(' · ');
 }
 
