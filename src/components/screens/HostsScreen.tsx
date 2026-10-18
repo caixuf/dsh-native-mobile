@@ -15,6 +15,8 @@ interface Props {
   onAdd: () => void;
   onAddDemo?: () => void;
   onBack?: () => void;
+  onSetConnectionMode?: (id: string, mode: 'auto' | 'lan' | 'wan') => void;
+  onProbeLan?: (id: string) => void;
 }
 
 export const HostsScreen: React.FC<Props> = ({
@@ -28,6 +30,8 @@ export const HostsScreen: React.FC<Props> = ({
   onAdd,
   onAddDemo,
   onBack,
+  onSetConnectionMode,
+  onProbeLan,
 }) => {
   const [forgetTarget, setForgetTarget] = useState<string | null>(null);
   const [renameTarget, setRenameTarget] = useState<HostRecord | null>(null);
@@ -171,12 +175,37 @@ export const HostsScreen: React.FC<Props> = ({
                               当前使用
                             </span>
                           )}
+                          {isActive && linkState.type === 'ready' && (
+                            <span
+                              className={`px-2 py-0.5 rounded-full text-[10px] font-semibold border flex items-center gap-1 ${
+                                linkState.isLan
+                                  ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                                  : 'bg-blue-50 text-blue-700 border-blue-200'
+                              }`}
+                            >
+                              <span
+                                className={`w-1.5 h-1.5 rounded-full ${
+                                  linkState.isLan ? 'bg-emerald-500 animate-pulse' : 'bg-blue-500'
+                                }`}
+                              />
+                              {linkState.isLan ? '局域网直连 ⚡' : '公网中继 🌐'}
+                              {linkState.pingMs != null && <span>({linkState.pingMs}ms)</span>}
+                            </span>
+                          )}
                         </div>
-                        <p className="text-[12px] font-mono text-[#52525b] mt-0.5 truncate">{host.baseUrl}</p>
-                        <div className="flex items-center gap-2 text-[11.5px] text-[#52525b] mt-1.5">
+                        <p className="text-[12px] font-mono text-[#52525b] mt-0.5 truncate">
+                          {isActive && linkState.effectiveUrl ? linkState.effectiveUrl : host.activeUrl || host.baseUrl}
+                        </p>
+                        <div className="flex flex-wrap items-center gap-2 text-[11.5px] text-[#52525b] mt-1.5">
                           <span>实例: {host.instanceName || '未知主机'}</span>
                           <span>·</span>
                           <span>最近活跃: {formatTime(host.lastUsedAt)}</span>
+                          {host.lanAddresses && host.lanAddresses.length > 0 && (
+                            <>
+                              <span>·</span>
+                              <span className="text-emerald-700 font-medium">发现 {host.lanAddresses.length} 个局域网端点</span>
+                            </>
+                          )}
                         </div>
                       </div>
                     </div>
@@ -204,7 +233,63 @@ export const HostsScreen: React.FC<Props> = ({
                     </div>
                   </div>
 
-                  <div className="mt-3.5 pt-3 border-t border-gray-200/60 flex items-center justify-end">
+                  {/* 局域网通道控制与进入遥控操作栏 */}
+                  <div className="mt-3.5 pt-3 border-t border-gray-200/60 flex flex-wrap items-center justify-between gap-2">
+                    <div className="flex items-center gap-1.5">
+                      {onSetConnectionMode && (
+                        <div className="flex items-center gap-1 bg-white/80 p-0.5 rounded-lg border border-gray-200 text-[11px]">
+                          <span className="text-[#52525b] px-1.5 font-medium">模式:</span>
+                          <button
+                            type="button"
+                            onClick={() => onSetConnectionMode(host.id, 'auto')}
+                            className={`px-2 py-0.5 rounded-md font-medium transition-colors ${
+                              (host.connectionMode ?? 'auto') === 'auto'
+                                ? 'bg-black text-white'
+                                : 'text-gray-600 hover:text-black'
+                            }`}
+                            title="优先局域网直连，若不在同一Wi-Fi则自动回退到公网服务器"
+                          >
+                            自动优先
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => onSetConnectionMode(host.id, 'lan')}
+                            className={`px-2 py-0.5 rounded-md font-medium transition-colors ${
+                              host.connectionMode === 'lan'
+                                ? 'bg-black text-white'
+                                : 'text-gray-600 hover:text-black'
+                            }`}
+                            title="仅走局域网，不通过云端服务器中继"
+                          >
+                            仅局域网
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => onSetConnectionMode(host.id, 'wan')}
+                            className={`px-2 py-0.5 rounded-md font-medium transition-colors ${
+                              host.connectionMode === 'wan'
+                                ? 'bg-black text-white'
+                                : 'text-gray-600 hover:text-black'
+                            }`}
+                            title="始终通过云端服务器中继"
+                          >
+                            仅公网
+                          </button>
+                        </div>
+                      )}
+                      {isActive && onProbeLan && (
+                        <button
+                          type="button"
+                          onClick={() => onProbeLan(host.id)}
+                          className="px-2.5 py-1 rounded-lg bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border border-emerald-200/80 text-[11px] font-medium transition-colors flex items-center gap-1"
+                          title="主动向当前Wi-Fi探测电脑端口并切换"
+                        >
+                          <RefreshCw size={11} />
+                          <span>探测局域网</span>
+                        </button>
+                      )}
+                    </div>
+
                     <button
                       onClick={() => onOpen(host.id)}
                       type="button"

@@ -243,7 +243,17 @@ export const App: React.FC = () => {
       connRef.current.stop();
     }
 
-    const conn = new DshConnection(record.baseUrl, record.token, record.label);
+    const conn = new DshConnection(record.baseUrl, record.token, record.label, {
+      lanUrls: record.lanAddresses,
+      preferredLanUrl: record.lanUrl,
+      connectionMode: record.connectionMode ?? 'auto',
+      onActiveUrlChange: (activeUrl) => {
+        HostStore.updateActiveUrl(record.id, activeUrl);
+        setHosts(HostStore.all());
+        const published = NativeBridge.publishConnection(activeUrl, record.token, record.label);
+        if (published) setRelayStatus(published);
+      },
+    });
     connRef.current = conn;
 
     // 换主机/重连：旧的实时流属于旧连接，必须显式关掉
@@ -251,7 +261,8 @@ export const App: React.FC = () => {
 
     // 把凭据交给原生壳：Android 由前台服务在后台守着审批通道（WebView 一旦切后台
     // 就会被挂起，靠网页自己守不住）；普通浏览器里这是安全的空操作。
-    const published = NativeBridge.publishConnection(record.baseUrl, record.token, record.label);
+    const initialBaseUrl = conn.getEffectiveBaseUrl();
+    const published = NativeBridge.publishConnection(initialBaseUrl, record.token, record.label);
     if (published) setRelayStatus(published);
 
     conn.onStateChange((state) => {
@@ -259,6 +270,14 @@ export const App: React.FC = () => {
       if (state.type === 'ready') {
         loadSessions(conn);
         loadModelCatalog(conn);
+        const cands = conn.getLanCandidates();
+        if (cands.length > 0) {
+          HostStore.updateNetwork(record.id, {
+            lanAddresses: cands,
+            activeUrl: conn.getEffectiveBaseUrl(),
+          });
+          setHosts(HostStore.all());
+        }
       }
     });
 
@@ -662,7 +681,7 @@ export const App: React.FC = () => {
   const handleOpenSession = (session: SessionRow) => {
     // 切会话就停止上一轮的跟踪，避免把 A 会话的轮询结果写进 B 会话
     stopTurnWatch();
-    setRunning(false);
+    setRunning(session.running === true);
     setCurrentSession(session);
     setRoute('chat');
     // 先清空：否则上一会话的消息会短暂串台（真机实测 2–3 秒，F5）
@@ -764,6 +783,9 @@ export const App: React.FC = () => {
               setChatLines(kept);
               activityRef.current = buildActivity(records);
               setActivityTick((n) => n + 1);
+              if (activityRef.current && activityRef.current.phase !== 'idle') {
+                setRunning(true);
+              }
             }
             setChatError(null);
             return;
@@ -773,6 +795,24 @@ export const App: React.FC = () => {
             // 过程状态：每条事件都归约一次（分析中/调用工具/第 N 步…）
             activityRef.current = applyActivityEvent(activityRef.current, event);
             setActivityTick((n) => n + 1);
+
+            const evType = String(event?.type || '');
+            if (
+              evType === 'step/start' ||
+              evType === 'tool/call' ||
+              evType === 'turn/start' ||
+              evType === 'agent/start' ||
+              (activityRef.current && activityRef.current.phase !== 'idle')
+            ) {
+              setRunning(true);
+            } else if (
+              evType === 'turn/end' ||
+              evType === 'session/complete' ||
+              evType === 'run/finish' ||
+              evType === 'session/idle'
+            ) {
+              setRunning(false);
+            }
 
             // 每个工具的独立耗时：tool/call 记下时刻，tool/result 算出毫秒并写到那一行。
             // （只靠"当前工具"的时间算不出历史工具的耗时，必须按 callId 配对。）
@@ -1218,12 +1258,22 @@ export const App: React.FC = () => {
   const handleCancelPrompt = async () => {
     if (!currentSession || !connRef.current) return;
     try {
+      setRunning(false);
+      activityRef.current = {
+        ...activityRef.current,
+        phase: 'idle',
+        toolName: null,
+        thinking: null,
+      };
+      setActivityTick((n) => n + 1);
+
       await connRef.current.call('session.cancel', {
         request: { sessionId: currentSession.sessionId },
       });
-      setRunning(false);
+      void loadProjections(currentSession.sessionId);
     } catch (err) {
       console.warn('Cancel failed', err);
+      setError('停止任务失败：' + ((err as Error)?.message || '网络异常'));
     }
   };
 
@@ -1392,6 +1442,27 @@ export const App: React.FC = () => {
       if (activeHostId) startHostConnection(activeHostId);
     });
   }, [activeHostId]);
+
+  const handleSetConnectionMode = (id: string, mode: 'auto' | 'lan' | 'wan') => {
+    HostStore.setConnectionMode(id, mode);
+    setHosts(HostStore.all());
+    if (connRef.current && activeHostId === id) {
+      connRef.current.setConnectionMode(mode);
+    }
+  };
+
+  const handleProbeLan = async (id: string) => {
+    if (connRef.current && activeHostId === id) {
+      setNotice('正在探测局域网直连...');
+      const ok = await connRef.current.switchToLanNow();
+      if (ok) {
+        setNotice('✅ 已成功切换至局域网高速通道！');
+      } else {
+        setNotice('未能探测到可用局域网服务，继续保持公网中继');
+      }
+      setTimeout(() => setNotice(null), 3000);
+    }
+  };
 
   /**
    * Android 壳的返回键。
@@ -1623,6 +1694,8 @@ export const App: React.FC = () => {
               onAdd={() => setRoute('pair')}
               onAddDemo={handleAddDemo}
               onBack={() => setRoute('sessions')}
+              onSetConnectionMode={handleSetConnectionMode}
+              onProbeLan={handleProbeLan}
             />
           )}
 
@@ -1690,6 +1763,9 @@ export const App: React.FC = () => {
               modelCatalog={modelCatalog}
               selectedModel={selectedModel}
               onSelectModel={handleSelectModel}
+              isLan={linkState.isLan}
+              pingMs={linkState.pingMs}
+              onRefreshConnection={() => activeHostId && startHostConnection(activeHostId)}
             />
           )}
         </div>

@@ -75,6 +75,73 @@ export function isToolEvent(kind: string): boolean {
   return kind === 'tool/call' || kind === 'tool/result';
 }
 
+/**
+ * 会话里引用的图片附件（真主机 `ImageBlock.attachment` 形状）。
+ *
+ * 🔴 2026-10-17 真机实测：主机的图片**不是 URL**，而是一个附件引用：
+ * ```
+ * { type: 'image', attachment: { attachmentId, mediaType, bytes, width, height, name? } }
+ * ```
+ * 字节要通过 `session/attachment` 另取（见 [attachmentRequest]）。
+ * 旧实现把非 text 的块一律 `continue` 掉 —— 表现是**图片位置什么都没有**，
+ * 而纯图片消息因为正文为空，整条消息连气泡都不出现。
+ */
+export interface ImageAttachmentRef {
+  attachmentId: string;
+  mediaType: string;
+  bytes?: number;
+  width?: number;
+  height?: number;
+  name?: string;
+}
+
+/** 从 `content` 数组里抽出全部图片附件引用（保持出现顺序）。 */
+export function collectImageRefs(content: unknown): ImageAttachmentRef[] {
+  if (!Array.isArray(content)) return [];
+  const out: ImageAttachmentRef[] = [];
+  for (const part of content) {
+    if (!part || typeof part !== 'object') continue;
+    const record = part as { type?: unknown; attachment?: unknown };
+    if (record.type !== 'image') continue;
+    const att = record.attachment;
+    if (!att || typeof att !== 'object') continue;
+    const ref = att as { attachmentId?: unknown; mediaType?: unknown };
+    if (typeof ref.attachmentId !== 'string' || !ref.attachmentId) continue;
+    // mediaType 缺失时给 png：主机的图片只可能是这四种之一（见 zod schema）
+    const a = att as Record<string, unknown>;
+    out.push({
+      attachmentId: ref.attachmentId,
+      mediaType: typeof ref.mediaType === 'string' && ref.mediaType ? ref.mediaType : 'image/png',
+      bytes: typeof a.bytes === 'number' ? a.bytes : undefined,
+      width: typeof a.width === 'number' ? a.width : undefined,
+      height: typeof a.height === 'number' ? a.height : undefined,
+      name: typeof a.name === 'string' ? a.name : undefined,
+    });
+  }
+  return out;
+}
+
+/**
+ * `session/attachment` 的 args。
+ *
+ * 形参名与返回值**取自主机自带 zod schema**（不是文档、不是猜的）：
+ * - 参数 `{ sessionId, attachmentId }`
+ * - 返回 `{ attachment: {...}, data: <base64 字符串> }`
+ */
+export function attachmentRequest(
+  sessionId: string,
+  attachmentId: string,
+): { request: { sessionId: string; attachmentId: string } } {
+  return { request: { sessionId, attachmentId } };
+}
+
+/** 从 `session/attachment` 的返回里取 base64；形状不对返回 null（不抛）。 */
+export function attachmentBase64(response: unknown): string | null {
+  if (!response || typeof response !== 'object') return null;
+  const data = (response as { data?: unknown }).data;
+  return typeof data === 'string' && data ? data : null;
+}
+
 /** 该事件是否应该出现在聊天时间线里。 */
 export function isDialogEvent(kind: string): boolean {
   if (!kind) return false;
@@ -184,6 +251,8 @@ export interface ChatLineLike {
   toolMs?: number;
   /** 注入上下文的标注（如「记忆快照」）；只有 `kind === 'user/injected'` 才有。 */
   injectedLabel?: string;
+  /** 这条消息引用的图片附件（主机侧，字节需另取）。纯图片消息只有它、没有 text。 */
+  imageRefs?: ImageAttachmentRef[];
 }
 
 /**
@@ -231,11 +300,15 @@ export function eventToLine(
 
   const data = event.data;
   const role: 'user' | 'assistant' = kind.startsWith('user') ? 'user' : 'assistant';
+  const rawContent = data?.message?.content ?? data?.content;
   const text =
-    collectMessageText(data?.message?.content ?? data?.content) ||
+    collectMessageText(rawContent) ||
     (data?.result ? String(data.result) : '') ||
     '';
-  if (!isToolEvent(kind) && !text) return null;
+  // 🔴 图片附件必须单独接住：它没有 text，会被 collectMessageText 丢掉。
+  const imageRefs = collectImageRefs(rawContent);
+  // 纯图片消息的 text 为空 —— 旧实现这里 return null，整条消息（连同图）从界面消失。
+  if (!isToolEvent(kind) && !text && imageRefs.length === 0) return null;
 
   // 注入上下文不是"用户说的话" → 单独标记，UI 折叠成注记
   if (kind === 'user/message') {
@@ -261,6 +334,8 @@ export function eventToLine(
     toolResult: data?.result,
     toolCallId: data?.callId,
     isError: data?.isError,
+    // 带图的消息：上层据此向主机取字节并内联渲染（见 App.tsx 的附件加载）
+    imageRefs: imageRefs.length > 0 ? imageRefs : undefined,
   };
 }
 

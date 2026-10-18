@@ -97,6 +97,43 @@ export const HostStore = {
     }
   },
 
+  updateNetwork(
+    id: string,
+    updates: {
+      lanUrl?: string;
+      lanAddresses?: string[];
+      connectionMode?: HostRecord['connectionMode'];
+      activeUrl?: string;
+      baseUrl?: string;
+    },
+  ): void {
+    const record = this.find(id);
+    if (!record) return;
+    const next: HostRecord = {
+      ...record,
+      ...(updates.baseUrl ? { baseUrl: updates.baseUrl.replace(/\/+$/, '') } : {}),
+      ...(updates.lanUrl !== undefined ? { lanUrl: updates.lanUrl ? updates.lanUrl.replace(/\/+$/, '') : undefined } : {}),
+      ...(updates.lanAddresses !== undefined ? { lanAddresses: updates.lanAddresses } : {}),
+      ...(updates.connectionMode !== undefined ? { connectionMode: updates.connectionMode } : {}),
+      ...(updates.activeUrl !== undefined ? { activeUrl: updates.activeUrl } : {}),
+    };
+    this.upsert(next);
+  },
+
+  updateActiveUrl(id: string, activeUrl: string): void {
+    const record = this.find(id);
+    if (record && record.activeUrl !== activeUrl) {
+      this.upsert({ ...record, activeUrl });
+    }
+  },
+
+  setConnectionMode(id: string, mode: NonNullable<HostRecord['connectionMode']>): void {
+    const record = this.find(id);
+    if (record) {
+      this.upsert({ ...record, connectionMode: mode });
+    }
+  },
+
   getActiveId(): string | null {
     const saved = localStorage.getItem(ACTIVE_HOST_KEY);
     if (saved && this.find(saved)) {

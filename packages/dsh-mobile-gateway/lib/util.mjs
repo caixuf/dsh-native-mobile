@@ -5,9 +5,41 @@
 
 import { appendFile, mkdir } from 'node:fs/promises';
 import { join, isAbsolute } from 'node:path';
-import { homedir } from 'node:os';
+import { homedir, networkInterfaces } from 'node:os';
 
 const LEVELS = { debug: 10, info: 20, warn: 30, error: 40 };
+
+/** 从请求中抽取监听端口 */
+export function extractPort(req, fallback = '4142') {
+  const host = req?.headers?.host || '';
+  if (host.includes(':')) return host.split(':')[1];
+  const localPort = req?.socket?.localPort;
+  if (localPort) return String(localPort);
+  return String(fallback);
+}
+
+/** 获取宿主机的所有局域网 IPv4 候选地址（物理网卡优先） */
+export function getLanCandidates(port = '4142') {
+  const interfaces = networkInterfaces();
+  const list = [];
+  for (const [name, addrs] of Object.entries(interfaces)) {
+    if (!addrs) continue;
+    for (const addr of addrs) {
+      if (addr.family === 'IPv4' && !addr.internal) {
+        const isVirtual = /wsl|vEthernet|vmnet|docker|hyper-v|tailscale|loopback/i.test(name);
+        list.push({
+          name,
+          ip: addr.address,
+          url: `http://${addr.address}:${port}`,
+          isVirtual,
+        });
+      }
+    }
+  }
+  // 物理局域网排在前面
+  list.sort((a, b) => (a.isVirtual === b.isVirtual ? 0 : a.isVirtual ? 1 : -1));
+  return list;
+}
 
 /** 解析 $DSH_HOME（与 DSH 自身一致：环境变量优先，其次 ~/.dsh）。 */
 export function resolveDshHome(env = process.env) {

@@ -21,7 +21,7 @@
  */
 
 import { join } from 'node:path';
-import { createLogger, resolveDshHome, resolvePath } from './lib/util.mjs';
+import { createLogger, resolveDshHome, resolvePath, extractPort, getLanCandidates } from './lib/util.mjs';
 import { DeviceStore } from './lib/store.mjs';
 import { createBridge, PRIVILEGED_METHODS, PRIVILEGED_PREFIXES } from './lib/bridge.mjs';
 import { createManageApi } from './lib/manage.mjs';
@@ -159,11 +159,15 @@ async function start(ctx, config, log, dataDir) {
           const pathname = (req.url ?? '/').split('?')[0];
           try {
             if (pathname === '/mobile-gateway/health') {
+              const port = extractPort(req);
+              const lanCandidates = getLanCandidates(port);
               sendJson(res, 200, {
                 ok: true,
                 service: 'dsh-mobile-gateway',
                 version: PLUGIN_VERSION,
                 instance: { name: instance.name, home: instance.home },
+                lanAddresses: lanCandidates.map((c) => c.url),
+                lanCandidates,
               });
               return;
             }
@@ -183,11 +187,15 @@ async function start(ctx, config, log, dataDir) {
                 return;
               }
               log.info('device logged in', { deviceId: result.device.id, name: result.device.name });
+              const port = extractPort(req);
+              const lanCandidates = getLanCandidates(port);
               sendJson(res, 200, {
                 device: result.device,
                 token: result.token,
                 instance,
                 apiPrefix: API_PREFIX,
+                lanAddresses: lanCandidates.map((c) => c.url),
+                lanCandidates,
                 // 🔴 只有**一条** mux WS（真实主机侧常量 REMOTE_STREAM_MUX_PATH）。
                 // 原来这里发的是 events.mux / events.host 两条 —— 它们对应的主机
                 // endpoint 根本不存在，客户端照着连只会被 `invalid Remote endpoint`
@@ -216,11 +224,15 @@ async function start(ctx, config, log, dataDir) {
                 return;
               }
               log.info('device paired', { deviceId: result.device.id, name: result.device.name });
+              const port = extractPort(req);
+              const lanCandidates = getLanCandidates(port);
               sendJson(res, 200, {
                 device: result.device,
                 token: result.token,
                 instance,
                 apiPrefix: API_PREFIX,
+                lanAddresses: lanCandidates.map((c) => c.url),
+                lanCandidates,
                 // 同 login：只有一条 mux WS + 逻辑事件流 endpoint。
                 stream: { mux: '/mobile-gateway/remote.mux', eventEndpoint: '$events' },
               });

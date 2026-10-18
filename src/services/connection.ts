@@ -283,6 +283,23 @@ export interface WebSocketLike {
   onclose: ((ev?: { code?: number; reason?: string }) => void) | null;
 }
 
+export function isLanAddress(url: string): boolean {
+  if (!url) return false;
+  try {
+    const raw = url.trim().replace(/^wss?:\/\//i, 'http://').replace(/^https?:\/\//i, 'http://');
+    const parsed = new URL(raw.startsWith('http://') ? raw : `http://${raw}`);
+    const host = parsed.hostname.toLowerCase();
+    if (host === 'localhost' || host === '127.0.0.1' || host === '::1' || host === '0.0.0.0') return true;
+    if (host.startsWith('192.168.')) return true;
+    if (host.startsWith('10.')) return true;
+    if (/^172\.(1[6-9]|2\d|3[01])\./.test(host)) return true;
+    if (host.endsWith('.local') || host.endsWith('.lan')) return true;
+    return false;
+  } catch {
+    return false;
+  }
+}
+
 export interface ConnectionDeps {
   /** 替换 `new WebSocket(url)`（测试用假 socket）。 */
   WebSocket?: (url: string) => WebSocketLike;
@@ -307,6 +324,22 @@ export interface ConnectionDeps {
   outboxMaxAttempts?: number;
   /** 【新增】注入时钟（测试确定性）。 */
   now?: () => number;
+  /** 【新增】局域网候选地址列表（支持多个 candidate） */
+  lanUrls?: string[];
+  /** 【新增】用户指定的首选局域网地址 */
+  preferredLanUrl?: string;
+  /** 【新增】连接策略：auto (默认，优先局域网) | lan (仅局域网) | wan (仅公网服务器) */
+  connectionMode?: 'auto' | 'lan' | 'wan';
+  /** 【新增】当实际连接地址切换时通知（例如从公网无缝切换至局域网） */
+  onActiveUrlChange?: (activeUrl: string, isLan: boolean) => void;
+  /** 【新增】RPC 调用超时（毫秒），默认 15_000ms */
+  callTimeoutMs?: number;
+  /** 【新增】应答超时（毫秒），默认 10_000ms */
+  respondTimeoutMs?: number;
+  /** 【新增】局域网探测超时（毫秒），默认 1500ms（局域网通常 10-50ms 内响应） */
+  lanProbeTimeoutMs?: number;
+  /** 【新增】后台周期性探测局域网间隔（毫秒），默认 25_000ms */
+  lanDiscoveryIntervalMs?: number;
 }
 
 /** 鉴权失败回调的载荷。 */
@@ -451,6 +484,24 @@ export class DshConnection {
   private probeInFlight: Promise<number | null> | null = null;
   /** 最近一次安排的退避毫秒数（诊断用）。 */
   private lastBackoffMs = 0;
+  /** 【新增】实际正在通信的端点（局域网地址优先，断线时无缝回退到公网服务器）。 */
+  private effectiveBaseUrl: string;
+  /** 【新增】当前是否走局域网高速通道。 */
+  private isLan = false;
+  /** 【新增】候选局域网地址列表。 */
+  private lanCandidates: string[] = [];
+  /** 【新增】用户指定的局域网优选地址。 */
+  private preferredLanUrl?: string;
+  /** 【新增】连接策略（auto=局域网优先，自动回退 | lan=仅局域网 | wan=仅公网服务器）。 */
+  private connectionMode: 'auto' | 'lan' | 'wan' = 'auto';
+  /** 【新增】测得的网络延迟（毫秒）。 */
+  private pingMs: number | null = null;
+  /** 【新增】后台局域网自动发现定时器。 */
+  private lanDiscoveryTimer: unknown = null;
+  /** 【新增】正在执行的局域网探测。 */
+  private lanProbeInFlight: Promise<boolean> | null = null;
+  /** 【新增】网络恢复监听器清理函数。 */
+  private onlineCleanup: (() => void) | null = null;
 
   constructor(baseUrl: string, token: string, instanceName = '', deps: ConnectionDeps = {}) {
     this.baseUrl = baseUrl.replace(/\/+$/, '');
@@ -466,6 +517,35 @@ export class DshConnection {
           ? undefined
           : deps.storage;
     this.outbox = createOutboxQueue(outboxStorage, deps.outboxCapacity, deps.outboxMaxAttempts);
+
+    this.connectionMode = deps.connectionMode ?? 'auto';
+    this.preferredLanUrl = deps.preferredLanUrl ? deps.preferredLanUrl.replace(/\/+$/, '') : undefined;
+    const candidates = new Set<string>();
+    if (this.preferredLanUrl) candidates.add(this.preferredLanUrl);
+    for (const u of deps.lanUrls ?? []) {
+      if (u) candidates.add(u.replace(/\/+$/, ''));
+    }
+    if (isLanAddress(this.baseUrl)) {
+      candidates.add(this.baseUrl);
+    }
+    this.lanCandidates = Array.from(candidates);
+
+    if (this.connectionMode !== 'wan' && this.preferredLanUrl) {
+      this.effectiveBaseUrl = this.preferredLanUrl;
+      this.isLan = true;
+    } else {
+      this.effectiveBaseUrl = this.baseUrl;
+      this.isLan = isLanAddress(this.baseUrl);
+    }
+
+    if (typeof window !== 'undefined' && typeof window.addEventListener === 'function') {
+      const handleOnline = () => {
+        if (this.isStopped || this.authFailed) return;
+        this.retryNow();
+      };
+      window.addEventListener('online', handleOnline);
+      this.onlineCleanup = () => window.removeEventListener('online', handleOnline);
+    }
   }
 
   public onStateChange(listener: (state: LinkState) => void): () => void {
@@ -519,6 +599,121 @@ export class DshConnection {
   /** 【新增】已应答事件账本（落盘）。可用于调试或"清空免打扰记录"。 */
   public answeredLedger(): AnsweredLedger {
     return this.answered;
+  }
+
+  /** 【新增】获取当前实际通信生效的 URL（局域网地址优先，断线时无缝回退至公网）。 */
+  public getEffectiveBaseUrl(): string {
+    return this.effectiveBaseUrl || this.baseUrl;
+  }
+
+  /** 【新增】当前是否走局域网高速直连。 */
+  public isLanConnected(): boolean {
+    return this.isLan;
+  }
+
+  /** 【新增】获取最近一次测得的端点延迟（毫秒）。 */
+  public getPingMs(): number | null {
+    return this.pingMs;
+  }
+
+  /** 【新增】获取候选局域网地址列表。 */
+  public getLanCandidates(): string[] {
+    return [...this.lanCandidates];
+  }
+
+  /** 【新增】获取用户设定的首选局域网地址。 */
+  public getPreferredLanUrl(): string | undefined {
+    return this.preferredLanUrl;
+  }
+
+  /** 【新增】更新首选局域网地址。 */
+  public setPreferredLanUrl(url?: string): void {
+    this.preferredLanUrl = url ? url.replace(/\/+$/, '') : undefined;
+    if (this.preferredLanUrl && !this.lanCandidates.includes(this.preferredLanUrl)) {
+      this.lanCandidates.unshift(this.preferredLanUrl);
+    }
+  }
+
+  /** 【新增】获取连接策略模式。 */
+  public getConnectionMode(): 'auto' | 'lan' | 'wan' {
+    return this.connectionMode;
+  }
+
+  /** 【新增】设置连接策略模式（auto / lan / wan）。 */
+  public setConnectionMode(mode: 'auto' | 'lan' | 'wan'): void {
+    if (this.connectionMode === mode) return;
+    this.connectionMode = mode;
+    if (mode === 'wan' && this.isLan) {
+      this.isLan = false;
+      this.effectiveBaseUrl = this.baseUrl;
+      this.deps.onActiveUrlChange?.(this.baseUrl, false);
+      this.retryNow();
+    } else if (mode === 'lan' && !this.isLan) {
+      void this.switchToLanNow();
+    }
+  }
+
+  /** 【新增】探测指定端点的健康与延迟。 */
+  public async probeEndpoint(
+    targetUrl: string,
+    timeoutMs = 1500,
+  ): Promise<{ ok: boolean; pingMs: number; data?: Record<string, unknown> }> {
+    const start = Date.now();
+    const clean = targetUrl.replace(/\/+$/, '');
+    const controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
+    const timer =
+      controller && timeoutMs > 0
+        ? this.setTimer(() => {
+            try {
+              controller.abort();
+            } catch {}
+          }, timeoutMs)
+        : null;
+
+    try {
+      const res = await this.fetchImpl(`${clean}/mobile-gateway/health`, {
+        method: 'GET',
+        signal: controller ? controller.signal : undefined,
+      });
+      if (timer !== null) this.clearTimer(timer);
+      if (!res.ok) return { ok: false, pingMs: Date.now() - start };
+      const json = (await res.json()) as Record<string, unknown>;
+      const pingMs = Date.now() - start;
+      return { ok: Boolean(json.ok), pingMs, data: json };
+    } catch {
+      if (timer !== null) this.clearTimer(timer);
+      return { ok: false, pingMs: Date.now() - start };
+    }
+  }
+
+  /** 【新增】立即主动尝试切换至局域网高速通道。 */
+  public async switchToLanNow(): Promise<boolean> {
+    if (this.authFailed) return false;
+    for (const candidate of this.lanCandidates) {
+      if (!candidate) continue;
+      const res = await this.probeEndpoint(candidate, 2000);
+      if (res.ok) {
+        this.isLan = true;
+        this.effectiveBaseUrl = candidate;
+        this.preferredLanUrl = candidate;
+        this.pingMs = res.pingMs;
+        this.deps.onActiveUrlChange?.(candidate, true);
+        if (this.socket) {
+          const ws = this.socket;
+          this.socket = null;
+          this.socketAlive = false;
+          this.connecting = false;
+          ws.onclose = null;
+          try {
+            ws.close();
+          } catch {}
+        }
+        this.attempt = 0;
+        this.connectReal();
+        return true;
+      }
+    }
+    return false;
   }
 
   // ───────────────────────────────────────────────────────────────────────────
@@ -787,7 +982,13 @@ export class DshConnection {
   }
 
   private notifyState(state: LinkState) {
-    this.stateListeners.forEach((fn) => fn(state));
+    const fullState: LinkState = {
+      ...state,
+      isLan: this.isLan,
+      effectiveUrl: this.effectiveBaseUrl || this.baseUrl,
+      ...(this.pingMs !== null ? { pingMs: this.pingMs } : {}),
+    };
+    this.stateListeners.forEach((fn) => fn(fullState));
   }
 
   private notifyAuthFailure(info: AuthFailureInfo) {
@@ -969,6 +1170,11 @@ export class DshConnection {
     this.socketAlive = false;
     this.clearReconnectTimer();
     this.clearWatchdog();
+    this.clearLanDiscoveryTimer();
+    if (this.onlineCleanup) {
+      this.onlineCleanup();
+      this.onlineCleanup = null;
+    }
     if (this.socket) {
       const ws = this.socket;
       this.socket = null;
@@ -982,6 +1188,67 @@ export class DshConnection {
     }
     this.notifyState({ type: 'disconnected' });
     this.setPhase('offline');
+  }
+
+  private clearLanDiscoveryTimer() {
+    this.clearTimer(this.lanDiscoveryTimer);
+    this.lanDiscoveryTimer = null;
+  }
+
+  private armLanDiscovery() {
+    this.clearLanDiscoveryTimer();
+    if (this.isStopped || this.authFailed) return;
+    if (this.isLan || this.connectionMode !== 'auto') return;
+    if (this.lanCandidates.length === 0) return;
+
+    const interval = this.deps.lanDiscoveryIntervalMs ?? 25_000;
+    this.lanDiscoveryTimer = this.setTimer(() => {
+      this.lanDiscoveryTimer = null;
+      void this.triggerLanProbe();
+    }, interval);
+  }
+
+  public async triggerLanProbe(): Promise<boolean> {
+    if (this.isStopped || this.authFailed) return false;
+    if (this.isLan || this.connectionMode !== 'auto') return false;
+    if (this.lanCandidates.length === 0) return false;
+    if (this.lanProbeInFlight) return this.lanProbeInFlight;
+
+    const run = (async () => {
+      for (const candidate of this.lanCandidates) {
+        if (!candidate || candidate === this.baseUrl) continue;
+        const probeRes = await this.probeEndpoint(candidate, this.deps.lanProbeTimeoutMs ?? 1500);
+        if (probeRes.ok) {
+          this.isLan = true;
+          this.effectiveBaseUrl = candidate;
+          this.pingMs = probeRes.pingMs;
+          this.deps.onActiveUrlChange?.(candidate, true);
+          if (this.socket) {
+            const ws = this.socket;
+            this.socket = null;
+            this.socketAlive = false;
+            this.connecting = false;
+            ws.onclose = null;
+            try {
+              ws.close();
+            } catch {}
+          }
+          this.notifyState({
+            type: 'ready',
+            hostName: this.instanceName || candidate,
+          });
+          this.connectReal();
+          return true;
+        }
+      }
+      this.armLanDiscovery();
+      return false;
+    })();
+
+    this.lanProbeInFlight = run.finally(() => {
+      this.lanProbeInFlight = null;
+    });
+    return this.lanProbeInFlight;
   }
 
   private clearReconnectTimer() {
@@ -1029,6 +1296,21 @@ export class DshConnection {
     this.clearWatchdog();
     if (this.isStopped || this.authFailed) return;
 
+    // 局域网断开：auto 模式下自动回退至公网服务器，并重试
+    if (this.isLan && this.connectionMode === 'auto' && this.effectiveBaseUrl !== this.baseUrl) {
+      this.isLan = false;
+      this.effectiveBaseUrl = this.baseUrl;
+      this.deps.onActiveUrlChange?.(this.baseUrl, false);
+      this.setPhase('connecting');
+      this.notifyState({
+        type: 'connecting',
+        reason: '局域网不可达，正在自动切换至公网中继服务器…',
+        attempt: this.attempt,
+      });
+      this.connectReal();
+      return;
+    }
+
     const code = typeof ev?.code === 'number' ? ev.code : 1006;
     const reason = typeof ev?.reason === 'string' ? ev.reason : '';
 
@@ -1072,8 +1354,9 @@ export class DshConnection {
           : null;
       try {
         const body = Envelopes.clientRequest('probe' + Date.now(), 'session.list', { _request: {} });
+        const targetBase = this.effectiveBaseUrl || this.baseUrl;
         const res = await this.fetchImpl(
-          `${this.baseUrl}/mobile-gateway/api/${Envelopes.toEndpoint('session.list')}`,
+          `${targetBase}/mobile-gateway/api/${Envelopes.toEndpoint('session.list')}`,
           {
             method: 'POST',
             headers: {
@@ -1163,7 +1446,8 @@ export class DshConnection {
     // `retryNow()` 同时触发时，绝不能再堆出第二条握手（弱网下页面会积一排半死 socket）。
     if (this.connecting || this.socketAlive) return;
     try {
-      const wsBase = this.baseUrl.replace(/^http/, 'ws') + WS_MUX;
+      const targetBase = this.effectiveBaseUrl || this.baseUrl;
+      const wsBase = targetBase.replace(/^http/, 'ws') + WS_MUX;
       // 🔴 令牌必须走 **query 参数**，不能指望请求头（2026-10-14 修复）
       //
       // 浏览器的 `new WebSocket(url)` **不支持自定义请求头** —— 这是 Web 规范限制，
@@ -1213,10 +1497,12 @@ export class DshConnection {
             this.setPhase('online');
             this.notifyState({
               type: 'ready',
-              hostName: this.instanceName || this.baseUrl,
+              hostName: this.instanceName || this.effectiveBaseUrl || this.baseUrl,
             });
             // 重连成功 → 把离线期间攒下的指令按序送出去（fire-and-forget，不阻塞事件流）
             void this.flushOutbox();
+            // 在 auto 模式下如果当前在 WAN 端点，启动后台局域网发现定时器
+            this.armLanDiscovery();
           })
           .catch((err: unknown) => {
             if (this.isStopped) return;
@@ -1224,6 +1510,28 @@ export class DshConnection {
             if (status !== null && isAuthStatus(status)) {
               // fetch 侧的 401/403 与 mux 握手是同一判据：立即停止重连
               this.enterAuthFailure(status, `令牌已失效（HTTP ${status}），已停止自动重连，需要重新配对`);
+              return;
+            }
+            // 局域网若 session.list 失败，且处于 auto 模式，自动回退到公网服务器
+            if (this.isLan && this.connectionMode === 'auto' && this.effectiveBaseUrl !== this.baseUrl) {
+              this.isLan = false;
+              this.effectiveBaseUrl = this.baseUrl;
+              this.deps.onActiveUrlChange?.(this.baseUrl, false);
+              this.socketAlive = false;
+              if (this.socket) {
+                this.socket.onclose = null;
+                try {
+                  this.socket.close();
+                } catch {}
+                this.socket = null;
+              }
+              this.setPhase('connecting');
+              this.notifyState({
+                type: 'connecting',
+                reason: '局域网响应异常，正在尝试回退至公网服务器…',
+                attempt: this.attempt,
+              });
+              this.connectReal();
               return;
             }
             const message = (err as Error)?.message || '未知错误';
@@ -1292,6 +1600,13 @@ export class DshConnection {
       const err = e as Error;
       this.connecting = false;
       this.socketAlive = false;
+      if (this.isLan && this.connectionMode === 'auto' && this.effectiveBaseUrl !== this.baseUrl) {
+        this.isLan = false;
+        this.effectiveBaseUrl = this.baseUrl;
+        this.deps.onActiveUrlChange?.(this.baseUrl, false);
+        this.connectReal();
+        return;
+      }
       this.setPhase('offline');
       this.notifyState({
         type: 'degraded',
@@ -1366,25 +1681,45 @@ export class DshConnection {
     const endpoint = Envelopes.toEndpoint(method);
     const body = Envelopes.clientRequest(rpcId, method, args);
 
-    const res = await this.fetchImpl(`${this.baseUrl}/mobile-gateway/api/${endpoint}`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${this.token}`,
-      },
-      body: JSON.stringify(body),
-    });
+    const controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
+    const timeoutMs = this.deps.callTimeoutMs ?? 15_000;
+    const timeoutHandle =
+      controller && timeoutMs > 0
+        ? this.setTimer(() => {
+            try {
+              controller.abort();
+            } catch {}
+          }, timeoutMs)
+        : null;
 
-    if (!res.ok) {
-      // 带上状态码：401/403 是"要重新配对"，不是"网络抖动"（上层据此分流）
-      throw new ConnectionError(`RPC 失败: HTTP ${res.status}`, res.status);
-    }
+    try {
+      const targetBase = this.effectiveBaseUrl || this.baseUrl;
+      const res = await this.fetchImpl(`${targetBase}/mobile-gateway/api/${endpoint}`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${this.token}`,
+        },
+        body: JSON.stringify(body),
+        signal: controller ? controller.signal : undefined,
+      });
 
-    const json = await res.json();
-    if (json.result?.ok) {
-      return json.result.value;
-    } else {
-      throw new ConnectionError(json.result?.error?.message || `${method} 返回了错误`);
+      if (timeoutHandle !== null) this.clearTimer(timeoutHandle);
+
+      if (!res.ok) {
+        // 带上状态码：401/403 是"要重新配对"，不是"网络抖动"（上层据此分流）
+        throw new ConnectionError(`RPC 失败: HTTP ${res.status}`, res.status);
+      }
+
+      const json = await res.json();
+      if (json.result?.ok) {
+        return json.result.value;
+      } else {
+        throw new ConnectionError(json.result?.error?.message || `${method} 返回了错误`);
+      }
+    } catch (err: unknown) {
+      if (timeoutHandle !== null) this.clearTimer(timeoutHandle);
+      throw err;
     }
   }
 
@@ -1410,6 +1745,17 @@ export class DshConnection {
       return false;
     }
 
+    const controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
+    const timeoutMs = this.deps.respondTimeoutMs ?? 10_000;
+    const timeoutHandle =
+      controller && timeoutMs > 0
+        ? this.setTimer(() => {
+            try {
+              controller.abort();
+            } catch {}
+          }, timeoutMs)
+        : null;
+
     try {
       const rpcId = 'r' + Math.random().toString(36).slice(2, 9);
       const body = Envelopes.clientRequest(rpcId, '$events/result', {
@@ -1418,14 +1764,18 @@ export class DshConnection {
         outcome,
       });
 
-      const res = await this.fetchImpl(`${this.baseUrl}/mobile-gateway/api/${EVENT_RESULT_ENDPOINT}`, {
+      const targetBase = this.effectiveBaseUrl || this.baseUrl;
+      const res = await this.fetchImpl(`${targetBase}/mobile-gateway/api/${EVENT_RESULT_ENDPOINT}`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
           Authorization: `Bearer ${this.token}`,
         },
         body: JSON.stringify(body),
+        signal: controller ? controller.signal : undefined,
       });
+
+      if (timeoutHandle !== null) this.clearTimer(timeoutHandle);
 
       if (!res.ok) {
         // 失败 → 不落盘，允许再次处理
@@ -1443,6 +1793,7 @@ export class DshConnection {
       this.inflightEventIds.delete(eventId);
       return true;
     } catch (err: unknown) {
+      if (timeoutHandle !== null) this.clearTimer(timeoutHandle);
       this.inflightEventIds.delete(eventId);
       this.notifyRespondFailure({
         eventId,

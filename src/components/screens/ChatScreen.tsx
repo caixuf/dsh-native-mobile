@@ -130,6 +130,9 @@ interface Props {
   modelCatalog?: ModelCatalog | null;
   selectedModel?: { provider?: string; model?: string } | null;
   onSelectModel?: (provider: string, model: string) => Promise<boolean | void> | void;
+  isLan?: boolean;
+  pingMs?: number | null;
+  onRefreshConnection?: () => void;
 }
 
 export const ChatScreen: React.FC<Props> = ({
@@ -161,6 +164,9 @@ export const ChatScreen: React.FC<Props> = ({
   modelCatalog,
   selectedModel,
   onSelectModel,
+  isLan,
+  pingMs,
+  onRefreshConnection,
 }) => {
   const [inputText, setInputText] = useState('');
   const [voiceOpen, setVoiceOpen] = useState(false);
@@ -449,16 +455,20 @@ export const ChatScreen: React.FC<Props> = ({
   /** 流式光标：仅"实时链路健康 + 任务在跑"时显示（链路断了不假装还在输出）。 */
   const showStreamCursor = running && liveConnected === true;
 
+  /** 综合判定会话是否正在运行中（结合 running 标志、活动相位、未完成工具调用或准备状态） */
+  const hasRunningTool = lines.some((l) => l.kind === 'tool/call' && !l.toolResult);
+  const isBusy = running || (!!activity && activity.phase !== 'idle') || hasRunningTool || preparing;
+
   // 「用时 1分56秒」必须**自己走**，不能等下一条事件才刷新 ——
   // 工具跑一分钟时事件可能一直不来，只靠事件驱动会让计时停在原地。
   const [clockTick, setClockTick] = useState(() => Date.now());
   useEffect(() => {
-    if (!running) return undefined;
+    if (!isBusy) return undefined;
     const t = window.setInterval(() => setClockTick(Date.now()), 1000);
     return () => window.clearInterval(t);
-  }, [running]);
+  }, [isBusy]);
 
-  const activityOn = running && !!activity && activity.phase !== 'idle';
+  const activityOn = isBusy && !!activity && activity.phase !== 'idle';
   const activityText = activityOn ? phaseLabel(activity as ActivityState, clockTick) : '';
   const activityModel = activityOn ? modelLabel(activity as ActivityState) : '';
   const activityElapsed = activityOn ? formatDuration(elapsedMs(activity as ActivityState, clockTick)) : '';
@@ -466,7 +476,7 @@ export const ChatScreen: React.FC<Props> = ({
    * 跑完之后的总结（`3 步 · 2 次工具调用 · 用时 42秒 · 输出 1.2k tokens`）。
    * 只在"刚跑完一轮"时出现；数据不足就显示空 —— 不塞"0 步 0 秒"这种噪音。
    */
-  const summaryText = !running && activity ? turnSummary(activity as ActivityState, clockTick) : '';
+  const summaryText = !isBusy && activity ? turnSummary(activity as ActivityState, clockTick) : '';
 
   // 注入上下文默认收起；用户手动展开的才记住（这些键只在本会话有效）。
   const [injectedOpenKeys, setInjectedOpenKeys] = useState<Set<string>>(new Set());
@@ -532,6 +542,20 @@ export const ChatScreen: React.FC<Props> = ({
                 </h2>
                 <div className="flex items-center gap-1.5 text-[11px] text-[#52525b] truncate">
                   <span className="truncate">{hostName || 'caixuf'}</span>
+                  {liveConnected && (
+                    <span
+                      title={isLan ? '局域网直连高速通道 (LAN)' : '公网服务器中继通道 (WAN)'}
+                      className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full text-[9.5px] font-semibold border shrink-0 ${
+                        isLan
+                          ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                          : 'bg-blue-50 text-blue-700 border-blue-200'
+                      }`}
+                    >
+                      <span className={`w-1 h-1 rounded-full ${isLan ? 'bg-emerald-500 animate-pulse' : 'bg-blue-500'}`} />
+                      <span>{isLan ? 'LAN ⚡' : 'WAN 🌐'}</span>
+                      {pingMs != null && <span className="font-mono">{pingMs}ms</span>}
+                    </span>
+                  )}
                   {workspace && (
                     <>
                       <span>·</span>
@@ -549,26 +573,31 @@ export const ChatScreen: React.FC<Props> = ({
           </div>
 
           <div className="flex items-center gap-1 shrink-0">
-            {running && (
-              <span
-                className="flex items-center gap-1.5 text-[11px] font-medium text-blue-600 theme-text-accent bg-blue-50 px-2.5 py-1 rounded-full shrink-0"
+            {isBusy ? (
+              <button
+                type="button"
+                onClick={() => {
+                  triggerHaptic('medium');
+                  onCancel();
+                }}
+                aria-label="停止当前任务"
+                title="停止当前任务"
+                className="flex items-center gap-1.5 min-h-[44px] px-3 rounded-full bg-rose-50 border border-rose-300 text-rose-600 hover:bg-rose-100 active:scale-95 transition-all text-[12px] font-semibold cursor-pointer shrink-0"
                 data-testid="activity-badge"
                 data-phase={activityOn ? (activity as ActivityState).phase : 'unknown'}
-                title={activityModel ? `模型：${activityModel}` : undefined}
               >
-                <Loader2 size={11} className="animate-spin shrink-0" />
-                <span className="truncate">{activityText || '执行中'}</span>
-                {activityElapsed && <span className="font-mono shrink-0">· {activityElapsed}</span>}
-              </span>
-            )}
-            {!running && summaryText && (
+                <Square size={11} fill="currentColor" className="text-rose-600 animate-pulse" />
+                <span className="truncate">{activityText || '停止任务'}</span>
+                {activityElapsed && <span className="font-mono text-[11px] opacity-80 shrink-0">· {activityElapsed}</span>}
+              </button>
+            ) : summaryText ? (
               <span
                 data-testid="turn-summary"
                 className="text-[11px] text-[#52525b] bg-gray-100 px-2.5 py-1 rounded-full max-w-[120px] sm:max-w-[180px] shrink-0 truncate font-mono"
               >
                 {summaryText}
               </span>
-            )}
+            ) : null}
             {lines.length > 0 && (
               <button
                 type="button"
@@ -1053,14 +1082,18 @@ export const ChatScreen: React.FC<Props> = ({
           />
 
           {/* Running cancel button */}
-          {running && (
+          {isBusy && (
             <div className="flex justify-center mb-2.5">
               <button
                 type="button"
-                onClick={onCancel}
-                className="flex items-center gap-1.5 min-h-[44px] px-4 rounded-full bg-white border border-rose-200 text-rose-600 text-[12px] font-medium shadow-md hover:bg-rose-50 transition-transform cursor-pointer"
+                onClick={() => {
+                  triggerHaptic('medium');
+                  onCancel();
+                }}
+                aria-label="停止当前任务"
+                className="flex items-center gap-2 min-h-[44px] px-5 rounded-full bg-rose-50 border border-rose-300 text-rose-600 text-[13px] font-semibold shadow-sm hover:bg-rose-100 active:scale-95 transition-all cursor-pointer"
               >
-                <Square size={11} fill="currentColor" />
+                <Square size={12} fill="currentColor" className="animate-pulse" />
                 <span>停止当前任务</span>
               </button>
             </div>
@@ -1473,10 +1506,35 @@ export const ChatScreen: React.FC<Props> = ({
                 </div>
               </div>
 
-              {/* 右侧：麦克风 / 发送按钮 */}
+              {/* 右侧：麦克风 / 停止 / 发送按钮 */}
               <div className="flex items-center gap-1.5 shrink-0">
-
-                {!inputText.trim() && !attachment ? (
+                {isBusy ? (
+                  <>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        triggerHaptic('medium');
+                        onCancel();
+                      }}
+                      aria-label="停止当前任务"
+                      className="w-11 h-11 rounded-full bg-rose-600 hover:bg-rose-700 text-white flex items-center justify-center shadow-md active:scale-95 transition-all cursor-pointer shrink-0"
+                      title="停止当前任务"
+                    >
+                      <Square size={14} fill="currentColor" />
+                    </button>
+                    {(inputText.trim() || attachment) && (
+                      <button
+                        type="button"
+                        onClick={handleSend}
+                        aria-label="加入待发队列"
+                        className="w-11 h-11 rounded-full bg-blue-600 hover:bg-blue-700 text-white flex items-center justify-center shadow-md active:scale-95 transition-all cursor-pointer shrink-0"
+                        title="加入待发队列"
+                      >
+                        <Send size={15} />
+                      </button>
+                    )}
+                  </>
+                ) : !inputText.trim() && !attachment ? (
                   <button
                     type="button"
                     onClick={() => setVoiceOpen(true)}
@@ -1490,9 +1548,9 @@ export const ChatScreen: React.FC<Props> = ({
                   <button
                     type="button"
                     onClick={handleSend}
-                    aria-label={running || sending ? '加入待发队列' : '发送'}
+                    aria-label="发送"
                     className="w-11 h-11 rounded-full bg-blue-600 hover:bg-blue-700 text-white flex items-center justify-center shadow-md active:scale-95 transition-all cursor-pointer shrink-0"
-                    title={running ? '加入待发队列' : '发送'}
+                    title="发送"
                   >
                     <Send size={15} />
                   </button>
