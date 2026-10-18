@@ -49,15 +49,18 @@ jobs:
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
 
-      # 🔴 `pnpm run verify` 末尾包含 `test:android`（gradle testDebugUnitTest），
-      # 它需要 Android SDK（compileSdk 35）。原先 verify job 只装了 Java 没装 SDK，
-      # 一旦前面的步骤修通，这一步必然失败。android/local.properties 被 gitignore，
-      # 所以必须靠 ANDROID_SDK_ROOT/ANDROID_HOME 环境变量定位（setup-android 会设）。
-      - name: Setup Android SDK
-        uses: android-actions/setup-android@v3
-
+      # 🔴 不用 android-actions/setup-android@v3：它在 2026 年的 runner 上会自己崩 ——
+      # 它内部跑 `sdkmanager tools`，而新版 cmdline-tools (16.0) 已经不再发布
+      # `tools` 包，报 `Warning: Failed to find package 'tools'` 后 exit 1。
+      # GitHub 托管的 ubuntu runner **本来**就预装了 Android SDK，并且已经设好
+      # ANDROID_HOME / ANDROID_SDK_ROOT，直接补装需要的 platform/build-tools 即可。
       - name: Install Android Platform
-        run: sdkmanager "platforms;android-35" "build-tools;35.0.0"
+        run: |
+          echo "ANDROID_HOME=$ANDROID_HOME"
+          echo "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT"
+          sdkmanager --version
+          yes | sdkmanager --licenses > /dev/null 2>&1 || true
+          sdkmanager "platforms;android-35" "build-tools;35.0.0"
 
       - name: Install Dependencies
         run: pnpm install --frozen-lockfile
@@ -107,13 +110,13 @@ jobs:
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
 
-      # 提供 ANDROID_SDK_ROOT / ANDROID_HOME，AGP 靠它定位 SDK，
-      # 所以 runner 上不需要 android/local.properties（它被 gitignore）。
-      - name: Setup Android SDK
-        uses: android-actions/setup-android@v3
-
+      # 同样不用 android-actions/setup-android@v3（原因见 verify job 的注释）。
+      # runner 预装 SDK 且已设 ANDROID_HOME/ANDROID_SDK_ROOT，
+      # 所以不需要 android/local.properties（它被 gitignore，且写死本机 Windows 路径）。
       - name: Install Android Platform
-        run: sdkmanager "platforms;android-35" "build-tools;35.0.0"
+        run: |
+          yes | sdkmanager --licenses > /dev/null 2>&1 || true
+          sdkmanager "platforms;android-35" "build-tools;35.0.0"
 
       - name: Install Dependencies
         run: pnpm install --frozen-lockfile
