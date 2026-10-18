@@ -23,21 +23,21 @@ import { fileURLToPath } from 'node:url';
 const rootDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const androidDir = path.join(rootDir, 'android');
 
-const JAVA_HOME = 'C:\\Users\\20247\\Downloads\\android-toolchain\\jdk17';
-const GRADLE_BAT = 'C:\\Users\\20247\\Downloads\\android-toolchain\\gradle-8.11.1\\bin\\gradle.bat';
+const defaultWinJava = 'C:\\Users\\20247\\Downloads\\android-toolchain\\jdk17';
+const defaultWinGradle = 'C:\\Users\\20247\\Downloads\\android-toolchain\\gradle-8.11.1\\bin\\gradle.bat';
 
-if (!fs.existsSync(GRADLE_BAT)) {
-  console.error(`找不到 gradle：${GRADLE_BAT}`);
-  console.error('本脚本假定本仓库既有的构建工具链位置（见 scripts/build-apk.mjs）。');
-  process.exit(2);
-}
+const JAVA_HOME = process.env.JAVA_HOME || (fs.existsSync(defaultWinJava) ? defaultWinJava : undefined);
+const GRADLE_BIN = process.env.GRADLE_BIN || (fs.existsSync(defaultWinGradle) ? defaultWinGradle : 'gradle');
 
 console.log('🤖 Android 原生单元测试（JVM）');
 console.log('─'.repeat(52));
 
-execSync(`"${GRADLE_BAT}" testDebugUnitTest --console=plain`, {
+execSync(`"${GRADLE_BIN}" testDebugUnitTest --console=plain`, {
   cwd: androidDir,
-  env: { ...process.env, JAVA_HOME },
+  env: {
+    ...process.env,
+    ...(JAVA_HOME ? { JAVA_HOME } : {}),
+  },
   stdio: 'inherit',
 });
 
