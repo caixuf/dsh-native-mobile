@@ -72,6 +72,20 @@
             android:exported="false"
             android:foregroundServiceType="dataSync" />
 
+        <!--
+          OTA 安装结果回传。exported=false：只收本 App 的 PendingIntent，
+          外部应用无法伪造"安装成功/失败"。
+          没有它时安装失败（签名不符/空间不足/用户取消）**完全没有提示**，
+          用户会以为更新过了、实际还是旧版本。
+        -->
+        <receiver
+            android:name=".relay.InstallResultReceiver"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="io.github.dshmobile.app.INSTALL_RESULT" />
+            </intent-filter>
+        </receiver>
+
         <!-- 通知按钮的落点。exported=false：外部应用无法伪造一个"允许"。 -->
         <receiver
             android:name=".relay.RelayActionReceiver"

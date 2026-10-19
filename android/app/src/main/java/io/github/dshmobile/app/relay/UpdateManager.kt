@@ -1,7 +1,9 @@
 package io.github.dshmobile.app.relay
 
 import android.app.Activity
+import android.app.PendingIntent
 import android.content.Intent
+import android.content.pm.PackageInstaller
 import android.net.Uri
 import android.os.Build
 import android.provider.Settings
@@ -219,6 +221,18 @@ class UpdateManager(private val activity: Activity) {
      * 拉起系统安装器。必须已经下载完成且拿到了安装权限。
      *
      * 返回 `needPermission=true` 时，调用方应引导用户去 [openInstallPermissionSettings]。
+     *
+     * ## 为什么用 PackageInstaller 会话，而不是 ACTION_VIEW
+     *
+     * 实测（2026-10-19，模拟器）：`Intent(ACTION_VIEW)` +
+     * `setDataAndType(contentUri, "application/vnd.android.package-archive")`
+     * 会弹出系统的**应用选择器**（「Open with…」，连 MiniMax 都出现在候选里），
+     * 用户得先选一次才能进安装页 —— 这不是"一键更新"，而且很容易点错应用。
+     *
+     * [PackageInstaller] 是系统给自更新用的专用 API：直接开安装会话，
+     * 没有选择器、没有歧义，且能拿到安装结果回调。
+     *
+     * ACTION_VIEW 仍保留为**兜底**（极少数 ROM 对 PackageInstaller 有限制）。
      */
     fun install(): String {
         val apk = pendingApk() ?: return err("没有可安装的更新包，请先下载")
@@ -229,6 +243,45 @@ class UpdateManager(private val activity: Activity) {
                 .put("message", "需要先允许「DSH Remote」安装应用")
                 .toString()
         }
+        // 首选：PackageInstaller 会话（无应用选择器）
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+            try {
+                val installer = activity.packageManager.packageInstaller
+                val params = PackageInstaller.SessionParams(PackageInstaller.SessionParams.MODE_FULL_INSTALL).apply {
+                    setAppPackageName(activity.packageName)
+                }
+                val sessionId = installer.createSession(params)
+                installer.openSession(sessionId).use { session ->
+                    apk.inputStream().use { input ->
+                        session.openWrite("base.apk", 0, apk.length()).use { out ->
+                            input.copyTo(out)
+                            session.fsync(out)
+                        }
+                    }
+                    // PendingIntent 的 action 里带 sessionId，便于安装结果回传时定位
+                    val callback = Intent(activity, InstallResultReceiver::class.java).apply {
+                        action = InstallResultReceiver.ACTION_INSTALL_RESULT
+                        putExtra(InstallResultReceiver.EXTRA_SESSION_ID, sessionId)
+                    }
+                    val flags = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                        PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_MUTABLE
+                    } else {
+                        PendingIntent.FLAG_UPDATE_CURRENT
+                    }
+                    val pending = PendingIntent.getBroadcast(
+                        activity,
+                        sessionId,
+                        callback,
+                        flags,
+                    )
+                    session.commit(pending.intentSender)
+                }
+                return statusJson(true, "已开始安装")
+            } catch (t: Throwable) {
+                Log.w(TAG, "PackageInstaller failed, falling back to ACTION_VIEW", t)
+            }
+        }
+        // 兜底：ACTION_VIEW（可能弹应用选择器，但至少不会静默失败）
         return try {
             val uri: Uri = FileProvider.getUriForFile(
                 activity,

@@ -1,7 +1,7 @@
 {
   "name": "dsh-native-mobile-web",
   "private": true,
-  "version": "1.7.0",
+  "version": "1.7.1",
   "type": "module",
   "scripts": {
     "postinstall": "npm --prefix packages/dsh-mobile-gateway install",

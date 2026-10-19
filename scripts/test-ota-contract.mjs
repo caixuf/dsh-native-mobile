@@ -112,6 +112,28 @@ test('原生侧：FileProvider 已注册且路径只暴露 cache/ota', () => {
   ok(!paths.includes('<external-path'), '不得暴露外部存储');
 });
 
+test('原生侧：安装走 PackageInstaller 会话，不用 ACTION_VIEW 弹应用选择器', () => {
+  const kt = read('android/app/src/main/java/io/github/dshmobile/app/relay/UpdateManager.kt');
+  // 实测（模拟器）：ACTION_VIEW + MIME 会弹「Open with…」选择器，
+  // 连其它应用都出现在候选里，用户得先选一次才能进安装页。
+  ok(/PackageInstaller/.test(kt), '必须用 PackageInstaller 会话');
+  ok(/createSession\(/.test(kt), '必须创建安装会话');
+  ok(/session\.commit\(/.test(kt), '必须 commit 会话');
+  // ACTION_VIEW 只能作为兜底（PackageInstaller 失败后），不能在它之前
+  const piIdx = kt.indexOf('PackageInstaller.SessionParams');
+  const viewIdx = kt.indexOf('Intent.ACTION_VIEW');
+  ok(piIdx > 0, '缺少 PackageInstaller 主路径');
+  ok(viewIdx > piIdx, 'ACTION_VIEW 必须排在 PackageInstaller 之后（仅兜底）');
+});
+
+test('原生侧：安装结果有接收器（否则失败完全无提示）', () => {
+  const kt = read('android/app/src/main/java/io/github/dshmobile/app/relay/InstallResultReceiver.kt');
+  ok(/STATUS_FAILURE|STATUS_SUCCESS|EXTRA_STATUS/.test(kt), '必须处理安装结果状态');
+  const manifest = read('android/app/src/main/AndroidManifest.xml');
+  ok(/InstallResultReceiver/.test(manifest), 'manifest 必须注册接收器');
+  ok(/android:exported="false"/.test(manifest), '接收器必须不导出（防伪造结果）');
+});
+
 test('原生侧：安装走 content:// 而非 file://（7.0+ 会抛 FileUriExposedException）', () => {
   const kt = read('android/app/src/main/java/io/github/dshmobile/app/relay/UpdateManager.kt');
   ok(/FileProvider\.getUriForFile/.test(kt), '必须用 FileProvider 取 URI');
