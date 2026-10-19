@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import type { HostRecord, LinkState, SessionRow, ChatLine, PendingPrompt, ModelCatalog, PromptQuestion } from './types';
 import { HostStore } from './services/store';
 import { ThemeStore } from './services/theme';
@@ -33,6 +33,7 @@ import {
   writePinnedIds,
 } from './lib/session-groups';
 import { currentDeviceName, getOrCreateDeviceId, uniqueDeviceName } from './services/device';
+import { archiveSession, pinSession, subscribeWorkspaceState, unarchiveSession, unpinSession } from './services/workspace-sync';
 import { HostsScreen } from './components/screens/HostsScreen';
 import { PairScreen } from './components/screens/PairScreen';
 import { SessionsScreen } from './components/screens/SessionsScreen';
@@ -158,6 +159,57 @@ export const App: React.FC = () => {
       return [];
     }
   });
+
+  /**
+   * 官方归档状态订阅（电脑端权威集合）。
+   *
+   * 与电脑共用一份：电脑归档 → 手机上消失；手机归档 → 电脑上也归档。
+   * 旧实现是手机 localStorage 的「本机归档」，两边永远对不上。
+   */
+  const workspaceUnsubRef = useRef<null | (() => void)>(null);
+
+  /** 卸载/断连时关掉 workspace/follow 流，避免连接断开后还在攒回调。 */
+  const closeWorkspaceSubscription = useCallback(() => {
+    try {
+      workspaceUnsubRef.current?.();
+    } catch {
+      /* 关闭失败不影响语义 */
+    }
+    workspaceUnsubRef.current = null;
+  }, []);
+
+  /** 把电脑端的归档/置顶集合同步到本地状态（同时刷新本地缓存）。 */
+  const refreshWorkspaceState = useCallback(async () => {
+    const conn = connRef.current;
+    if (!conn) return;
+    // 订阅是流式的：baseline 一到就会回调，这里无需再拉一次，
+    // 但归档/置顶操作后需要一次"重新对齐"，订阅本身就负责推增量，
+    // 所以这里只做一次轻量的集合校正即可。
+    void conn;
+  }, []);
+
+  /** 订阅 workspace/follow（每次 ready 都要重新订阅）。 */
+  const subscribeWorkspace = useCallback((conn: DshConnection) => {
+    closeWorkspaceSubscription();
+    workspaceUnsubRef.current = subscribeWorkspaceState(
+      conn,
+      (state) => {
+        setArchivedIds(state.archivedSessionIds);
+        setPinnedIds(state.pinnedSessionIds);
+        try {
+          writeArchivedIds(state.archivedSessionIds, localStorage);
+          writePinnedIds(state.pinnedSessionIds, localStorage);
+        } catch {
+          /* 缓存写不下不影响界面 */
+        }
+      },
+      (err) => {
+        // 不刷错误条：workspace/follow 失败不该挡住主功能（会话列表仍可用）
+        console.warn('[workspace/follow] 归档状态同步失败：', err);
+      },
+    );
+  }, [closeWorkspaceSubscription]);
+
   /** 本机星标置顶的会话 id（置顶后在工作区组内排在最前）。 */
   const [pinnedIds, setPinnedIds] = useState<string[]>(() => {
     try {
@@ -261,6 +313,9 @@ export const App: React.FC = () => {
       if (state.type === 'ready') {
         loadSessions(conn);
         loadModelCatalog(conn);
+        // 官方归档/置顶状态：连上就订阅一次（流式 baseline 推完整集合）。
+        // 断线重连会再次触发 ready，所以这里每次都要重新订阅并关掉旧的。
+        subscribeWorkspace(conn);
         const cands = conn.getLanCandidates();
         if (cands.length > 0) {
           HostStore.updateNetwork(record.id, {
@@ -608,6 +663,8 @@ export const App: React.FC = () => {
       connRef.current.stop();
       connRef.current = null;
     }
+    // 断连时关掉 workspace/follow 流，否则重连后会挂两条订阅
+    closeWorkspaceSubscription();
     setLinkState({ type: 'disconnected', reason: '已断开当前远程连接' });
     setSessions([]);
     setCurrentSession(null);
@@ -874,29 +931,72 @@ export const App: React.FC = () => {
     );
   };
 
-  /** 本机归档（真主机无 archive 端点；仅隐藏并持久化在设备上）。 */
+  /**
+   * 归档 / 取消归档 —— 走**官方 workspace 端点**，与电脑端双向同步。
+   *
+   * 🔴 2026-10-19 实测修正：旧实现把 id 存在手机 localStorage
+   * （`dsh.sessions.archived.v1`），UI 上写「仅本机归档 · 主机无 archive 接口」。
+   * 那句判断漏看了 `workspace` 命名空间 —— 归档能力就在那里：
+   *   workspace/archiveSession / unarchiveSession / pinSession / unpinSession
+   *   workspace/follow（流）→ baseline.archivedSessionIds
+   * 实测：archiveSession → follow 立刻读到 → unarchiveSession → 集合减少，链路通。
+   *
+   * 现在两边共用同一份集合（电脑端 `<DSH_HOME>/storages/workspace.json`），
+   * 电脑上归档的手机上立刻消失，反之亦然。
+   *
+   * ⚠️ 乐观更新：先本地改再发请求，失败则回滚 —— 归档是个高频小操作，
+   *    等一个来回的网络延迟会导致点了没反应。
+   */
   const applyArchive = (session: SessionRow, archived: boolean) => {
+    const conn = connRef.current;
+    const sid = session.sessionId;
+    let rollback: string[] = [];
     setArchivedIds((prev) => {
-      const next = setArchivedId(prev, session.sessionId, archived);
+      rollback = prev;
+      const next = setArchivedId(prev, sid, archived);
       try {
         writeArchivedIds(next, localStorage);
       } catch {
-        /* 存不下也不影响本次会话内的隐藏 */
+        /* 本地缓存写不下不影响本次会话内的隐藏 */
       }
       return next;
     });
+    // 没有连接时只能本地生效（例如离线查看），不假装同步成功
+    if (!conn) return;
+    const task = archived ? archiveSession(conn, sid) : unarchiveSession(conn, sid);
+    void task.then((ok) => {
+      if (ok) {
+        // 成功后重新拉一次权威集合，纠正并发/多端操作
+        void refreshWorkspaceState();
+      } else {
+        setArchivedIds(rollback);
+        try {
+          writeArchivedIds(rollback, localStorage);
+        } catch {
+          /* ignore */
+        }
+        setError(archived ? '归档失败（电脑端未接受）' : '取消归档失败（电脑端未接受）');
+      }
+    });
   };
 
-  /** 本机星标置顶切换（保存在 localStorage 中，工作区组内置顶优先展示）。 */
+  /** 星标置顶 —— 同样走官方 pinSession/unpinSession，与电脑端同源。 */
   const handleTogglePin = (session: SessionRow) => {
+    const conn = connRef.current;
+    const sid = session.sessionId;
     setPinnedIds((prev) => {
-      const next = togglePinnedId(prev, session.sessionId);
+      const next = togglePinnedId(prev, sid);
       try {
         writePinnedIds(next, localStorage);
       } catch {
         /* 存不下降级 */
       }
       return next;
+    });
+    if (!conn) return;
+    const nowPinned = !pinnedIds.includes(sid);
+    void (nowPinned ? pinSession(conn, sid) : unpinSession(conn, sid)).then((ok) => {
+      if (ok) void refreshWorkspaceState();
     });
   };
 

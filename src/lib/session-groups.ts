@@ -14,11 +14,10 @@
  * 绝不把用户正在找的那条折叠掉）、**重命名就地更新**、fork 出来的新行、
  * 会话操作菜单的条目判定、新建会话的**工作区候选**。同样是纯函数、可单测。
  *
- * 归档是**仅本机**的：真主机的 session 端点没有 archive
- * （session/cancel|control|create|follow|fork|initializeDefaultModel|list|
- *   modelCatalog|openWorkspacePath|page|projections|prompt|rename|search|
- *   selectModel|updateQueue|workspacePathApplications）。
- * 所以 UI 必须如实写「仅本机归档」，绝不能暗示它会同步回电脑。
+ * 归档**不是**仅本机的：`session/*` 里确实没有 archive，但 `workspace/*` 里有
+ * （workspace/archiveSession|unarchiveSession|pinSession|unpinSession），
+ * 且 workspace/follow 会推 archivedSessionIds / pinnedSessionIds。
+ * 2026-10-19 实测确认双向同步可用，UI 文案已改为「与电脑同步」。
  */
 
 import type { SessionRow } from '../types';
@@ -37,8 +36,14 @@ export const UNKNOWN_WORKSPACE_LABEL = '未知工作区';
 export const SEARCH_GROUP_KEY = '::search-results::';
 export const SEARCH_GROUP_LABEL = '搜索结果';
 
-/** 归档区必须展示的免责说明（真主机没有 archive 端点）。 */
-export const ARCHIVE_NOTE = '仅本机归档 · 主机无 archive 接口，不会同步回电脑';
+/**
+ * 归档区说明。
+ *
+ * 🔴 2026-10-19 实测修正：归档**不是**仅本机的 —— 能力在 `workspace` 命名空间
+ * （workspace/archiveSession 等），与电脑端共用同一份集合。旧的「仅本机归档」
+ * 说法已过时，继续显示会误导用户。
+ */
+export const ARCHIVE_NOTE = '与电脑同步 · 在电脑上归档的会话这里也会隐藏';
 
 /** localStorage 的最小依赖面，方便测试注入假实现。 */
 export interface StorageLike {
@@ -804,8 +809,8 @@ export const SESSION_ACTION_LABELS: Record<SessionActionId, string> = {
   copyId: '复制会话 id',
   fork: '在电脑上分叉（fork）',
   cancel: '取消运行',
-  archive: '本地归档（仅本机）',
-  unarchive: '取消归档（仅本机）',
+  archive: '归档（与电脑同步）',
+  unarchive: '取消归档（与电脑同步）',
   pin: '星标置顶',
   unpin: '取消置顶',
 };

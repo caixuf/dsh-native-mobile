@@ -11,8 +11,10 @@ import android.os.Environment
 import android.provider.MediaStore
 import android.provider.Settings
 import android.util.Base64
+import android.util.Log
 import android.webkit.JavascriptInterface
 import android.widget.Toast
+import androidx.core.content.FileProvider
 
 /**
  * WebView ↔ 原生 的桥。
@@ -269,6 +271,76 @@ class NativeBridge(
             "routeReported" to routes.current().reported,
         )
     )
+
+    // ── OTA 自更新 ───────────────────────────────────────────────────────────
+    //
+    // 用户原话：「要 app 支持 ota 升级，不然每次我插线你安装太麻烦了吧」。
+    // 下面这组方法把「下载 APK → 拉起系统安装器」暴露给网页。
+    //
+    // ⚠️ 网页可能传任意 URL，所以 UpdateManager 内部只放行本仓库 Release 域名
+    //    （见 UpdateManager.isTrustedUrl）——防止被注入后静默装任意 APK。
+
+    private val updater: UpdateManager by lazy { UpdateManager(activity) }
+
+    /** 当前安装版本（网页用它和最新 Release 比对）。 */
+    @JavascriptInterface
+    fun appVersion(): String = updater.currentVersion()
+
+    /**
+     * 开始下载更新包（异步）。
+     *
+     * 进度通过 `otaProgressSink`（由 MainActivity 接到 WebView 的 evaluateJavascript）
+     * 单次回传，不套两层 runOnUiThread —— 那会导致同一进度被投递两次。
+     */
+    @JavascriptInterface
+    fun otaDownload(url: String, sha256: String?): String {
+        updater.download(url, sha256) { progressJson ->
+            activity.runOnUiThread { dispatchOtaProgress(progressJson) }
+        }
+        return MiniJson.write(mapOf("ok" to true, "phase" to "accepted"))
+    }
+
+    /** 拉起系统安装器；`needPermission=true` 时网页应引导去授权页。 */
+    @JavascriptInterface
+    fun otaInstall(): String = updater.install()
+
+    /** 是否已获「安装未知应用」权限。 */
+    @JavascriptInterface
+    fun otaCanInstall(): Boolean = updater.canInstall()
+
+    /** 打开「安装未知应用」授权页。 */
+    @JavascriptInterface
+    fun otaOpenInstallSettings(): String = updater.openInstallPermissionSettings()
+
+    /** 是否已有下载好的待安装包（App 杀进程后仍在）。 */
+    @JavascriptInterface
+    fun otaPendingApk(): String {
+        val f = updater.pendingApk()
+        return if (f == null) {
+            MiniJson.write(mapOf("present" to false))
+        } else {
+            MiniJson.write(mapOf("present" to true, "bytes" to f.length(), "path" to f.absolutePath))
+        }
+    }
+
+    /** 清掉下载缓存（比如用户放弃更新）。 */
+    @JavascriptInterface
+    fun otaClear(): String {
+        val dir = java.io.File(activity.cacheDir, "ota")
+        dir.deleteRecursively()
+        return MiniJson.write(mapOf("ok" to true))
+    }
+
+    /**
+     * 进度回传通道（由 MainActivity 注入 WebView 的 evaluator）。
+     *
+     * 用回调而不是让 JS 轮询：下载 3MB 若靠轮询要么浪费、要么进度很跳。
+     */
+    var otaProgressSink: ((String) -> Unit)? = null
+
+    private fun dispatchOtaProgress(json: String) {
+        otaProgressSink?.invoke(json)
+    }
 
     private fun error(message: String): String =
         MiniJson.write(mapOf("available" to true, "error" to message))

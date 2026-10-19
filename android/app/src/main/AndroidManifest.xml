@@ -21,6 +21,13 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
 
+    <!--
+      🔴 OTA 自更新必需（用户要求「不要每次插线安装」）。
+      缺 REQUEST_INSTALL_PACKAGES 时，startActivity(ACTION_VIEW apk) **不抛异常**，
+      而是被系统静默吞掉 —— 用户看到的只是「点了没反应」。
+    -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
+
     <application
         android:allowBackup="true"
         android:icon="@mipmap/ic_launcher"
@@ -39,6 +46,22 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <!--
+          OTA 的 APK 共享通道（Android 7.0+ 必需）。
+          直接把 file:// URI 交给安装器会抛 FileUriExposedException，
+          异常一旦被 catch 就变成「点了没反应」；必须走 FileProvider 的 content:// URI。
+          authority 带包名后缀 `.ota`，与 UpdateManager.install() 里保持一致。
+        -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.ota"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths" />
+        </provider>
 
         <!--
           审批中继：持有原生 WebSocket，不受 WebView 生命周期影响。

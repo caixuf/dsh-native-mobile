@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  FileProvider 的路径白名单（OTA 安装包用）。
+
+  只暴露 cacheDir/ota 这一层：APK 下载在这里，安装器需要读它。
+  不要写 `<root-path>` 或 `<external-path>` —— 那等于把整个存储暴露给任何拿到
+  content:// URI 的应用，而 OTA 只需要读一个文件。
+-->
+<paths>
+    <cache-path name="ota" path="ota/" />
+</paths>

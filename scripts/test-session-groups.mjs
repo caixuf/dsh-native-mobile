@@ -8,7 +8,9 @@
  *   1. 分组必须真的按 cwd 分（含空 cwd、反斜杠、WSL UNC 的等价写法）；
  *   2. 组内「运行中排前 + 时间倒序」的优先级不能反过来；
  *   3. 折叠状态能存能取，且坏数据不能把 UI 打崩；
- *   4. 归档是**仅本机**的：能隐藏、能恢复、不丢会话；
+ *   4. 归档与电脑端**双向同步**（2026-10-19 实测：workspace/archiveSession 写入 →
+ *      workspace/follow baseline 立刻读到 → unarchiveSession 撤销）；
+ *      同时仍要能隐藏、能恢复、不丢会话；
  *   5. 子代理必须落进它自己的工作区组，而不是混进主会话；
  *   6. 远端搜索结果单独成组，且不能和本地结果重复占两行。
  *
@@ -16,7 +18,7 @@
  * 所以还要盯：
  *   7. 每组**默认只渲染 12 条**，而 running / 搜索命中**必须留在上限内**；
  *   8. **重命名就地更新**（含连续改名的 echo 语义）与 fork 出来的本地新行；
- *   9. 操作菜单的条目判定（取消运行只在 running、归档文案如实写"仅本机"）；
+ *   9. 操作菜单的条目判定（取消运行只在 running、归档文案如实写"与电脑同步"）；
  *  10. 新建会话的工作区候选只来自已知路径（不让用户手打）。
  */
 
@@ -409,9 +411,16 @@ check('归档：恢复后可回到原工作区组', () => {
   eq(ids(groupOf(back, '/w').sessions), ['a']);
 });
 
-check('归档说明必须如实写「仅本机」，不能暗示同步回主机', () => {
-  ok(ARCHIVE_NOTE.includes('仅本机'), '文案必须点明只在本机生效');
-  ok(ARCHIVE_NOTE.includes('不会同步') || ARCHIVE_NOTE.includes('不会同步回电脑'));
+check('🔴 归档说明必须写「与电脑同步」（2026-10-19 实测推翻旧结论）', () => {
+  // 旧结论「主机无 archive 接口」只看了 session/* 命名空间，漏了 workspace/*：
+  //   workspace/archiveSession / unarchiveSession / pinSession / unpinSession
+  //   workspace/follow（流）→ baseline.archivedSessionIds
+  // 实测链路：archiveSession → follow 读到 → unarchiveSession → 集合减少。
+  // 因此文案必须表达同步，且**不得**再出现「仅本机」这种误导说法。
+  ok(ARCHIVE_NOTE.includes('同步'), `文案必须点明与电脑同步：${ARCHIVE_NOTE}`);
+  ok(ARCHIVE_NOTE.includes('电脑'), `文案要说明同步到何处：${ARCHIVE_NOTE}`);
+  ok(!ARCHIVE_NOTE.includes('仅本机'), `不得再声称"仅本机"：${ARCHIVE_NOTE}`);
+  ok(!ARCHIVE_NOTE.includes('不会同步'), `不得再声称"不会同步"：${ARCHIVE_NOTE}`);
 });
 
 // ── 6. 子代理归类 ───────────────────────────────────────────────────────────
@@ -571,7 +580,7 @@ check('🔴 无依赖可折叠：必须用 aria-expanded/aria-controls 且分组
   ok(/<button/.test(collapse), '折叠头必须是真 button（键盘可达）');
   ok(groupSection.includes('CollapsibleSection'), '工作区组必须走可折叠容器');
   ok(groupSection.includes('子代理'), '子代理必须是组内子节');
-  ok(archive.includes('ARCHIVE_NOTE'), '归档区必须显示「仅本机」说明');
+  ok(archive.includes('ARCHIVE_NOTE'), '归档区必须显示同步说明');
   ok(screen.includes('SessionGroupSection'), 'SessionsScreen 必须按工作区渲染分组');
   ok(screen.includes('ArchivedSection'), 'SessionsScreen 必须渲染归档区');
   ok(screen.includes('useMemo'), '分组计算必须 memo 化，不能在每次 render 重算');
@@ -803,9 +812,9 @@ check('T6 操作菜单：归档态给「取消归档」；能力缺失时置灰�
   eq(sessionActionItems(null), []);
 });
 
-check('T6 操作菜单：归档文案必须如实写「仅本机」', () => {
-  ok(SESSION_ACTION_LABELS.archive.includes('仅本机'));
-  ok(sessionActionItems(row('a')).find((i) => i.id === 'archive').label.includes('仅本机'));
+check('T6 操作菜单：归档文案必须如实写「与电脑同步」', () => {
+  ok(SESSION_ACTION_LABELS.archive.includes('同步'), `归档菜单文案：${SESSION_ACTION_LABELS.archive}`);
+  ok(sessionActionItems(row('a')).find((i) => i.id === 'archive').label.includes('同步'));
   ok(SESSION_ACTION_LABELS.fork.includes('session.fork') === false, '文案给用户看，别露协议名');
 });
 

@@ -11,8 +11,8 @@ android {
         applicationId = "io.github.dshmobile.app"
         minSdk = 26
         targetSdk = 35
-        versionCode = 138
-        versionName = "1.6.0"
+        versionCode = 139
+        versionName = "1.7.0"
     }
 
     buildTypes {

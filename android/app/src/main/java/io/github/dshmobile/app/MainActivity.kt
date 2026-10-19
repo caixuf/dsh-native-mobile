@@ -120,6 +120,15 @@ class MainActivity : Activity() {
             // 网页端连接成功时把凭据交给原生，由中继服务持续守着审批通道。
             addJavascriptInterface(bridge, "DSHNative")
 
+            // OTA 下载进度回传：原生下载线程 → 主线程 → 网页的 window.dshOtaProgress(json)。
+            // 用回调而不是让 JS 轮询，否则 3MB 的下载要么进度很跳、要么白白耗电。
+            bridge.otaProgressSink = { json ->
+                evaluateJavascript(
+                    "window.dshOtaProgress && window.dshOtaProgress(${org.json.JSONObject.quote(json)})",
+                    null,
+                )
+            }
+
             webChromeClient = object : WebChromeClient() {
                 override fun onPermissionRequest(request: PermissionRequest) {
                     val requestedResources = request.resources
