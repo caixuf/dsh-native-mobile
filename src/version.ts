@@ -3,7 +3,7 @@
  *
  * 与 android/app/build.gradle.kts 及 package.json 保持严格一致，杜绝多处手写不同步。
  */
-export const APP_VERSION = '1.7.1';
-export const APP_VERSION_CODE = 140;
+export const APP_VERSION = '1.7.2';
+export const APP_VERSION_CODE = 141;
 export const APP_BUILD_DATE = '2026-10-19';
 export const APP_NAME = 'DSH Remote 移动遥控伴侣';

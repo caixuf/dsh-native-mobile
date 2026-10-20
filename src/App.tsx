@@ -178,14 +178,51 @@ export const App: React.FC = () => {
     workspaceUnsubRef.current = null;
   }, []);
 
-  /** 把电脑端的归档/置顶集合同步到本地状态（同时刷新本地缓存）。 */
+  /**
+   * 主动重新对齐归档/置顶集合。
+   *
+   * 🔴 2026-10-20 修正：这里原来是个**空函数**（只有 `void conn;`）。
+   * 当时我假设"订阅是流式的，baseline 一到就同步"，但实际有两个漏洞：
+   *   ① 订阅只在 `ready` 时建立一次；如果那次建立失败（流未就绪/主机忙），
+   *      归档集合就**永远**是 localStorage 里的旧值 —— 表现为「手机点归档没反应」；
+   *   ② 归档操作成功后没有任何"再对齐"，多端并发时本地状态会和电脑端漂移。
+   *
+   * 现在改为：**重新开一次 workspace/follow 订阅**，等 baseline 到达即完成对齐。
+   * 用短超时兜底，避免主机不推 baseline 时把调用方挂死。
+   */
   const refreshWorkspaceState = useCallback(async () => {
     const conn = connRef.current;
     if (!conn) return;
-    // 订阅是流式的：baseline 一到就会回调，这里无需再拉一次，
-    // 但归档/置顶操作后需要一次"重新对齐"，订阅本身就负责推增量，
-    // 所以这里只做一次轻量的集合校正即可。
-    void conn;
+    await new Promise<void>((resolve) => {
+      let done = false;
+      const finish = () => {
+        if (done) return;
+        done = true;
+        try {
+          unsub();
+        } catch {
+          /* ignore */
+        }
+        resolve();
+      };
+      const unsub = subscribeWorkspaceState(
+        conn,
+        (state) => {
+          setArchivedIds(state.archivedSessionIds);
+          setPinnedIds(state.pinnedSessionIds);
+          try {
+            writeArchivedIds(state.archivedSessionIds, localStorage);
+            writePinnedIds(state.pinnedSessionIds, localStorage);
+          } catch {
+            /* 缓存写不下不影响界面 */
+          }
+          finish();
+        },
+        () => finish(),
+      );
+      // 主机没推 baseline 时不要把调用方挂死（4s 后放行）
+      setTimeout(finish, 4000);
+    });
   }, []);
 
   /** 订阅 workspace/follow（每次 ready 都要重新订阅）。 */
@@ -753,11 +790,82 @@ export const App: React.FC = () => {
     loadChatPage(session); // 兜底：流没起来时至少还有历史
     setProjections({}); // 换会话先清空，别把上一轮的统计挂在新会话头上
     void loadProjections(session.sessionId);
+    // 🔴 进入会话后校准运行态（2026-10-20 修）。
+    // 上面 `setRunning(session.running)` 用的是**列表快照**，可能是一分钟前的数据。
+    // 真机症状：电脑上任务早就结束了，手机打开这个会话却还显示「执行中」，
+    // 而 startTurnWatch 只在"发消息之后"才启动，看历史时根本没有对账，
+    // 于是一直卡在那个过期状态，直到用户再发一条消息。
+    startRunningWatch(session.sessionId);
   };
 
   useEffect(() => stopTurnWatch, []);
   // 卸载时关掉实时流，别把订阅留在连接上
   useEffect(() => closeFollow, []);
+
+  /**
+   * 进入会话后的**运行态校准**（不依赖用户发消息）。
+   *
+   * 🔴 2026-10-20 真机问题：电脑上任务已经结束，手机打开那个会话仍显示「执行中」。
+   * 根因：`handleOpenSession` 用列表快照 `session.running` 设置初始状态，
+   * 而真正会刷新 running 的 `startTurnWatch` **只在发送消息后启动** ——
+   * 纯浏览历史时没有任何对账，过期状态就一直挂着。
+   *
+   * 这里做一个轻量校准循环：
+   *   · 每 3s 查一次 `session/list` 里该会话的 running；
+   *   · **只在状态真的不同时才 setRunning**（避免无谓重渲染）；
+   *   · 连续 3 次一致就停（稳定态不再打扰主机）；
+   *   · 切会话/卸载时由 stopTurnWatch 统一停掉。
+   */
+  const runningWatchRef = useRef<number | null>(null);
+  const stopRunningWatch = useCallback(() => {
+    if (runningWatchRef.current !== null) {
+      window.clearInterval(runningWatchRef.current);
+      runningWatchRef.current = null;
+    }
+  }, []);
+
+  const startRunningWatch = useCallback(
+    (sessionId: string) => {
+      stopRunningWatch();
+      let ticks = 0;
+      let stableStreak = 0;
+      runningWatchRef.current = window.setInterval(() => {
+        ticks += 1;
+        const conn = connRef.current;
+        // 上限 20 拍（约 60s）：足够覆盖"刚结束还在收尾"的窗口，又不会长期空转
+        if (!conn || ticks > 20) {
+          stopRunningWatch();
+          return;
+        }
+        void (async () => {
+          try {
+            const res = (await conn.call('session/list', { _request: {} })) as {
+              items?: Array<{ sessionId?: string; running?: boolean }>;
+            };
+            const row = res?.items?.find((i) => i.sessionId === sessionId);
+            if (!row) return;
+            const truth = row.running === true;
+            setRunning((prev) => {
+              if (prev === truth) {
+                stableStreak += 1;
+                // 连续几次和主机一致 → 认为稳定，停止校准（省 RPC）
+                if (stableStreak >= 3) stopRunningWatch();
+                return prev;
+              }
+              stableStreak = 0;
+              return truth;
+            });
+          } catch {
+            /* 下一拍再试 */
+          }
+        })();
+      }, 3000);
+    },
+    [stopRunningWatch],
+  );
+
+  // 卸载时停掉校准循环
+  useEffect(() => stopRunningWatch, [stopRunningWatch]);
 
   /**
    * 当前会话的**实时流**（`session/follow`）。
@@ -962,12 +1070,21 @@ export const App: React.FC = () => {
       return next;
     });
     // 没有连接时只能本地生效（例如离线查看），不假装同步成功
-    if (!conn) return;
+    if (!conn) {
+      setCreateNotice({ kind: 'error', text: '未连接电脑，归档只在本次运行内生效' });
+      return;
+    }
     const task = archived ? archiveSession(conn, sid) : unarchiveSession(conn, sid);
     void task.then((ok) => {
       if (ok) {
-        // 成功后重新拉一次权威集合，纠正并发/多端操作
+        // 成功后重新对齐一次权威集合，纠正并发/多端操作
         void refreshWorkspaceState();
+        // 归档成功也要给反馈：列表里那一行会移进「已归档」区，
+        // 但用户很容易以为"点了没反应"（尤其是折叠状态下看不到移动）。
+        setCreateNotice({
+          kind: 'info',
+          text: archived ? '已归档（与电脑同步）' : '已取消归档',
+        });
       } else {
         setArchivedIds(rollback);
         try {
@@ -975,7 +1092,13 @@ export const App: React.FC = () => {
         } catch {
           /* ignore */
         }
-        setError(archived ? '归档失败（电脑端未接受）' : '取消归档失败（电脑端未接受）');
+        // 🔴 原来这里只调 setError，而 setError 的展示位在**聊天页**——
+        // 归档动作发生在**会话列表页**，于是用户完全看不到失败原因，
+        // 观感就是「点了没成功」。改用列表页自己的提示通道。
+        setCreateNotice({
+          kind: 'error',
+          text: archived ? '归档失败：电脑端未接受' : '取消归档失败：电脑端未接受',
+        });
       }
     });
   };
