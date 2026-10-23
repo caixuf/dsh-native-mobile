@@ -51,7 +51,7 @@ const CALLOUT_ICONS: Record<
 /**
  * 生产级 Markdown 富文本渲染器（Web 版）。
  */
-export const MarkdownView: React.FC<Props> = ({ content, streaming = false }) => {
+export const MarkdownView = React.memo(function MarkdownView({ content, streaming = false }: Props) {
   const blocks = useMemo(() => {
     const text = content ?? '';
     return parseMarkdownIncremental(text);
@@ -65,11 +65,21 @@ export const MarkdownView: React.FC<Props> = ({ content, streaming = false }) =>
       {streaming && <span className="streaming-cursor" />}
     </div>
   );
-};
+});
 
 // ── 块分发 ──────────────────────────────────────────────────────────────────
 
-const BlockView: React.FC<{ block: MdBlock; isFirst: boolean }> = ({ block, isFirst }) => {
+/**
+ * 冻结块保持同一对象引用（增量解析的前缀）。memo 后历史块不再重绘，
+ * 流式增长只重绘尾部。
+ */
+const BlockView = React.memo(function BlockView({
+  block,
+  isFirst,
+}: {
+  block: MdBlock;
+  isFirst: boolean;
+}) {
   switch (block.type) {
     case 'heading':
       return (
@@ -94,7 +104,7 @@ const BlockView: React.FC<{ block: MdBlock; isFirst: boolean }> = ({ block, isFi
     default:
       return null;
   }
-};
+});
 
 // ── 行内渲染 ────────────────────────────────────────────────────────────────
 

@@ -16,8 +16,10 @@ import {
   collectReasoningText,
   cursorFromError,
   eventToLine,
+  applyFollowLines,
   eventsToLines,
   fetchChatPage,
+  mergePageLines,
   isDialogEvent,
   isToolEvent,
   pageRequest,
@@ -355,6 +357,69 @@ check('快照与已渲染历史择多保留（超大会话空白的真因）', (
   eq(pickRicherLines([], []), [], '都空就空');
   // 身份不变（避免无谓重渲染）
   eq(pickRicherLines(prev, []) === prev, true);
+});
+
+check('follow 同一 seq 改写原行，历史行对象保持原引用', () => {
+  const older = { key: 'line-1', role: 'user', text: '你好', kind: 'user/message' };
+  const streaming = { key: 'line-2', role: 'assistant', text: '正在', kind: 'assistant/message', toolMs: 12 };
+  const prev = [older, streaming];
+  const seen = new Set(['line-1', 'line-2']);
+
+  const same = applyFollowLines(prev, [{ ...streaming }], seen);
+  eq(same.changed, false, '内容没变不能换数组');
+  eq(same.lines, prev);
+
+  const grown = applyFollowLines(
+    prev,
+    [{ key: 'line-2', role: 'assistant', text: '正在写', kind: 'assistant/message' }],
+    seen,
+  );
+  eq(grown.changed, true);
+  eq(grown.lines[0], older, '没变的历史行必须是同一个对象');
+  eq(grown.lines[1].text, '正在写');
+  eq(grown.lines[1].toolMs, 12, '改写正文时保留已经算好的耗时');
+  eq(grown.lines !== prev, true);
+
+  const appended = applyFollowLines(
+    grown.lines,
+    [{ key: 'line-3', role: 'assistant', text: '下一句', kind: 'assistant/message' }],
+    seen,
+  );
+  eq(appended.lines.length, 3);
+  eq(appended.lines[0], older);
+  eq(appended.lines[1], grown.lines[1], '追加时已改写的行不再复制');
+  ok(seen.has('line-3'));
+
+  const rewritten = applyFollowLines(
+    appended.lines,
+    [{ key: 'line-2', role: 'assistant', text: '改短', kind: 'assistant/message' }],
+    seen,
+  );
+  eq(rewritten.lines[1].text, '改短', '同一 seq 变短也要覆盖（重试/编辑）');
+  eq(rewritten.lines[1].toolMs, 12);
+});
+
+check('翻页与流式行条数相同时，保留更长的那一版正文', () => {
+  const older = { key: 'line-1', text: '问' };
+  const streamed = { key: 'line-2', text: '已经写到这里了' };
+  const stalePage = [
+    { key: 'line-1', text: '问' },
+    { key: 'line-2', text: '已经' },
+  ];
+  const merged = mergePageLines([older, streamed], stalePage);
+  eq(merged[0].text, '问');
+  eq(merged[1], streamed, '收尾翻页不能把流式写长的行刷短');
+
+  const fullerPage = [
+    { key: 'line-1', text: '问' },
+    { key: 'line-2', text: '已经写到这里了，而且翻页更全' },
+  ];
+  const forward = mergePageLines([older, streamed], fullerPage);
+  eq(forward[1].text, fullerPage[1].text, '翻页正文更长时用翻页');
+
+  eq(mergePageLines([streamed], []), [streamed], '空翻页不清空');
+  eq(mergePageLines([streamed], [streamed, older]).length, 2, '翻页行更多时用翻页');
+  eq(mergePageLines([streamed, older], [streamed]), [streamed, older], '更短的翻页不削历史');
 });
 
 // ── 汇总 ────────────────────────────────────────────────────────────────────

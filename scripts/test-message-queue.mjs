@@ -41,8 +41,10 @@ import {
 } from '../src/lib/message-queue.ts';
 import {
   DRAFT_PREFIX,
+  DRAFT_SAVE_DELAY_MS,
   EXPANDED_MAX_KEYS,
   clearDraft,
+  createDraftScheduler,
   createMemoryStorage,
   draftKey,
   expandedKey,
@@ -442,6 +444,50 @@ check('草稿：超长草稿被截断到 DRAFT_MAX_CHARS', () => {
   eq(loadDraft('s', store).text.length, 8000);
 });
 
+check('草稿：打字防抖，flush 会作废还没落盘的旧内容', () => {
+  eq(DRAFT_SAVE_DELAY_MS >= 200, true, '间隔要够长，避免每个按键都同步写存储');
+  const store = createMemoryStorage();
+  const queued = [];
+  const clock = {
+    schedule(fn) {
+      queued.push(fn);
+      return queued.length;
+    },
+    cancel() {},
+  };
+  const writer = createDraftScheduler(
+    (sessionId, text) => saveDraft(sessionId, text, store),
+    clock,
+  );
+
+  writer.schedule('s', 'a');
+  eq(loadDraft('s', store).text, '', '定时器没跑之前不能写盘');
+  queued[0]();
+  eq(loadDraft('s', store).text, 'a');
+
+  writer.schedule('s', 'ab');
+  writer.schedule('s', 'abc');
+  queued[1]();
+  eq(loadDraft('s', store).text, 'a', '被后来的按键作废的定时器不能写回旧文本');
+  queued[2]();
+  eq(loadDraft('s', store).text, 'abc');
+
+  writer.schedule('s', 'zzz');
+  writer.flush('s', '最终');
+  queued[3]();
+  eq(loadDraft('s', store).text, '最终', 'flush 之后迟到的定时器不能覆盖');
+
+  writer.schedule('s', '另一会话不该被丢');
+  writer.drop('other');
+  queued[4]();
+  eq(loadDraft('s', store).text, '另一会话不该被丢');
+
+  writer.schedule('s', '已发送');
+  writer.drop('s');
+  queued[5]();
+  eq(loadDraft('s', store).text, '另一会话不该被丢', 'drop 掉本会话的排队写入');
+});
+
 check('草稿：listDraftSessionIds 只列草稿键（供"有未发送草稿"标记）', () => {
   const store = createMemoryStorage({ other: 'x' });
   saveDraft('a', '1', store);
@@ -706,6 +752,8 @@ check('🔴 T7 自动跟随：只在用户本来就在底部时才滚，且给�
   ok(/onScroll=\{handleTimelineScroll\}/.test(chat), '时间线必须监听滚动');
   ok(/if \(followBottomRef\.current\) scrollToBottom\(\)/.test(chat),
     '自动滚动必须被 followBottomRef 门控（不能无条件 scrollIntoView）');
+  ok(/behavior: ScrollBehavior = 'auto'/.test(chat),
+    '贴底跟随默认必须是瞬时滚动，不能每帧 smooth');
   ok(/aria-label="跳到最新消息"/.test(chat), '跳转按钮要有 aria-label');
   ok(/jumpToLatest/.test(chat), '点击后要回到底部并恢复跟随');
   ok(/distance < 80/.test(chat), '要有贴底容差，避免手指抖动误判');

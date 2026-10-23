@@ -202,12 +202,10 @@
   0%, 100% {
     opacity: 0.8;
     transform: scale(1);
-    box-shadow: 0 0 12px rgba(59, 130, 246, 0.4);
   }
   50% {
     opacity: 1;
     transform: scale(1.08);
-    box-shadow: 0 0 24px rgba(59, 130, 246, 0.8);
   }
 }
 
@@ -239,7 +237,6 @@
   vertical-align: text-bottom;
   margin-left: 2px;
   animation: cursorPulse 0.9s cubic-bezier(0.4, 0, 0.2, 1) infinite;
-  box-shadow: 0 0 8px #38bdf8;
 }
 
 /* MiniMax / Claude-grade Markdown typography */

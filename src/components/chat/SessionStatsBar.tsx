@@ -61,7 +61,7 @@ export const SessionStatsBar: React.FC<Props> = ({ activity, usage, context, det
 
   return (
     <div
-      className="w-full bg-white/95 border-b border-gray-100 backdrop-blur-md px-4 py-1 select-none"
+      className="w-full bg-white border-b border-gray-100 px-4 py-1 select-none"
       data-testid="session-stats"
     >
       <div className="max-w-2xl mx-auto">

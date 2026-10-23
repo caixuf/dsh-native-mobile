@@ -137,6 +137,78 @@ export function loadDraft(sessionId: string, storage: DraftStorage = resolveStor
   return { text: '', restored: false };
 }
 
+/** 打字时的落盘间隔。太短仍会卡住 WebView 的同步 setItem，太长则切走可能丢最后几个字。 */
+export const DRAFT_SAVE_DELAY_MS = 300;
+
+export interface DraftClock {
+  schedule(fn: () => void, delayMs: number): number;
+  cancel(id: number): void;
+}
+
+const defaultDraftClock: DraftClock = {
+  schedule(fn, delayMs) {
+    return setTimeout(fn, delayMs) as unknown as number;
+  },
+  cancel(id) {
+    clearTimeout(id);
+  },
+};
+
+/**
+ * 输入框草稿写入器。
+ *
+ * 每个按键都同步 `localStorage.setItem` 会让 WebView 输入顿一下。
+ * `schedule` 合并成一次写入；`flush` 立刻落盘并作废还没跑的定时器，
+ * 避免旧内容在发送成功或切会话之后把草稿写回去。
+ */
+export function createDraftScheduler(
+  save: (sessionId: string, text: string) => boolean = (sessionId, text) => saveDraft(sessionId, text),
+  clock: DraftClock = defaultDraftClock,
+) {
+  let timer: number | null = null;
+  let generation = 0;
+  let pending: { sessionId: string; text: string } | null = null;
+
+  const cancel = () => {
+    generation += 1;
+    pending = null;
+    if (timer !== null) {
+      clock.cancel(timer);
+      timer = null;
+    }
+  };
+
+  return {
+    schedule(sessionId: string, text: string, delayMs = DRAFT_SAVE_DELAY_MS) {
+      const token = ++generation;
+      pending = { sessionId, text };
+      if (timer !== null) clock.cancel(timer);
+      timer = clock.schedule(() => {
+        if (token !== generation) return;
+        timer = null;
+        const job = pending;
+        pending = null;
+        if (job) save(job.sessionId, job.text);
+      }, delayMs);
+    },
+    /** 立刻写入这一份文本，并作废排队中的旧写入。 */
+    flush(sessionId: string, text: string) {
+      cancel();
+      return save(sessionId, text);
+    },
+    /**
+     * 只丢掉这一会话还没落盘的写入。
+     * 发送成功时用它，避免把刚发出去的字写回草稿；
+     * 另一会话正在排队的草稿不动。
+     */
+    drop(sessionId: string) {
+      if (pending && pending.sessionId !== sessionId) return;
+      cancel();
+    },
+    cancel,
+  };
+}
+
 /** 清空草稿（发送成功后调用）。 */
 export function clearDraft(sessionId: string, storage: DraftStorage = resolveStorage()): void {
   try {

@@ -9,10 +9,11 @@ import { Envelopes } from './services/envelopes';
 import { NativeBridge } from './services/native-bridge';
 import type { NativeRelayStatus } from './services/native-bridge';
 import {
+  applyFollowLines,
   eventToLines,
   eventsToLines,
   fetchChatPage,
-  pickRicherLines,
+  mergePageLines,
   recordsToLines,
   sessionAddress,
 } from './lib/session-page';
@@ -657,10 +658,8 @@ export const App: React.FC = () => {
       // lib/session-page.ts 里，实时流与历史翻页**共用同一套**，避免两条路漂移。
       const lines = recordsToLines(records) as ChatLine[];
       // 同样走"择多保留"：若 follow 快照已经铺了更多内容，别被这次翻页削短。
-      const kept = pickRicherLines(chatLinesRef.current, lines);
-      lineKeysRef.current = new Set(kept.map((l) => l.key));
-      chatLinesRef.current = kept;
-      setChatLines(kept);
+      const kept = mergePageLines(chatLinesRef.current, lines);
+      commitLinesNow(kept);
       setChatError(null);
     } catch (err) {
       // 🔴 F4：不能再只 console.warn。
@@ -674,7 +673,10 @@ export const App: React.FC = () => {
           ? `子代理会话在当前主机上无法直接读取（主机要求 subagent delivery）：${message}。请打开它的父会话查看。`
           : `读取会话记录失败：${message}`,
       );
-      if (currentSessionRef.current?.sessionId === session.sessionId) setChatLines([]);
+      if (currentSessionRef.current?.sessionId === session.sessionId) {
+        cancelScheduledLines();
+        setChatLines([]);
+      }
     }
   };
 
@@ -780,11 +782,10 @@ export const App: React.FC = () => {
     setCurrentSession(session);
     setRoute('chat');
     // 先清空：否则上一会话的消息会短暂串台（真机实测 2–3 秒，F5）
-    setChatLines([]);
     // ⚠️ 镜像也必须一起重置 —— "择多保留"只在**同一会话内**成立，
     // 带着上个会话的行去比较会让新会话一进来就显示旧内容（F5 回归）。
-    chatLinesRef.current = [];
-    lineKeysRef.current = new Set();
+    // 同时取消还没刷上屏的旧帧，避免它在清空之后把上一会话画回来。
+    commitLinesNow([]);
     setChatError(null);
     openFollow(session); // 实时流先行：它推的 snapshot 会把历史铺上
     loadChatPage(session); // 兜底：流没起来时至少还有历史
@@ -890,6 +891,64 @@ export const App: React.FC = () => {
   const toolStartRef = useRef<Map<string, number>>(new Map());
   const [activityTick, setActivityTick] = useState(0);
   const activity = activityTick >= 0 ? activityRef.current : emptyActivity();
+  /** 流式行提交与过程状态各合一帧，避免一条事件一次整页 setState。 */
+  const linesFrameRef = useRef<number | null>(null);
+  const activityFrameRef = useRef<number | null>(null);
+
+  const cancelScheduledLines = () => {
+    if (linesFrameRef.current !== null && typeof cancelAnimationFrame === 'function') {
+      cancelAnimationFrame(linesFrameRef.current);
+    }
+    linesFrameRef.current = null;
+  };
+
+  /** 立刻提交（切会话、翻页、快照）。镜像同步更新，供择多保留比较。 */
+  const commitLinesNow = (next: ChatLine[]) => {
+    cancelScheduledLines();
+    chatLinesRef.current = next;
+    lineKeysRef.current = new Set(next.map((line) => line.key));
+    setChatLines(next);
+  };
+
+  /**
+   * 流式增量一帧最多提交一次。镜像立刻更新，翻页的择多保留
+   * 看得到还没画上屏的更长历史。
+   */
+  const commitLinesSoon = (next: ChatLine[]) => {
+    chatLinesRef.current = next;
+    lineKeysRef.current = new Set(next.map((line) => line.key));
+    if (typeof requestAnimationFrame !== 'function') {
+      setChatLines(next);
+      return;
+    }
+    if (linesFrameRef.current !== null) return;
+    linesFrameRef.current = requestAnimationFrame(() => {
+      linesFrameRef.current = null;
+      setChatLines(chatLinesRef.current);
+    });
+  };
+
+  /** 过程状态一帧最多刷一次。真值在 activityRef，tick 只让顶栏重画。 */
+  const bumpActivity = () => {
+    if (typeof requestAnimationFrame !== 'function') {
+      setActivityTick((n) => n + 1);
+      return;
+    }
+    if (activityFrameRef.current !== null) return;
+    activityFrameRef.current = requestAnimationFrame(() => {
+      activityFrameRef.current = null;
+      setActivityTick((n) => n + 1);
+    });
+  };
+
+  useEffect(() => {
+    return () => {
+      cancelScheduledLines();
+      if (activityFrameRef.current !== null && typeof cancelAnimationFrame === 'function') {
+        cancelAnimationFrame(activityFrameRef.current);
+      }
+    };
+  }, []);
 
   /**
    * 会话统计（轮/步/tok-s、token 与缓存命中、上下文占用）。
@@ -943,10 +1002,8 @@ export const App: React.FC = () => {
             // 🔴 空快照绝不清空界面；两份都非空时保留更长的一份。
             // 否则超大会话会出现"点开一片空白，但 session/page 明明 200 过"。
             if (lines.length > 0) {
-              const kept = pickRicherLines(chatLinesRef.current, lines);
-              lineKeysRef.current = new Set(kept.map((l) => l.key));
-              chatLinesRef.current = kept;
-              setChatLines(kept);
+              const kept = mergePageLines(chatLinesRef.current, lines);
+              commitLinesNow(kept);
               activityRef.current = buildActivity(records);
               // 快照是历史事件：已结束的会话绝不能被历史快照篡改成 running=true
               if (session.running === true) {
@@ -970,8 +1027,9 @@ export const App: React.FC = () => {
           if (type === 'event') {
             const event = value.event as RawSessionEvent;
             // 过程状态：每条事件都归约一次（分析中/调用工具/第 N 步…）
+            // 顶栏一帧最多刷一次；不要为了状态把整份聊天记录再提交一遍。
             activityRef.current = applyActivityEvent(activityRef.current, event);
-            setActivityTick((n) => n + 1);
+            bumpActivity();
 
             const evType = String(event?.type || '');
             if (
@@ -995,7 +1053,7 @@ export const App: React.FC = () => {
                 toolName: null,
                 thinking: null,
               };
-              setActivityTick((n) => n + 1);
+              bumpActivity();
             }
 
             // 每个工具的独立耗时：tool/call 记下时刻，tool/result 算出毫秒并写到那一行。
@@ -1004,28 +1062,36 @@ export const App: React.FC = () => {
             const stamp = typeof event?.time === 'number' ? event.time : Date.now();
             if (callId && event.type === 'tool/call') {
               toolStartRef.current.set(callId, stamp);
-            } else if (callId && event.type === 'tool/result') {
+            }
+
+            // 同一 seq 的后续帧改写原行（流式正文），新 seq 才追加。
+            const produced = eventToLines(event) as ChatLine[];
+            let next = chatLinesRef.current;
+            let changed = false;
+            if (produced.length > 0) {
+              const applied = applyFollowLines(next, produced, lineKeysRef.current);
+              next = applied.lines;
+              changed = applied.changed;
+            }
+            if (callId && event.type === 'tool/result') {
               const started = toolStartRef.current.get(callId);
               if (started !== undefined) {
                 toolStartRef.current.delete(callId);
                 const ms = Math.max(0, stamp - started);
                 const lineKey = `line-${event.seq}`;
-                setChatLines((prev) =>
-                  prev.map((l) => (l.key === lineKey ? { ...l, toolMs: ms } : l)),
-                );
+                let stamped = false;
+                const patched = next.map((line) => {
+                  if (line.key !== lineKey || line.toolMs === ms) return line;
+                  stamped = true;
+                  return { ...line, toolMs: ms };
+                });
+                if (stamped) {
+                  next = patched;
+                  changed = true;
+                }
               }
             }
-
-            // 一次事件可能产出多行（step/start → 步骤分隔线 + 该步的内容）
-            const produced = eventToLines(event) as ChatLine[];
-            if (produced.length === 0) return;
-            setChatLines((prev) => {
-              const seen = lineKeysRef.current;
-              const fresh = produced.filter((l) => !seen.has(l.key));
-              if (fresh.length === 0) return prev;
-              for (const l of fresh) seen.add(l.key);
-              return [...prev, ...fresh];
-            });
+            if (changed) commitLinesSoon(next);
           }
         },
         onError: (error) => {
@@ -1317,9 +1383,7 @@ export const App: React.FC = () => {
     stopTurnWatch();
     closeFollow();
     setCurrentSession(null);
-    setChatLines([]);
-    chatLinesRef.current = [];
-    lineKeysRef.current = new Set();
+    commitLinesNow([]);
     setPendingPrompt(null);
     setPromptSessionId(null);
     setRoute('chat');

@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ArrowLeft,
   Menu,
@@ -63,7 +63,15 @@ import { ModelPicker } from '../chat/ModelPicker';
 import { CommandPalette } from '../chat/CommandPalette';
 import { ChangedFilesCard } from '../chat/ChangedFilesCard';
 import { AttachmentBar, ImageAttachment } from '../chat/AttachmentBar';
-import { clearDraft, loadDraft, loadExpandedKeys, saveDraft, saveExpandedKeys } from '../chat/draft-store';
+import {
+  clearDraft,
+  createDraftScheduler,
+  loadDraft,
+  loadExpandedKeys,
+  saveDraft,
+  saveExpandedKeys,
+} from '../chat/draft-store';
+import { resetIncrementalCache } from '../../lib/markdown';
 import { ImageViewerModal, FileViewerModal } from '../modals/MediaViewerModal';
 import { NetworkDiagnosticModal } from '../modals/NetworkDiagnosticModal';
 
@@ -140,6 +148,218 @@ interface Props {
   onRefreshConnection?: () => void;
 }
 
+interface ChatLineRowProps {
+  line: ChatLine;
+  rowKey: string;
+  isLastMessage: boolean;
+  expanded: boolean;
+  active: boolean;
+  injectedOpen: boolean;
+  paired?: ChatLine;
+  hideResult: boolean;
+  onToggleExpand: (key: string) => void;
+  onActivate: (key: string | null) => void;
+  onToggleInjected: (key: string) => void;
+  onRegenerate: () => void;
+}
+
+/**
+ * 单行消息。父组件每次过程状态刷新都会重画，这里靠引用相等跳过历史行，
+ * 只有正文变了的那一行（通常是最后一条）会重解析 Markdown。
+ */
+const ChatLineRow = memo(function ChatLineRow({
+  line,
+  rowKey,
+  isLastMessage,
+  expanded,
+  active,
+  injectedOpen,
+  paired,
+  hideResult,
+  onToggleExpand,
+  onActivate,
+  onToggleInjected,
+  onRegenerate,
+}: ChatLineRowProps) {
+  const key = rowKey;
+
+  if (line.kind === 'step/start') {
+    return (
+      <div
+        key={key}
+        data-testid="step-marker"
+        className="flex items-center gap-3 py-2.5 select-none"
+      >
+        <span className="h-px flex-1 bg-gradient-to-r from-transparent via-white/12 to-white/12" />
+        <span className="text-[11px] font-semibold tracking-wide text-[#52525b] shrink-0">
+          {line.text}
+        </span>
+        <span className="h-px flex-1 bg-gradient-to-r from-white/12 via-white/12 to-transparent" />
+      </div>
+    );
+  }
+
+  if (line.kind === 'user/injected') {
+    return (
+      <div key={key} className="my-1" data-testid="injected-note" data-label={line.injectedLabel || ''}>
+        <button
+          type="button"
+          onClick={() => onToggleInjected(key)}
+          aria-expanded={injectedOpen}
+          aria-label={`${line.injectedLabel || '上下文'}，共 ${line.text.length} 字，点${injectedOpen ? '收起' : '展开查看'}`}
+          className="w-full min-h-[44px] flex items-center gap-2 px-3 py-2.5 rounded-xl border border-dashed border-black/[0.08] bg-black/[0.02] text-left cursor-pointer studio-tap"
+        >
+          {injectedOpen ? (
+            <ChevronDown size={13} className="text-[#52525b] shrink-0" />
+          ) : (
+            <ChevronRight size={13} className="text-[#52525b] shrink-0" />
+          )}
+          <span className="text-[11.5px] text-[#52525b] truncate">
+            {line.injectedLabel || '上下文'} · 由电脑端注入，不是你发的（{line.text.length} 字）
+          </span>
+        </button>
+        {injectedOpen && (
+          <div className="mt-1.5 px-3 py-2 rounded-xl bg-black/25 border border-black/[0.06]">
+            <pre className="text-[11px] leading-[1.5] text-[#52525b] whitespace-pre-wrap break-words max-h-[40vh] overflow-y-auto">
+              {line.text}
+            </pre>
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  if (line.kind === 'tool/call') {
+    const result = line.toolResult ?? paired?.toolResult ?? paired?.text ?? undefined;
+    return (
+      <div key={key} className="my-1.5">
+        <DisclosureToolCard
+          toolName={line.toolName}
+          toolArgs={line.toolArgs}
+          toolResult={result}
+          toolMs={line.toolMs ?? paired?.toolMs ?? null}
+          isError={Boolean(line.isError || paired?.isError)}
+          kind="tool/call"
+        />
+      </div>
+    );
+  }
+
+  if (line.kind === 'tool/result') {
+    if (hideResult) return null;
+    return (
+      <div key={key} className="my-1.5">
+        <DisclosureToolCard
+          toolName={line.toolName ?? '工具结果'}
+          toolArgs={line.toolArgs}
+          toolResult={line.toolResult ?? line.text}
+          isError={line.isError}
+          kind="tool/result"
+        />
+      </div>
+    );
+  }
+
+  if (line.role === 'user') {
+    return (
+      <CollapsibleMessage
+        key={key}
+        messageKey={key}
+        text={line.text}
+        mode="plain"
+        align="end"
+        messageRole="user"
+        expanded={expanded}
+        onToggleExpand={onToggleExpand}
+        active={active}
+        onActivate={onActivate}
+        showCursor={isLastMessage}
+        bodyClassName="max-w-[85%] px-4 py-2.5 rounded-2xl bg-[#f4f4f5] text-[#18181b] text-[14.5px] leading-relaxed shadow-2xs break-words border border-gray-200/60"
+      />
+    );
+  }
+
+  if (line.role === 'system') {
+    return (
+      <div key={key} className="flex justify-center my-2">
+        <span className="px-3 py-1 rounded-full text-[11.5px] text-[#52525b] bg-gray-100 border border-gray-200/60">
+          {line.text}
+        </span>
+      </div>
+    );
+  }
+
+  return (
+    <CollapsibleMessage
+      key={key}
+      messageKey={key}
+      text={line.text}
+      mode="markdown"
+      align="start"
+      messageRole="assistant"
+      expanded={expanded}
+      onToggleExpand={onToggleExpand}
+      active={active}
+      onActivate={onActivate}
+      showCursor={isLastMessage}
+      bodyClassName="my-2.5 w-full text-[#18181b]"
+    >
+      <div className="space-y-2">
+        <div className="text-[#18181b] leading-relaxed text-[15px]" data-message-body>
+          <MarkdownView content={line.text} streaming={isLastMessage} />
+        </div>
+        <div className="flex items-center gap-1 pt-1 text-[#52525b]">
+          <button
+            type="button"
+            onClick={() => {
+              triggerHaptic('light');
+              void copyToClipboard(line.text);
+            }}
+            aria-label="复制回答"
+            className="min-h-[44px] min-w-[44px] flex items-center justify-center rounded-full hover:bg-gray-100 text-[#52525b] hover:text-black transition-colors cursor-pointer"
+            title="复制"
+          >
+            <Copy size={15} />
+          </button>
+          <button
+            type="button"
+            onClick={() => triggerHaptic('light')}
+            aria-label="赞同回答"
+            className="min-h-[44px] min-w-[44px] flex items-center justify-center rounded-full hover:bg-gray-100 text-[#52525b] hover:text-black transition-colors cursor-pointer"
+            title="赞同"
+          >
+            <ThumbsUp size={15} />
+          </button>
+          <button
+            type="button"
+            onClick={() => triggerHaptic('light')}
+            aria-label="反对回答"
+            className="min-h-[44px] min-w-[44px] flex items-center justify-center rounded-full hover:bg-gray-100 text-[#52525b] hover:text-black transition-colors cursor-pointer"
+            title="反对"
+          >
+            <ThumbsDown size={15} />
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              triggerHaptic('medium');
+              onRegenerate();
+            }}
+            aria-label="重新生成回答"
+            className="min-h-[44px] min-w-[44px] flex items-center justify-center rounded-full hover:bg-gray-100 text-[#52525b] hover:text-black transition-colors cursor-pointer"
+            title="重新生成"
+          >
+            <RotateCw size={15} />
+          </button>
+          <span className="text-[11px] text-[#52525b] ml-auto font-mono pr-2">
+            {isLastMessage ? '生成中…' : '刚刚'}
+          </span>
+        </div>
+      </div>
+    </CollapsibleMessage>
+  );
+});
+
 export const ChatScreen: React.FC<Props> = ({
   sessionId,
   title,
@@ -213,8 +433,18 @@ export const ChatScreen: React.FC<Props> = ({
   const activeSessionRef = useRef(sessionId);
   const inputRef = useRef(inputText);
   inputRef.current = inputText;
+  const draftWriterRef = useRef<ReturnType<typeof createDraftScheduler> | null>(null);
+  if (draftWriterRef.current === null) draftWriterRef.current = createDraftScheduler();
+  const draftWriter = draftWriterRef.current;
+  const sendTextRef = useRef<(raw: string) => void>(() => {});
 
-  const scrollToBottom = (behavior: ScrollBehavior = 'smooth') => {
+  // 贴底跟随用瞬时定位。smooth 会在每次正文变长时重开一段动画，手指感觉发黏。
+  const scrollToBottom = (behavior: ScrollBehavior = 'auto') => {
+    const el = timelineRef.current;
+    if (behavior === 'auto' && el) {
+      el.scrollTop = el.scrollHeight;
+      return;
+    }
     messagesEndRef.current?.scrollIntoView({ behavior, block: 'end' });
   };
 
@@ -225,7 +455,8 @@ export const ChatScreen: React.FC<Props> = ({
     const distance = el.scrollHeight - el.scrollTop - el.clientHeight;
     const atBottom = distance < 80;
     followBottomRef.current = atBottom;
-    setShowJumpToLatest(lines.length > 0 && !atBottom);
+    const show = lines.length > 0 && !atBottom;
+    setShowJumpToLatest((prev) => (prev === show ? prev : show));
   };
 
   const jumpToLatest = () => {
@@ -257,6 +488,7 @@ export const ChatScreen: React.FC<Props> = ({
   // 切会话：恢复该会话的草稿与展开状态，并给出**可见**提示（静默恢复 = 没恢复）
   useEffect(() => {
     activeSessionRef.current = sessionId;
+    resetIncrementalCache();
     const restored = loadDraft(sessionId);
     setInputText(restored.text);
     inputRef.current = restored.text;
@@ -277,20 +509,26 @@ export const ChatScreen: React.FC<Props> = ({
   }, [sessionId]);
 
   /** 折叠/展开并**按会话持久化**（切走再回来不丢）。 */
-  const toggleExpanded = (key: string) => {
-    const next = new Set(expandedKeys);
-    if (next.has(key)) next.delete(key);
-    else next.add(key);
-    setExpandedKeys(next);
-    saveExpandedKeys(sessionId, next);
-  };
+  const toggleExpanded = useCallback((key: string) => {
+    setExpandedKeys((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      saveExpandedKeys(sessionId, next);
+      return next;
+    });
+  }, [sessionId]);
 
-  // 离开会话 / 卸载：把当前输入落盘（"退出不丢"）
+  const regenerate = useCallback(() => {
+    sendTextRef.current('请重新生成');
+  }, []);
+
+  // 离开会话 / 卸载：把当前输入立刻落盘（"退出不丢"），并作废还在排队的按键写入
   useEffect(() => {
     return () => {
-      saveDraft(sessionId, inputRef.current);
+      draftWriter.flush(sessionId, inputRef.current);
     };
-  }, [sessionId]);
+  }, [sessionId, draftWriter]);
 
   const handleInputChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
     const value = e.target.value;
@@ -298,7 +536,7 @@ export const ChatScreen: React.FC<Props> = ({
     setInputText(value);
     setSendError(null);
     if (draftNotice) setDraftNotice(null);
-    saveDraft(sessionId, value);
+    draftWriter.schedule(sessionId, value);
     if (value.startsWith('/') && !value.includes(' ')) {
       setCommandPaletteOpen(true);
     } else {
@@ -355,6 +593,7 @@ export const ChatScreen: React.FC<Props> = ({
       const kept = current.trim() === '' ? text : current;
       inputRef.current = kept;
       setInputText(kept);
+      draftWriter.drop(targetSession);
       saveDraft(targetSession, kept);
       setSendError((prev) => prev || '消息未发送成功，草稿已保留，可直接重试');
       return;
@@ -362,6 +601,8 @@ export const ChatScreen: React.FC<Props> = ({
 
     setAttachment(null);
     // 已接收：清空。若期间切了会话，只清那条会话的持久化草稿，不动新会话输入框。
+    // 先丢掉这一会话还在排队的按键写入，否则定时器会把已发送的文字写回草稿。
+    draftWriter.drop(targetSession);
     if (activeSessionRef.current !== targetSession) {
       clearDraft(targetSession);
       return;
@@ -369,6 +610,9 @@ export const ChatScreen: React.FC<Props> = ({
     inputRef.current = '';
     setInputText('');
     clearDraft(targetSession);
+  };
+  sendTextRef.current = (raw: string) => {
+    void handleSendText(raw);
   };
 
   const togglePlanMode = async () => {
@@ -462,16 +706,21 @@ export const ChatScreen: React.FC<Props> = ({
     return steps;
   };
 
-  const steps = extractSteps();
+  const steps = useMemo(() => extractSteps(), [lines, running]);
 
   // 工具结果配对：桌面端行为是"结果并回对应调用卡片"；
   // 配不上 callId 的独立结果单独成卡（kind='tool/result'，与调用视觉可区分）。
-  const resultByCallId = new Map<string, ChatLine>();
-  for (const line of lines) {
-    if (line.kind === 'tool/result' && line.toolCallId && !resultByCallId.has(line.toolCallId)) {
-      resultByCallId.set(line.toolCallId, line);
+  const { resultByCallId, callIds } = useMemo(() => {
+    const resultByCallId = new Map<string, ChatLine>();
+    const callIds = new Set<string>();
+    for (const line of lines) {
+      if (line.kind === 'tool/call' && line.toolCallId) callIds.add(line.toolCallId);
+      if (line.kind === 'tool/result' && line.toolCallId && !resultByCallId.has(line.toolCallId)) {
+        resultByCallId.set(line.toolCallId, line);
+      }
     }
-  }
+    return { resultByCallId, callIds };
+  }, [lines]);
 
   const handleRetryQueued = (id: string) => {
     if (onRetryQueued) {
@@ -527,13 +776,14 @@ export const ChatScreen: React.FC<Props> = ({
 
   // 注入上下文默认收起；用户手动展开的才记住（这些键只在本会话有效）。
   const [injectedOpenKeys, setInjectedOpenKeys] = useState<Set<string>>(new Set());
-  const toggleInjected = (key: string) =>
+  const toggleInjected = useCallback((key: string) => {
     setInjectedOpenKeys((prev) => {
       const next = new Set(prev);
       if (next.has(key)) next.delete(key);
       else next.add(key);
       return next;
     });
+  }, []);
 
   const preparingStages = [
     '唤醒远程守护进程…',
@@ -553,7 +803,7 @@ export const ChatScreen: React.FC<Props> = ({
     <div className="flex flex-col h-full bg-white/88 text-[#18181b] select-none">
       {/* 1. MiniMax Light Header (对齐 MiniMax 主界面：左侧汉堡菜单，右侧新会话与更多) */}
       <header
-        className="sticky top-0 z-30 px-4 py-2 bg-white/95 backdrop-blur-md border-b border-gray-100 transition-all"
+        className="sticky top-0 z-30 px-4 py-2 bg-white border-b border-gray-100"
       >
         <div className="flex items-center justify-between max-w-2xl mx-auto w-full gap-2">
           <div className="flex items-center gap-2.5 min-w-0 flex-1">
@@ -845,198 +1095,29 @@ export const ChatScreen: React.FC<Props> = ({
         {lines.map((line, idx) => {
           const key = lineKeyOf(line, idx);
           const isLastMessage = showStreamCursor && key === lastMessageKey;
-
-          // 步骤分隔线：`step/start` 事件渲染成"── 第 N 步 ──"（GUI 里也是这么分的）。
-          // 它不是消息，所以必须在下面的消息分支之前拦掉。
-          if (line.kind === 'step/start') {
-            return (
-              <div
-                key={key}
-                data-testid="step-marker"
-                className="flex items-center gap-3 py-2.5 select-none"
-              >
-                <span className="h-px flex-1 bg-gradient-to-r from-transparent via-white/12 to-white/12" />
-                <span className="text-[11px] font-semibold tracking-wide text-[#52525b] shrink-0">
-                  {line.text}
-                </span>
-                <span className="h-px flex-1 bg-gradient-to-r from-white/12 via-white/12 to-transparent" />
-              </div>
-            );
-          }
-
-          // 宿主注入的上下文（运行时上下文 / 记忆快照 / 技能清单…）
-          // 真机实测手机上一进来就是 7000+ 字的记忆快照，以用户气泡形式铺在最前面 ——
-          // 既挤掉真正的对话，又让人以为"我什么时候发过这个"。这里折叠成一条安静注记。
-          if (line.kind === 'user/injected') {
-            const injectedOpen = injectedOpenKeys.has(key);
-            return (
-              <div key={key} className="my-1" data-testid="injected-note" data-label={line.injectedLabel || ''}>
-                <button
-                  type="button"
-                  onClick={() => toggleInjected(key)}
-                  aria-expanded={injectedOpen}
-                  aria-label={`${line.injectedLabel || '上下文'}，共 ${line.text.length} 字，点${injectedOpen ? '收起' : '展开查看'}`}
-                  className="w-full min-h-[44px] flex items-center gap-2 px-3 py-2.5 rounded-xl border border-dashed border-black/[0.08] bg-black/[0.02] text-left cursor-pointer studio-tap"
-                >
-                  {injectedOpen ? (
-                    <ChevronDown size={13} className="text-[#52525b] shrink-0" />
-                  ) : (
-                    <ChevronRight size={13} className="text-[#52525b] shrink-0" />
-                  )}
-                  <span className="text-[11.5px] text-[#52525b] truncate">
-                    {line.injectedLabel || '上下文'} · 由电脑端注入，不是你发的（{line.text.length} 字）
-                  </span>
-                </button>
-                {injectedOpen && (
-                  <div className="mt-1.5 px-3 py-2 rounded-xl bg-black/25 border border-black/[0.06]">
-                    <pre className="text-[11px] leading-[1.5] text-[#52525b] whitespace-pre-wrap break-words max-h-[40vh] overflow-y-auto">
-                      {line.text}
-                    </pre>
-                  </div>
-                )}
-              </div>
-            );
-          }
-
-          if (line.kind === 'tool/call') {
-            // 结果可能在后续的 tool/result 事件里（App 按 seq 逐条映射），这里配对回来
-            const paired = line.toolCallId ? resultByCallId.get(line.toolCallId) : undefined;
-            const result = line.toolResult ?? paired?.toolResult ?? paired?.text ?? undefined;
-            return (
-              <div key={key} className="my-1.5">
-                <DisclosureToolCard
-                  toolName={line.toolName}
-                  toolArgs={line.toolArgs}
-                  toolResult={result}
-                  toolMs={line.toolMs ?? paired?.toolMs ?? null}
-                  isError={Boolean(line.isError || paired?.isError)}
-                  kind="tool/call"
-                />
-              </div>
-            );
-          }
-
-          if (line.kind === 'tool/result') {
-            // 已并回对应 call 卡片的结果不再重复成卡；独立结果单独展示（原来这里直接 return null → 结果全丢）
-            if (line.toolCallId && resultByCallId.get(line.toolCallId) === line) {
-              const callLine = lines.find((l) => l.kind === 'tool/call' && l.toolCallId === line.toolCallId);
-              if (callLine) return null;
-            }
-            return (
-              <div key={key} className="my-1.5">
-                <DisclosureToolCard
-                  toolName={line.toolName ?? '工具结果'}
-                  toolArgs={line.toolArgs}
-                  toolResult={line.toolResult ?? line.text}
-                  isError={line.isError}
-                  kind="tool/result"
-                />
-              </div>
-            );
-          }
-
-          if (line.role === 'user') {
-            // 超长用户消息默认折叠为 6 行 + 复制
-            return (
-              <CollapsibleMessage
-                key={key}
-                messageKey={key}
-                text={line.text}
-                mode="plain"
-                align="end"
-                messageRole="user"
-                expanded={expandedKeys.has(key)}
-                onToggleExpand={toggleExpanded}
-                active={activeMessageKey === key}
-                onActivate={setActiveMessageKey}
-                showCursor={isLastMessage}
-                bodyClassName="max-w-[85%] px-4 py-2.5 rounded-2xl bg-[#f4f4f5] text-[#18181b] text-[14.5px] leading-relaxed shadow-2xs break-words border border-gray-200/60"
-              />
-            );
-          }
-
-          if (line.role === 'system') {
-            return (
-              <div key={key} className="flex justify-center my-2">
-                <span className="px-3 py-1 rounded-full text-[11.5px] text-[#52525b] bg-gray-100 border border-gray-200/60">
-                  {line.text}
-                </span>
-              </div>
-            );
-          }
-
-          // Assistant message: CollapsibleMessage with MiniMax light style + Action Bar
+          const paired = line.toolCallId ? resultByCallId.get(line.toolCallId) : undefined;
+          const hideResult =
+            line.kind === 'tool/result' &&
+            !!paired &&
+            paired === line &&
+            !!line.toolCallId &&
+            callIds.has(line.toolCallId);
           return (
-            <CollapsibleMessage
+            <ChatLineRow
               key={key}
-              messageKey={key}
-              text={line.text}
-              mode="markdown"
-              align="start"
-              messageRole="assistant"
+              line={line}
+              rowKey={key}
+              isLastMessage={isLastMessage}
               expanded={expandedKeys.has(key)}
-              onToggleExpand={toggleExpanded}
               active={activeMessageKey === key}
+              injectedOpen={injectedOpenKeys.has(key)}
+              paired={paired}
+              hideResult={hideResult}
+              onToggleExpand={toggleExpanded}
               onActivate={setActiveMessageKey}
-              showCursor={isLastMessage}
-              bodyClassName="my-2.5 w-full text-[#18181b]"
-            >
-              <div className="space-y-2">
-                <div
-                  className="text-[#18181b] leading-relaxed text-[15px]"
-                  data-message-body
-                >
-                  <MarkdownView content={line.text} streaming={isLastMessage && running} />
-                </div>
-                <div className="flex items-center gap-1 pt-1 text-[#52525b]">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      triggerHaptic('light');
-                      void copyToClipboard(line.text);
-                    }}
-                    aria-label="复制回答"
-                    className="min-h-[44px] min-w-[44px] flex items-center justify-center rounded-full hover:bg-gray-100 text-[#52525b] hover:text-black transition-colors cursor-pointer"
-                    title="复制"
-                  >
-                    <Copy size={15} />
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => triggerHaptic('light')}
-                    aria-label="赞同回答"
-                    className="min-h-[44px] min-w-[44px] flex items-center justify-center rounded-full hover:bg-gray-100 text-[#52525b] hover:text-black transition-colors cursor-pointer"
-                    title="赞同"
-                  >
-                    <ThumbsUp size={15} />
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => triggerHaptic('light')}
-                    aria-label="反对回答"
-                    className="min-h-[44px] min-w-[44px] flex items-center justify-center rounded-full hover:bg-gray-100 text-[#52525b] hover:text-black transition-colors cursor-pointer"
-                    title="反对"
-                  >
-                    <ThumbsDown size={15} />
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      triggerHaptic('medium');
-                      void handleSendText('请重新生成');
-                    }}
-                    aria-label="重新生成回答"
-                    className="min-h-[44px] min-w-[44px] flex items-center justify-center rounded-full hover:bg-gray-100 text-[#52525b] hover:text-black transition-colors cursor-pointer"
-                    title="重新生成"
-                  >
-                    <RotateCw size={15} />
-                  </button>
-                  <span className="text-[11px] text-[#52525b] ml-auto font-mono pr-2">
-                    {isLastMessage && running ? '生成中…' : '刚刚'}
-                  </span>
-                </div>
-              </div>
-            </CollapsibleMessage>
+              onToggleInjected={toggleInjected}
+              onRegenerate={regenerate}
+            />
           );
         })}
 
@@ -1152,7 +1233,7 @@ export const ChatScreen: React.FC<Props> = ({
           屏幕中间、真机实测长这样（键盘上方浮着一整块输入框，下面一大片空白）。
           改成 bottom 偏移后两种形态都对：WebView 缩过视口时 inset≈0；没缩时
           bottom 把整块坞顶到键盘上方。 */}
-      <div className="fixed left-0 right-0 z-20 bottom-[var(--keyboard-inset-bottom,0px)] pointer-events-none bg-gradient-to-t from-white via-white/95 to-transparent pt-4 pb-[calc(1.25rem+var(--sab))] px-4 transition-all duration-150">
+      <div className="fixed left-0 right-0 z-20 bottom-[var(--keyboard-inset-bottom,0px)] pointer-events-none bg-gradient-to-t from-white via-white/95 to-transparent pt-4 pb-[calc(1.25rem+var(--sab))] px-4">
         <div className="max-w-2xl mx-auto pointer-events-auto">
           {/* 上滑看历史时才出现；点了回底部并恢复自动跟随 */}
           {showJumpToLatest && (
@@ -1248,7 +1329,7 @@ export const ChatScreen: React.FC<Props> = ({
               const nextVal = cmd + ' ';
               setInputText(nextVal);
               inputRef.current = nextVal;
-              saveDraft(sessionId, nextVal);
+              draftWriter.flush(sessionId, nextVal);
               setCommandPaletteOpen(false);
             }}
             filterText={inputText}
@@ -1390,7 +1471,7 @@ export const ChatScreen: React.FC<Props> = ({
                         const nextVal = inputRef.current ? inputRef.current + ' /goal ' : '/goal ';
                         setInputText(nextVal);
                         inputRef.current = nextVal;
-                        saveDraft(sessionId, nextVal);
+                        draftWriter.flush(sessionId, nextVal);
                       }}
                       className="w-full min-h-[44px] flex items-center justify-between px-2.5 py-2 rounded-xl hover:bg-white/10 text-left transition-colors cursor-pointer group"
                     >
@@ -1409,7 +1490,7 @@ export const ChatScreen: React.FC<Props> = ({
                         const nextVal = inputRef.current ? inputRef.current + ' /plan ' : '/plan ';
                         setInputText(nextVal);
                         inputRef.current = nextVal;
-                        saveDraft(sessionId, nextVal);
+                        draftWriter.flush(sessionId, nextVal);
                       }}
                       className="w-full min-h-[44px] flex items-center justify-between px-2.5 py-2 rounded-xl hover:bg-white/10 text-left transition-colors cursor-pointer group"
                     >
@@ -1428,7 +1509,7 @@ export const ChatScreen: React.FC<Props> = ({
                         const nextVal = inputRef.current ? inputRef.current + ' /feedback ' : '/feedback ';
                         setInputText(nextVal);
                         inputRef.current = nextVal;
-                        saveDraft(sessionId, nextVal);
+                        draftWriter.flush(sessionId, nextVal);
                       }}
                       className="w-full min-h-[44px] flex items-center justify-between px-2.5 py-2 rounded-xl hover:bg-white/10 text-left transition-colors cursor-pointer group"
                     >

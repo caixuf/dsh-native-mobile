@@ -372,6 +372,127 @@ export function pickRicherLines<T>(prev: readonly T[], incoming: readonly T[]): 
   return incoming as T[];
 }
 
+/**
+ * 翻页 / 快照盖到已经流式更新过的行上。
+ *
+ * 条数仍走 [pickRicherLines]（空的不清、短的不削）。
+ * 条数相同时按 key 留下更长的正文：同一 seq 的流式改写不增加行数，
+ * 收尾再拉一页如果稍旧，不能把已经写长的那一行刷短。
+ */
+export function mergePageLines<T extends { key: string; text: string }>(
+  prev: readonly T[],
+  incoming: readonly T[],
+): T[] {
+  const richer = pickRicherLines(prev, incoming);
+  if (richer !== incoming || prev.length !== incoming.length || prev.length === 0) return richer;
+  const prevByKey = new Map(prev.map((line) => [line.key, line]));
+  let keptLonger = false;
+  const merged = incoming.map((line) => {
+    const old = prevByKey.get(line.key);
+    if (old && old.text.length > line.text.length) {
+      keptLonger = true;
+      return old;
+    }
+    return line;
+  });
+  return keptLonger ? merged : (incoming as T[]);
+}
+
+/** 跟流合并时允许的行。字段放宽到 `null`，好让 UI 的 `ChatLine` 直接传进来。 */
+interface FollowMergeLine {
+  key: string;
+  text: string;
+  kind: string;
+  role: string;
+  toolName?: string | null;
+  toolArgs?: string | null;
+  toolResult?: string | null;
+  toolCallId?: string | null;
+  isError?: boolean;
+  toolMs?: number | null;
+  injectedLabel?: string | null;
+  imageRefs?: ChatLineLike['imageRefs'];
+}
+
+function sameImageRefs(
+  prev: FollowMergeLine['imageRefs'],
+  next: FollowMergeLine['imageRefs'],
+): boolean {
+  if (prev === next) return true;
+  if (!prev || !next || prev.length !== next.length) return !prev && !next;
+  for (let i = 0; i < prev.length; i += 1) {
+    if (prev[i]?.attachmentId !== next[i]?.attachmentId) return false;
+    if (prev[i]?.mediaType !== next[i]?.mediaType) return false;
+  }
+  return true;
+}
+
+/** 正文没变就留着原对象（历史行靠引用相等跳过重渲染）。toolMs 以已算过的为准。 */
+function followLineUnchanged(prev: FollowMergeLine, next: FollowMergeLine): boolean {
+  const toolMs = next.toolMs ?? prev.toolMs;
+  return (
+    prev.text === next.text &&
+    prev.kind === next.kind &&
+    prev.role === next.role &&
+    prev.toolName === next.toolName &&
+    prev.toolArgs === next.toolArgs &&
+    prev.toolResult === next.toolResult &&
+    prev.toolCallId === next.toolCallId &&
+    prev.isError === next.isError &&
+    prev.injectedLabel === next.injectedLabel &&
+    prev.toolMs === toolMs &&
+    sameImageRefs(prev.imageRefs, next.imageRefs)
+  );
+}
+
+/**
+ * 把 `session/follow` 的一帧并进已渲染的行。
+ *
+ * 同一条 `assistant/message` 会用**同一个 seq** 越写越长。只追加没见过的 key
+ * 会把后半段丢掉，界面就变成「停一下，整段跳出来」。
+ *
+ * - 新 key：追加
+ * - 已有 key 且内容变了：替换这一行，保留已经算好的 `toolMs`
+ * - 内容没变：返回原数组，已有行对象身份不变
+ */
+export function applyFollowLines<T extends FollowMergeLine>(
+  prev: readonly T[],
+  produced: readonly T[],
+  seen?: Set<string>,
+): { lines: T[]; changed: boolean } {
+  if (produced.length === 0) return { lines: prev as T[], changed: false };
+
+  const index = new Map<string, number>();
+  for (let i = 0; i < prev.length; i += 1) index.set(prev[i].key, i);
+
+  let next: T[] | null = null;
+  const ensure = (): T[] => {
+    if (!next) next = prev.slice();
+    return next;
+  };
+
+  for (const line of produced) {
+    if (!line?.key) continue;
+    const at = index.get(line.key);
+    if (at === undefined) {
+      const rows = ensure();
+      index.set(line.key, rows.length);
+      rows.push(line);
+      seen?.add(line.key);
+      continue;
+    }
+    const current = (next ?? (prev as readonly T[]))[at];
+    seen?.add(line.key);
+    if (followLineUnchanged(current, line)) continue;
+    const toolMs = line.toolMs ?? current.toolMs;
+    const merged = (toolMs === line.toolMs ? line : { ...line, toolMs }) as T;
+    ensure()[at] = merged;
+  }
+
+  if (!next) return { lines: prev as T[], changed: false };
+  return { lines: next, changed: true };
+}
+
 /** 单个事件 → 可能的 0..2 行：`step/start` 会先产出一条**步骤分隔线**（GUI 的"第 N 步"）。 */
 export function eventToLines(
   event: RawSessionEvent | null | undefined,
